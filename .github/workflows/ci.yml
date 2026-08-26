@@ -23,9 +23,7 @@ jobs:
       - run: python -m pip install --upgrade pip
       - run: python -m pip install -e '.[dev]'
       - name: Rust format
-        run: |
-          cargo fmt --manifest-path rust/Cargo.toml
-          cargo fmt --manifest-path rust/Cargo.toml --check
+        run: cargo fmt --manifest-path rust/Cargo.toml --check
       - name: Rust check
         run: cargo check --manifest-path rust/Cargo.toml --locked
       - name: Rust Clippy
@@ -45,21 +43,11 @@ jobs:
       - name: Verify v0.4 governance/evidence conformance fixture
         run: |
           python tools/render_v0_4_fixture.py > /tmp/v0.4-governance-evidence.json
-          if test -f fixtures/v0.4/governance-evidence-reference.json; then
-            cmp fixtures/v0.4/governance-evidence-reference.json /tmp/v0.4-governance-evidence.json
-          else
-            echo '::warning::v0.4 reference bytes are not checked in yet; preserving rendered evidence'
-            cat /tmp/v0.4-governance-evidence.json
-          fi
+          cmp fixtures/v0.4/governance-evidence-reference.json /tmp/v0.4-governance-evidence.json
       - name: Verify compact-evidence bounded stress fixture
         run: |
           python tools/stress_compact_evidence.py > /tmp/v0.4-compact-evidence-stress.json
-          if test -f fixtures/v0.4/compact-evidence-stress.json; then
-            cmp fixtures/v0.4/compact-evidence-stress.json /tmp/v0.4-compact-evidence-stress.json
-          else
-            echo '::warning::v0.4 stress bytes are not checked in yet; preserving rendered evidence'
-            cat /tmp/v0.4-compact-evidence-stress.json
-          fi
+          cmp fixtures/v0.4/compact-evidence-stress.json /tmp/v0.4-compact-evidence-stress.json
       - run: python benchmarks/basic.py
       - name: Build wheel from fresh source
         run: python -m pip wheel . --no-deps --wheel-dir /tmp/qsol-wheel
@@ -90,7 +78,6 @@ jobs:
           if-no-files-found: warn
           path: |
             rust/Cargo.lock
-            rust/src/lib.rs
             /tmp/v0.2-orchestration.json
             /tmp/v0.3-runtime.json
             /tmp/v0.4-governance-evidence.json

@@ -44,18 +44,10 @@ jobs:
           PYTHONHASHSEED=1 python tools/render_v0_4_fixture.py > /tmp/governance-evidence-a.json
           PYTHONHASHSEED=8675309 python tools/render_v0_4_fixture.py > /tmp/governance-evidence-b.json
           cmp /tmp/governance-evidence-a.json /tmp/governance-evidence-b.json
-          if test -f fixtures/v0.4/governance-evidence-reference.json; then
-            cmp fixtures/v0.4/governance-evidence-reference.json /tmp/governance-evidence-a.json
-          else
-            echo '::warning::v0.4 reference bytes are not checked in yet'
-          fi
+          cmp fixtures/v0.4/governance-evidence-reference.json /tmp/governance-evidence-a.json
       - name: Repeat compact-evidence stress across hash seeds
         run: |
           PYTHONHASHSEED=1 python tools/stress_compact_evidence.py > /tmp/evidence-stress-a.json
           PYTHONHASHSEED=8675309 python tools/stress_compact_evidence.py > /tmp/evidence-stress-b.json
           cmp /tmp/evidence-stress-a.json /tmp/evidence-stress-b.json
-          if test -f fixtures/v0.4/compact-evidence-stress.json; then
-            cmp fixtures/v0.4/compact-evidence-stress.json /tmp/evidence-stress-a.json
-          else
-            echo '::warning::v0.4 stress bytes are not checked in yet'
-          fi
+          cmp fixtures/v0.4/compact-evidence-stress.json /tmp/evidence-stress-a.json
