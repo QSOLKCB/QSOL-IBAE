@@ -39,9 +39,7 @@ jobs:
       - name: Verify v0.3 Python/Rust conformance fixture
         run: |
           python tools/render_v0_3_fixture.py > /tmp/v0.3-runtime.json
-          if test -f fixtures/v0.3/runtime-reference.json; then
-            cmp fixtures/v0.3/runtime-reference.json /tmp/v0.3-runtime.json
-          fi
+          cmp fixtures/v0.3/runtime-reference.json /tmp/v0.3-runtime.json
       - run: python benchmarks/basic.py
       - name: Build wheel from fresh source
         run: python -m pip wheel . --no-deps --wheel-dir /tmp/qsol-wheel

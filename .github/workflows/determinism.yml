@@ -38,6 +38,4 @@ jobs:
           PYTHONHASHSEED=1 python tools/render_v0_3_fixture.py > /tmp/runtime-a.json
           PYTHONHASHSEED=8675309 python tools/render_v0_3_fixture.py > /tmp/runtime-b.json
           cmp /tmp/runtime-a.json /tmp/runtime-b.json
-          if test -f fixtures/v0.3/runtime-reference.json; then
-            cmp fixtures/v0.3/runtime-reference.json /tmp/runtime-a.json
-          fi
+          cmp fixtures/v0.3/runtime-reference.json /tmp/runtime-a.json
