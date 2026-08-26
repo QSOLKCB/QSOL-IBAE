@@ -16,10 +16,10 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: 1.74.1
-          components: clippy,rustfmt
+      - name: Install pinned Rust toolchain
+        run: |
+          rustup toolchain install 1.74.1 --profile minimal --component clippy,rustfmt
+          rustup default 1.74.1
       - run: python -m pip install --upgrade pip
       - run: python -m pip install -e '.[dev]'
       - name: Rust format
