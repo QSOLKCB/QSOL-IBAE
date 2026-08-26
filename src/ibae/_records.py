@@ -16,15 +16,6 @@ _INVARIANT_PATTERN = re.compile(r"^IBAE-[A-Z]+-[0-9]{3}$")
 _T = TypeVar("_T")
 
 
-def materialize_iterable(name: str, values: Iterable[_T]) -> tuple[_T, ...]:
-    if isinstance(values, (str, bytes, bytearray)):
-        raise TypeError(f"{name} must be an iterable of records, not text")
-    try:
-        return tuple(values)
-    except TypeError as exc:
-        raise TypeError(f"{name} must be iterable") from exc
-
-
 def materialize_bounded_iterable(
     name: str,
     values: Iterable[_T],
@@ -76,6 +67,14 @@ def require_nonnegative_int(name: str, value: int) -> int:
 def require_positive_int(name: str, value: int) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
         raise ValueError(f"{name} must be a positive integer")
+    return value
+
+
+def require_bounded_positive_int(name: str, value: int, hard_limit: int) -> int:
+    require_positive_int(name, value)
+    require_positive_int("hard limit", hard_limit)
+    if value > hard_limit:
+        raise ValueError(f"{name} exceeds the protocol hard limit of {hard_limit}")
     return value
 
 

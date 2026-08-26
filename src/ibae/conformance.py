@@ -18,6 +18,9 @@ from .orchestration import (
     ProposalOrdering,
     ReplaySafety,
     Strategy,
+    StrategyParameterSpec,
+    StrategySchema,
+    StrategyValueKind,
     admit_batch,
 )
 
@@ -173,6 +176,22 @@ def v0_2_reference_fixture() -> dict[str, object]:
         Strategy(
             "repair-reference",
             {"ordering": "declared_sequence", "version": 1},
+            schema=StrategySchema(
+                "repair-reference",
+                (
+                    StrategyParameterSpec(
+                        "ordering",
+                        StrategyValueKind.SYMBOL,
+                        allowed_symbols=("declared_sequence",),
+                    ),
+                    StrategyParameterSpec(
+                        "version",
+                        StrategyValueKind.BOUNDED_INTEGER,
+                        minimum=1,
+                        maximum=1,
+                    ),
+                ),
+            ),
         ),
         proposals,
         ordering=ProposalOrdering.DECLARED_SEQUENCE,

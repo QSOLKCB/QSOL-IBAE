@@ -10,15 +10,17 @@ from typing import Any
 
 from ._records import (
     CanonicalValue,
-    materialize_iterable,
+    materialize_bounded_iterable,
+    require_bounded_positive_int,
     require_fingerprint,
-    require_positive_int,
     require_symbol,
 )
 from .canonical import domain_fingerprint
 
 EPISTEMIC_RECORD_DOMAIN = "ibae.epistemic-record.v1"
 EPISTEMIC_DEPENDENCY_DOMAIN = "ibae.epistemic-dependencies.v1"
+MAX_EPISTEMIC_RECORDS = 256
+MAX_EPISTEMIC_DEPENDENCIES = MAX_EPISTEMIC_RECORDS - 1
 _UNSET = object()
 
 
@@ -51,6 +53,15 @@ class ObservationProvenance:
             "source_identity": self.source_identity,
         }
 
+    def identity_record(self) -> dict[str, object]:
+        """Dependency-relevant provenance, excluding cache-path metadata."""
+
+        return {
+            "dependency_identity": self.dependency_identity,
+            "source": self.source,
+            "source_identity": self.source_identity,
+        }
+
 
 @dataclass(frozen=True, slots=True, init=False)
 class EpistemicRecord:
@@ -74,7 +85,13 @@ class EpistemicRecord:
             raise TypeError("epistemic_class must be an EpistemicClass")
 
         normalized_dependencies = tuple(
-            sorted(materialize_iterable("epistemic dependencies", dependencies))
+            sorted(
+                materialize_bounded_iterable(
+                    "epistemic dependencies",
+                    dependencies,
+                    limit=MAX_EPISTEMIC_DEPENDENCIES,
+                )
+            )
         )
         if len(normalized_dependencies) != len(set(normalized_dependencies)):
             raise ValueError("epistemic dependencies must be unique")
@@ -136,7 +153,7 @@ class EpistemicRecord:
 
     @property
     def record_id(self) -> str:
-        return domain_fingerprint(EPISTEMIC_RECORD_DOMAIN, self.canonical_record())
+        return domain_fingerprint(EPISTEMIC_RECORD_DOMAIN, self.identity_record())
 
     def canonical_record(self) -> dict[str, object]:
         record: dict[str, object] = {
@@ -151,15 +168,29 @@ class EpistemicRecord:
             record["value"] = self._value.to_value()
         return record
 
+    def identity_record(self) -> dict[str, object]:
+        """Semantic identity record, excluding observation delivery path."""
+
+        record = self.canonical_record()
+        if self.provenance is not None:
+            record["provenance"] = self.provenance.identity_record()
+        return record
+
 
 @dataclass(frozen=True, slots=True)
 class EpistemicState:
     records: tuple[EpistemicRecord, ...] = ()
-    max_records: int = 256
+    max_records: int = MAX_EPISTEMIC_RECORDS
 
     def __post_init__(self) -> None:
-        require_positive_int("max_records", self.max_records)
-        supplied = materialize_iterable("epistemic records", self.records)
+        require_bounded_positive_int(
+            "max_records", self.max_records, MAX_EPISTEMIC_RECORDS
+        )
+        supplied = materialize_bounded_iterable(
+            "epistemic records",
+            self.records,
+            limit=self.max_records,
+        )
         if any(not isinstance(item, EpistemicRecord) for item in supplied):
             raise TypeError("records must contain EpistemicRecord values")
         records = tuple(sorted(supplied, key=lambda item: item.key))
@@ -196,9 +227,17 @@ class EpistemicState:
         cls,
         records: Iterable[EpistemicRecord],
         *,
-        max_records: int = 256,
+        max_records: int = MAX_EPISTEMIC_RECORDS,
     ) -> EpistemicState:
-        return cls(tuple(records), max_records=max_records)
+        require_bounded_positive_int(
+            "max_records", max_records, MAX_EPISTEMIC_RECORDS
+        )
+        return cls(
+            materialize_bounded_iterable(
+                "epistemic records", records, limit=max_records
+            ),
+            max_records=max_records,
+        )
 
     def _by_key(self) -> dict[str, EpistemicRecord]:
         return {record.key: record for record in self.records}
@@ -234,7 +273,9 @@ class EpistemicState:
 
     def unresolved_keys(self, keys: Iterable[str]) -> tuple[str, ...]:
         by_key = self._by_key()
-        normalized = materialize_iterable("epistemic keys", keys)
+        normalized = materialize_bounded_iterable(
+            "epistemic keys", keys, limit=MAX_EPISTEMIC_RECORDS
+        )
         unresolved = {
             key
             for key in normalized
@@ -243,7 +284,13 @@ class EpistemicState:
         return tuple(sorted(unresolved))
 
     def dependency_digest(self, keys: Iterable[str]) -> str:
-        normalized = tuple(sorted(materialize_iterable("dependency keys", keys)))
+        normalized = tuple(
+            sorted(
+                materialize_bounded_iterable(
+                    "dependency keys", keys, limit=MAX_EPISTEMIC_RECORDS
+                )
+            )
+        )
         if len(normalized) != len(set(normalized)):
             raise ValueError("dependency keys must be unique")
         unresolved = self.unresolved_keys(normalized)
@@ -260,13 +307,19 @@ class EpistemicState:
                     pending.append(dependency)
         return domain_fingerprint(
             EPISTEMIC_DEPENDENCY_DOMAIN,
-            [by_key[key].canonical_record() for key in sorted(closure)],
+            [by_key[key].identity_record() for key in sorted(closure)],
         )
 
     def canonical_record(self) -> dict[str, object]:
         return {
             "max_records": self.max_records,
             "records": [record.canonical_record() for record in self.records],
+        }
+
+    def identity_record(self) -> dict[str, object]:
+        return {
+            "max_records": self.max_records,
+            "records": [record.identity_record() for record in self.records],
         }
 
     def projection(self) -> dict[str, list[dict[str, object]]]:

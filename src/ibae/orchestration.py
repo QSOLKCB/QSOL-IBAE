@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, replace
 from enum import Enum
@@ -11,7 +10,7 @@ from typing import Any
 from ._records import (
     CanonicalValue,
     materialize_bounded_iterable,
-    materialize_iterable,
+    require_bounded_positive_int,
     require_fingerprint,
     require_invariant_id,
     require_nonnegative_int,
@@ -20,8 +19,9 @@ from ._records import (
     require_text,
 )
 from .canonical import domain_fingerprint
-from .epistemic import EpistemicState
+from .epistemic import MAX_EPISTEMIC_RECORDS, EpistemicState
 from .obligations import (
+    MAX_OBLIGATIONS,
     Obligation,
     ObligationReadiness,
     ObligationRegistry,
@@ -30,10 +30,18 @@ from .obligations import (
 AGENT_PROTOCOL = "IBAE-AGENT-PROTOCOL-V1"
 LOGICAL_CLOCK_PROFILE = "IBAE-LOGICAL-CLOCK-V1"
 STRATEGY_PARAMETER_SCHEMA = "IBAE-STRATEGY-PARAMETERS-V1"
+MAX_CAPABILITIES = 64
 MAX_PROPOSALS_PER_BATCH = 64
+MAX_HISTORY_EVENTS = 256
+MAX_OCCURRENCE_OWNERS = 256
+MAX_STATE_KEYS_PER_DECLARATION = MAX_EPISTEMIC_RECORDS // 2
+MAX_STRATEGY_PARAMETERS = 32
+MAX_STRATEGY_SYMBOL_LIST_ITEMS = 64
+MAX_INVARIANT_IDS_PER_REJECTION = 64
 
 CAPABILITY_ID_DOMAIN = "ibae.capability-id.v1"
 STRATEGY_ID_DOMAIN = "ibae.strategy-id.v1"
+STRATEGY_SCHEMA_ID_DOMAIN = "ibae.strategy-parameter-schema.v1"
 PROPOSAL_ID_DOMAIN = "ibae.proposal-id.v1"
 BATCH_ID_DOMAIN = "ibae.proposal-batch-id.v1"
 ACTION_ID_DOMAIN = "ibae.action-id.v1"
@@ -133,51 +141,197 @@ _REJECTION_INVARIANTS: dict[RejectionReason, tuple[str, ...]] = {
 }
 
 
-_OBSERVATIONAL_STRATEGY_TOKENS = frozenset(
-    {
-        "clock",
-        "date",
-        "deadline",
-        "duration",
-        "elapsed",
-        "latency",
-        "queue_delay",
-        "started_at",
-        "finished_at",
-        "throughput",
-        "time",
-        "timeout",
-        "timestamp",
-        "timing",
-        "wall_clock",
-        "wallclock",
-    }
-)
+class StrategyValueKind(str, Enum):
+    BOOLEAN = "boolean"
+    BOUNDED_INTEGER = "bounded_integer"
+    SYMBOL = "symbol"
+    SYMBOL_LIST = "symbol_list"
 
 
-def _validate_strategy_parameters(value: Any, *, path: str = "parameters") -> None:
-    """Reject observational/timing fields from semantic strategy identity."""
+@dataclass(frozen=True, slots=True)
+class StrategyParameterSpec:
+    """One typed, allowlisted semantic strategy parameter."""
 
-    if isinstance(value, Mapping):
-        for key, nested in value.items():
-            if not isinstance(key, str):
-                raise TypeError("strategy parameter keys must be strings")
-            separated = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", key)
-            normalized = re.sub(r"[^a-z0-9]+", "_", separated.lower()).strip("_")
-            segments = frozenset(segment for segment in normalized.split("_") if segment)
-            collapsed = normalized.replace("_", "")
-            if (
-                normalized in _OBSERVATIONAL_STRATEGY_TOKENS
-                or segments & _OBSERVATIONAL_STRATEGY_TOKENS
-                or collapsed in {"wallclock", "queuedelay", "startedat", "finishedat"}
-            ):
-                raise ValueError(
-                    f"strategy {path}.{key} is observational metadata, not semantics"
+    name: str
+    value_kind: StrategyValueKind
+    required: bool = True
+    minimum: int | None = None
+    maximum: int | None = None
+    allowed_symbols: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        require_symbol("strategy parameter name", self.name)
+        if not isinstance(self.value_kind, StrategyValueKind):
+            raise TypeError("value_kind must be a StrategyValueKind")
+        if not isinstance(self.required, bool):
+            raise TypeError("required must be a boolean")
+        symbols = tuple(
+            sorted(
+                materialize_bounded_iterable(
+                    "allowed strategy symbols",
+                    self.allowed_symbols,
+                    limit=MAX_STRATEGY_SYMBOL_LIST_ITEMS,
                 )
-            _validate_strategy_parameters(nested, path=f"{path}.{key}")
-    elif isinstance(value, (list, tuple)):
-        for index, nested in enumerate(value):
-            _validate_strategy_parameters(nested, path=f"{path}[{index}]")
+            )
+        )
+        if len(symbols) != len(set(symbols)):
+            raise ValueError("allowed strategy symbols must be unique")
+        for symbol in symbols:
+            require_symbol("allowed strategy symbol", symbol)
+        object.__setattr__(self, "allowed_symbols", symbols)
+
+        if self.value_kind is StrategyValueKind.BOUNDED_INTEGER:
+            if self.minimum is None or self.maximum is None:
+                raise ValueError("bounded integer parameters require minimum and maximum")
+            require_nonnegative_int("strategy parameter minimum", self.minimum)
+            require_nonnegative_int("strategy parameter maximum", self.maximum)
+            if self.minimum > self.maximum:
+                raise ValueError("strategy parameter minimum exceeds maximum")
+            if symbols:
+                raise ValueError("bounded integer parameters cannot allow symbols")
+        elif self.value_kind in {
+            StrategyValueKind.SYMBOL,
+            StrategyValueKind.SYMBOL_LIST,
+        }:
+            if not symbols:
+                raise ValueError("symbol parameters require a finite symbol allowlist")
+            if self.minimum is not None or self.maximum is not None:
+                raise ValueError("symbol parameters cannot carry integer bounds")
+        elif (
+            symbols
+            or self.minimum is not None
+            or self.maximum is not None
+        ):
+            raise ValueError("boolean parameters cannot carry value constraints")
+
+    def normalize(self, value: Any) -> object:
+        if self.value_kind is StrategyValueKind.BOOLEAN:
+            if not isinstance(value, bool):
+                raise TypeError(f"strategy parameter {self.name} must be boolean")
+            return value
+        if self.value_kind is StrategyValueKind.BOUNDED_INTEGER:
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise TypeError(
+                    f"strategy parameter {self.name} must be an integer"
+                )
+            assert self.minimum is not None and self.maximum is not None
+            if value < self.minimum or value > self.maximum:
+                raise ValueError(
+                    f"strategy parameter {self.name} must be between "
+                    f"{self.minimum} and {self.maximum}"
+                )
+            return value
+        if self.value_kind is StrategyValueKind.SYMBOL:
+            require_symbol(f"strategy parameter {self.name}", value)
+            if value not in self.allowed_symbols:
+                raise ValueError(
+                    f"strategy parameter {self.name} is not an allowed symbol"
+                )
+            return value
+
+        values = materialize_bounded_iterable(
+            f"strategy parameter {self.name}",
+            value,
+            limit=MAX_STRATEGY_SYMBOL_LIST_ITEMS,
+        )
+        for item in values:
+            require_symbol(f"strategy parameter {self.name} item", item)
+            if item not in self.allowed_symbols:
+                raise ValueError(
+                    f"strategy parameter {self.name} contains a disallowed symbol"
+                )
+        return list(values)
+
+    def canonical_record(self) -> dict[str, object]:
+        return {
+            "allowed_symbols": list(self.allowed_symbols),
+            "maximum": self.maximum,
+            "minimum": self.minimum,
+            "name": self.name,
+            "required": self.required,
+            "value_kind": self.value_kind.value,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class StrategySchema:
+    """Orchestrator-owned allowlist for one strategy's semantic parameters."""
+
+    strategy_key: str
+    parameter_specs: tuple[StrategyParameterSpec, ...] = ()
+    contract_version: int = 1
+
+    def __post_init__(self) -> None:
+        require_symbol("strategy schema key", self.strategy_key)
+        require_positive_int("strategy schema contract version", self.contract_version)
+        supplied = materialize_bounded_iterable(
+            "strategy parameter specs",
+            self.parameter_specs,
+            limit=MAX_STRATEGY_PARAMETERS,
+        )
+        if any(not isinstance(item, StrategyParameterSpec) for item in supplied):
+            raise TypeError(
+                "parameter_specs must contain StrategyParameterSpec records"
+            )
+        specs = tuple(sorted(supplied, key=lambda item: item.name))
+        names = [item.name for item in specs]
+        if len(names) != len(set(names)):
+            raise ValueError("strategy parameter spec names must be unique")
+        object.__setattr__(self, "parameter_specs", specs)
+
+    @property
+    def schema_id(self) -> str:
+        return domain_fingerprint(STRATEGY_SCHEMA_ID_DOMAIN, self.canonical_record())
+
+    def normalize_parameters(self, parameters: Mapping[str, Any]) -> dict[str, object]:
+        if not isinstance(parameters, Mapping):
+            raise TypeError("strategy parameters must be a semantic mapping")
+        supplied = materialize_bounded_iterable(
+            "strategy parameters",
+            parameters.items(),
+            limit=MAX_STRATEGY_PARAMETERS,
+        )
+        raw: dict[str, Any] = {}
+        for item in supplied:
+            if not isinstance(item, tuple) or len(item) != 2:
+                raise TypeError("strategy parameter items must be key/value pairs")
+            name, value = item
+            if not isinstance(name, str):
+                raise TypeError("strategy parameter keys must be strings")
+            if name in raw:
+                raise ValueError("strategy parameter keys must be unique")
+            raw[name] = value
+
+        specs = {item.name: item for item in self.parameter_specs}
+        unknown = tuple(sorted(set(raw) - set(specs)))
+        if unknown:
+            raise ValueError(
+                "strategy parameters are not allowed by the schema: "
+                + ",".join(unknown)
+            )
+        missing = tuple(
+            item.name
+            for item in self.parameter_specs
+            if item.required and item.name not in raw
+        )
+        if missing:
+            raise ValueError(
+                "strategy parameters are missing required keys: "
+                + ",".join(missing)
+            )
+        return {
+            name: specs[name].normalize(raw[name]) for name in sorted(raw)
+        }
+
+    def canonical_record(self) -> dict[str, object]:
+        return {
+            "contract_version": self.contract_version,
+            "parameter_schema": STRATEGY_PARAMETER_SCHEMA,
+            "parameter_specs": [
+                item.canonical_record() for item in self.parameter_specs
+            ],
+            "strategy_key": self.strategy_key,
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -206,8 +360,10 @@ class Capability:
         require_positive_int("contract_version", self.contract_version)
         required_state_keys = tuple(
             sorted(
-                materialize_iterable(
-                    "capability required state keys", self.required_state_keys
+                materialize_bounded_iterable(
+                    "capability required state keys",
+                    self.required_state_keys,
+                    limit=MAX_STATE_KEYS_PER_DECLARATION,
                 )
             )
         )
@@ -262,28 +418,35 @@ class Capability:
 
 @dataclass(frozen=True, slots=True)
 class OrchestrationLimits:
-    max_obligations: int = 128
-    max_epistemic_records: int = 256
-    max_capabilities: int = 64
-    max_batch_proposals: int = 64
-    max_history: int = 256
-    max_occurrence_owners: int = 256
+    max_obligations: int = MAX_OBLIGATIONS
+    max_epistemic_records: int = MAX_EPISTEMIC_RECORDS
+    max_capabilities: int = MAX_CAPABILITIES
+    max_batch_proposals: int = MAX_PROPOSALS_PER_BATCH
+    max_history: int = MAX_HISTORY_EVENTS
+    max_occurrence_owners: int = MAX_OCCURRENCE_OWNERS
 
     def __post_init__(self) -> None:
-        for name, value in (
-            ("max_obligations", self.max_obligations),
-            ("max_epistemic_records", self.max_epistemic_records),
-            ("max_capabilities", self.max_capabilities),
-            ("max_batch_proposals", self.max_batch_proposals),
-            ("max_history", self.max_history),
-            ("max_occurrence_owners", self.max_occurrence_owners),
+        for name, value, hard_limit in (
+            ("max_obligations", self.max_obligations, MAX_OBLIGATIONS),
+            (
+                "max_epistemic_records",
+                self.max_epistemic_records,
+                MAX_EPISTEMIC_RECORDS,
+            ),
+            ("max_capabilities", self.max_capabilities, MAX_CAPABILITIES),
+            (
+                "max_batch_proposals",
+                self.max_batch_proposals,
+                MAX_PROPOSALS_PER_BATCH,
+            ),
+            ("max_history", self.max_history, MAX_HISTORY_EVENTS),
+            (
+                "max_occurrence_owners",
+                self.max_occurrence_owners,
+                MAX_OCCURRENCE_OWNERS,
+            ),
         ):
-            require_positive_int(name, value)
-        if self.max_batch_proposals > MAX_PROPOSALS_PER_BATCH:
-            raise ValueError(
-                "max_batch_proposals exceeds the protocol hard limit of "
-                f"{MAX_PROPOSALS_PER_BATCH}"
-            )
+            require_bounded_positive_int(name, value, hard_limit)
 
     def canonical_record(self) -> dict[str, int]:
         return {
@@ -299,15 +462,29 @@ class OrchestrationLimits:
 @dataclass(frozen=True, slots=True, init=False)
 class Strategy:
     key: str
+    schema: StrategySchema
     _parameters: CanonicalValue
 
-    def __init__(self, key: str, parameters: Any) -> None:
+    def __init__(
+        self,
+        key: str,
+        parameters: Mapping[str, Any],
+        *,
+        schema: StrategySchema,
+    ) -> None:
         require_symbol("strategy key", key)
-        if not isinstance(parameters, Mapping):
-            raise TypeError("strategy parameters must be a semantic mapping")
-        _validate_strategy_parameters(parameters)
+        if not isinstance(schema, StrategySchema):
+            raise TypeError("schema must be an orchestrator-owned StrategySchema")
+        if schema.strategy_key != key:
+            raise ValueError("strategy key must match its admitted schema")
+        normalized_parameters = schema.normalize_parameters(parameters)
         object.__setattr__(self, "key", key)
-        object.__setattr__(self, "_parameters", CanonicalValue.from_value(parameters))
+        object.__setattr__(self, "schema", schema)
+        object.__setattr__(
+            self,
+            "_parameters",
+            CanonicalValue.from_value(normalized_parameters),
+        )
 
     @property
     def parameters(self) -> Any:
@@ -321,6 +498,7 @@ class Strategy:
         return {
             "key": self.key,
             "parameter_schema": STRATEGY_PARAMETER_SCHEMA,
+            "parameter_schema_id": self.schema.schema_id,
             "parameters": self._parameters.to_value(),
         }
 
@@ -350,7 +528,13 @@ class ActionProposal:
         require_symbol("capability", capability)
 
         targets = tuple(
-            sorted(materialize_iterable("target obligation ids", target_obligation_ids))
+            sorted(
+                materialize_bounded_iterable(
+                    "target obligation ids",
+                    target_obligation_ids,
+                    limit=MAX_OBLIGATIONS,
+                )
+            )
         )
         if not targets:
             raise ValueError("an action proposal must target at least one obligation")
@@ -360,7 +544,13 @@ class ActionProposal:
             require_fingerprint("target obligation id", target)
 
         state_keys = tuple(
-            sorted(materialize_iterable("required state keys", required_state_keys))
+            sorted(
+                materialize_bounded_iterable(
+                    "required state keys",
+                    required_state_keys,
+                    limit=MAX_STATE_KEYS_PER_DECLARATION,
+                )
+            )
         )
         if len(state_keys) != len(set(state_keys)):
             raise ValueError("required state keys must be unique")
@@ -478,40 +668,55 @@ class AdmissionDecision:
             self.rejection_reason, RejectionReason
         ):
             raise TypeError("rejection_reason must be a RejectionReason")
-        if any(
-            not isinstance(action, RecoveryAction) for action in self.recovery_actions
-        ):
+        supplied_recoveries = materialize_bounded_iterable(
+            "recovery actions",
+            self.recovery_actions,
+            limit=len(RecoveryAction),
+        )
+        if any(not isinstance(action, RecoveryAction) for action in supplied_recoveries):
             raise TypeError("recovery_actions must contain RecoveryAction values")
 
         recoveries = tuple(
             sorted(
-                set(materialize_iterable("recovery actions", self.recovery_actions)),
+                set(supplied_recoveries),
                 key=lambda action: action.value,
             )
         )
         blocking_ids = tuple(
             sorted(
-                materialize_iterable(
-                    "blocking obligation ids", self.blocking_obligation_ids
+                materialize_bounded_iterable(
+                    "blocking obligation ids",
+                    self.blocking_obligation_ids,
+                    limit=MAX_OBLIGATIONS,
                 )
             )
         )
         dependency_keys = tuple(
             sorted(
-                materialize_iterable(
-                    "dependency state keys", self.dependency_state_keys
+                materialize_bounded_iterable(
+                    "dependency state keys",
+                    self.dependency_state_keys,
+                    limit=MAX_EPISTEMIC_RECORDS,
                 )
             )
         )
         unresolved_keys = tuple(
             sorted(
-                materialize_iterable(
-                    "unresolved state keys", self.unresolved_state_keys
+                materialize_bounded_iterable(
+                    "unresolved state keys",
+                    self.unresolved_state_keys,
+                    limit=MAX_EPISTEMIC_RECORDS,
                 )
             )
         )
         invariant_ids = tuple(
-            sorted(materialize_iterable("invariant ids", self.invariant_ids))
+            sorted(
+                materialize_bounded_iterable(
+                    "invariant ids",
+                    self.invariant_ids,
+                    limit=MAX_INVARIANT_IDS_PER_REJECTION,
+                )
+            )
         )
         for name, values in (
             ("blocking obligation ids", blocking_ids),
@@ -598,9 +803,12 @@ class BatchRejection:
             raise TypeError("reason must be a RejectionReason")
         if not isinstance(self.authority_layer, AuthorityLayer):
             raise TypeError("authority_layer must be an AuthorityLayer")
-        if any(
-            not isinstance(action, RecoveryAction) for action in self.recovery_actions
-        ):
+        supplied_recoveries = materialize_bounded_iterable(
+            "recovery actions",
+            self.recovery_actions,
+            limit=len(RecoveryAction),
+        )
+        if any(not isinstance(action, RecoveryAction) for action in supplied_recoveries):
             raise TypeError("recovery_actions must contain RecoveryAction values")
         require_nonnegative_int("logical_tick", self.logical_tick)
         object.__setattr__(
@@ -609,14 +817,20 @@ class BatchRejection:
             tuple(
                 sorted(
                     set(
-                        materialize_iterable("recovery actions", self.recovery_actions)
+                        supplied_recoveries
                     ),
                     key=lambda action: action.value,
                 )
             ),
         )
         invariant_ids = tuple(
-            sorted(materialize_iterable("invariant ids", self.invariant_ids))
+            sorted(
+                materialize_bounded_iterable(
+                    "invariant ids",
+                    self.invariant_ids,
+                    limit=MAX_INVARIANT_IDS_PER_REJECTION,
+                )
+            )
         )
         if not invariant_ids:
             raise ValueError("batch rejections require relevant invariant ids")
@@ -684,7 +898,11 @@ class AdmissionReceipt:
         require_nonnegative_int("logical_tick_end", self.logical_tick_end)
         if self.logical_tick_end < self.logical_tick_start:
             raise ValueError("logical tick cannot move backwards")
-        decisions = materialize_iterable("decisions", self.decisions)
+        decisions = materialize_bounded_iterable(
+            "decisions",
+            self.decisions,
+            limit=MAX_PROPOSALS_PER_BATCH,
+        )
         if any(not isinstance(item, AdmissionDecision) for item in decisions):
             raise TypeError("decisions must contain AdmissionDecision records")
         object.__setattr__(self, "decisions", decisions)
@@ -765,7 +983,11 @@ class OrchestrationState:
         if self.epistemic_state.max_records != self.limits.max_epistemic_records:
             raise ValueError("epistemic state bound must match state limits")
 
-        supplied_capabilities = materialize_iterable("capabilities", self.capabilities)
+        supplied_capabilities = materialize_bounded_iterable(
+            "capabilities",
+            self.capabilities,
+            limit=self.limits.max_capabilities,
+        )
         if any(not isinstance(item, Capability) for item in supplied_capabilities):
             raise TypeError("capabilities must contain Capability records")
         capabilities = tuple(sorted(supplied_capabilities, key=lambda item: item.name))
@@ -776,15 +998,21 @@ class OrchestrationState:
             raise ValueError("capability names must be unique")
         object.__setattr__(self, "capabilities", capabilities)
 
-        history = materialize_iterable("history", self.history)
+        history = materialize_bounded_iterable(
+            "history",
+            self.history,
+            limit=self.limits.max_history,
+        )
         if len(history) > self.limits.max_history:
             raise ValueError("orchestration history exceeds max_history")
         for event_id in history:
             require_fingerprint("history event id", event_id)
         object.__setattr__(self, "history", history)
 
-        supplied_owners = materialize_iterable(
-            "occurrence owners", self.occurrence_owners
+        supplied_owners = materialize_bounded_iterable(
+            "occurrence owners",
+            self.occurrence_owners,
+            limit=self.limits.max_occurrence_owners,
         )
         if any(not isinstance(item, OccurrenceOwnership) for item in supplied_owners):
             raise TypeError(
@@ -816,7 +1044,11 @@ class OrchestrationState:
                 obligations, max_obligations=active_limits.max_obligations
             ),
             epistemic_state=active_epistemic_state,
-            capabilities=tuple(capabilities),
+            capabilities=materialize_bounded_iterable(
+                "capabilities",
+                capabilities,
+                limit=active_limits.max_capabilities,
+            ),
             limits=active_limits,
         )
 
@@ -831,7 +1063,7 @@ class OrchestrationState:
     def canonical_record(self) -> dict[str, object]:
         return {
             "capabilities": [item.canonical_record() for item in self.capabilities],
-            "epistemic_state": self.epistemic_state.canonical_record(),
+            "epistemic_state": self.epistemic_state.identity_record(),
             "history": list(self.history),
             "limits": self.limits.canonical_record(),
             "logical_clock": {
@@ -912,7 +1144,11 @@ class OrchestrationState:
         require_nonnegative_int("logical_tick", logical_tick)
         if logical_tick < self.logical_tick:
             raise ValueError("logical tick cannot move backwards")
-        additions = materialize_iterable("event ids", event_ids)
+        additions = materialize_bounded_iterable(
+            "event ids",
+            event_ids,
+            limit=MAX_PROPOSALS_PER_BATCH,
+        )
         for event_id in additions:
             require_fingerprint("event id", event_id)
         if logical_tick - self.logical_tick != len(additions):
@@ -921,7 +1157,11 @@ class OrchestrationState:
         next_occurrence_owners = (
             self.occurrence_owners
             if occurrence_owners is None
-            else materialize_iterable("occurrence owners", occurrence_owners)
+            else materialize_bounded_iterable(
+                "occurrence owners",
+                occurrence_owners,
+                limit=self.limits.max_occurrence_owners,
+            )
         )
         return replace(
             self,

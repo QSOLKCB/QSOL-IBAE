@@ -457,7 +457,9 @@ The v0.2 Python reference implements deterministic orchestration semantics for:
 - within-batch deduplication only for replay-safe actions;
 - distinct bounded occurrence identity/ownership for mutations and non-idempotent effects, persisted across batches;
 - explicit epistemic state classes and dependency-bound state identity;
-- bounded proposal/state/history/occurrence containers, including bounded iterable consumption;
+- semantic epistemic identity that excludes fresh-versus-cache delivery metadata while preserving it in the AI projection;
+- strategy-specific, typed, finite parameter allowlists bound into strategy identity;
+- bounded proposal/state/history/occurrence containers, with bounded consumption at every model-facing iterable boundary;
 - canonical rejection codes, recovery actions, compact state projection, and logical orchestration ticks;
 - byte-stable, model-free conformance fixtures.
 

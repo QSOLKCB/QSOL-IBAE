@@ -44,6 +44,9 @@ from .orchestration import (
     RejectionReason,
     ReplaySafety,
     Strategy,
+    StrategyParameterSpec,
+    StrategySchema,
+    StrategyValueKind,
     admit_batch,
 )
 from .policy import PolicyViolation, require_openai_remote_provider
@@ -83,6 +86,9 @@ __all__ = [
     "RejectionReason",
     "ReplaySafety",
     "Strategy",
+    "StrategyParameterSpec",
+    "StrategySchema",
+    "StrategyValueKind",
     "admit_batch",
     "canonical_fingerprint",
     "canonical_json",

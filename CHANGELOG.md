@@ -10,7 +10,9 @@ All notable changes to QSOL-IBAE will be documented here.
 - canonical obligation registry, dependency DAG, ready-set calculation, and stable obligation IDs.
 - immutable bounded batch proposals, orchestrator-owned replay classification, safe replay-only deduplication, explicit effect sequencing, and persistent bounded occurrence ownership.
 - explicit observed, derived, model-proposed, and unknown state records with provenance-aware dependency identity; proposed values cannot resolve admitted dependencies.
-- versioned logical clock, capability, strategy, proposal, action, state, event, admission receipt, rejection, and recovery records.
+- reuse-path metadata remains visible but cannot alter epistemic, action, or orchestration correctness identity.
+- versioned logical clock, capability, typed strategy-schema, proposal, action, state, event, admission receipt, rejection, and recovery records.
+- bounded consumption at every model-facing collection boundary.
 - compact AI-facing state projection with actionable obligation/blocker context and a byte-stable v0.2 conformance fixture.
 - v0.1 deterministic execution kernel.
 - invariant registry and architecture contract.

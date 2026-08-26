@@ -8,15 +8,17 @@ from dataclasses import dataclass, replace
 from enum import Enum
 
 from ._records import (
-    materialize_iterable,
+    materialize_bounded_iterable,
+    require_bounded_positive_int,
     require_fingerprint,
-    require_positive_int,
     require_symbol,
     require_text,
 )
 from .canonical import domain_fingerprint
 
 OBLIGATION_ID_DOMAIN = "ibae.obligation-id.v1"
+MAX_OBLIGATIONS = 128
+MAX_OBLIGATION_DEPENDENCIES = MAX_OBLIGATIONS - 1
 
 
 class ObligationStatus(str, Enum):
@@ -54,7 +56,13 @@ class Obligation:
             raise TypeError("status must be an ObligationStatus")
 
         dependencies = tuple(
-            sorted(materialize_iterable("dependency_ids", self.dependency_ids))
+            sorted(
+                materialize_bounded_iterable(
+                    "dependency_ids",
+                    self.dependency_ids,
+                    limit=MAX_OBLIGATION_DEPENDENCIES,
+                )
+            )
         )
         if len(dependencies) != len(set(dependencies)):
             raise ValueError("obligation dependencies must be unique")
@@ -99,11 +107,17 @@ class ObligationRegistry:
     """Immutable, bounded obligation registry with a validated DAG."""
 
     obligations: tuple[Obligation, ...]
-    max_obligations: int = 128
+    max_obligations: int = MAX_OBLIGATIONS
 
     def __post_init__(self) -> None:
-        require_positive_int("max_obligations", self.max_obligations)
-        supplied = materialize_iterable("obligations", self.obligations)
+        require_bounded_positive_int(
+            "max_obligations", self.max_obligations, MAX_OBLIGATIONS
+        )
+        supplied = materialize_bounded_iterable(
+            "obligations",
+            self.obligations,
+            limit=self.max_obligations,
+        )
         if any(not isinstance(item, Obligation) for item in supplied):
             raise TypeError("obligations must contain Obligation records")
         obligations = tuple(sorted(supplied, key=lambda item: item.obligation_id))
@@ -132,9 +146,17 @@ class ObligationRegistry:
         cls,
         obligations: Iterable[Obligation],
         *,
-        max_obligations: int = 128,
+        max_obligations: int = MAX_OBLIGATIONS,
     ) -> ObligationRegistry:
-        return cls(tuple(obligations), max_obligations=max_obligations)
+        require_bounded_positive_int(
+            "max_obligations", max_obligations, MAX_OBLIGATIONS
+        )
+        return cls(
+            materialize_bounded_iterable(
+                "obligations", obligations, limit=max_obligations
+            ),
+            max_obligations=max_obligations,
+        )
 
     def _by_id(self) -> dict[str, Obligation]:
         return {item.obligation_id: item for item in self.obligations}

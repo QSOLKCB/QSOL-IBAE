@@ -28,12 +28,54 @@ from ibae import (
     RejectionReason,
     ReplaySafety,
     Strategy,
+    StrategyParameterSpec,
+    StrategySchema,
+    StrategyValueKind,
     admit_batch,
     canonical_json,
     canonical_obligation_id,
     domain_fingerprint,
 )
 from ibae.conformance import v0_2_reference_fixture
+
+_DEFAULT_STRATEGY_SCHEMA = StrategySchema(
+    "default",
+    (
+        StrategyParameterSpec(
+            "version",
+            StrategyValueKind.BOUNDED_INTEGER,
+            minimum=1,
+            maximum=1,
+        ),
+    ),
+)
+_STABLE_STRATEGY_SCHEMA = StrategySchema(
+    "stable",
+    (
+        StrategyParameterSpec(
+            "steps",
+            StrategyValueKind.SYMBOL_LIST,
+            required=False,
+            allowed_symbols=("one",),
+        ),
+    ),
+)
+_SEMANTIC_STRATEGY_SCHEMA = StrategySchema(
+    "semantic",
+    (
+        StrategyParameterSpec(
+            "algorithm",
+            StrategyValueKind.SYMBOL,
+            allowed_symbols=("stable",),
+        ),
+        StrategyParameterSpec(
+            "version",
+            StrategyValueKind.BOUNDED_INTEGER,
+            minimum=1,
+            maximum=1,
+        ),
+    ),
+)
 
 
 def _provenance(*, revision: int = 1, reused: bool = False) -> ObservationProvenance:
@@ -81,7 +123,11 @@ def _batch(
 ) -> ProposalBatch:
     return ProposalBatch(
         key,
-        Strategy("default", {"version": 1}),
+        Strategy(
+            "default",
+            {"version": 1},
+            schema=_DEFAULT_STRATEGY_SCHEMA,
+        ),
         proposals,
         ordering=ordering,
     )
@@ -258,6 +304,40 @@ def test_epistemic_dependency_digest_includes_transitive_state() -> None:
     )
 
 
+def test_observation_reuse_path_does_not_change_correctness_identity() -> None:
+    def build(reused: bool) -> tuple[EpistemicRecord, EpistemicState]:
+        record = EpistemicRecord(
+            "source",
+            EpistemicClass.OBSERVED,
+            {"revision": 1},
+            provenance=_provenance(reused=reused),
+        )
+        return record, EpistemicState.from_iterable((record,))
+
+    cold_record, cold_epistemic = build(False)
+    reused_record, reused_epistemic = build(True)
+    assert cold_record.record_id == reused_record.record_id
+    assert cold_epistemic.dependency_digest(("source",)) == (
+        reused_epistemic.dependency_digest(("source",))
+    )
+    assert cold_epistemic.identity_record() == reused_epistemic.identity_record()
+    assert cold_epistemic.projection() != reused_epistemic.projection()
+    assert reused_epistemic.projection()["observed"][0]["provenance"]["reused"]
+
+    cold_state, cold_obligation = _ready_state(epistemic_state=cold_epistemic)
+    reused_state, reused_obligation = _ready_state(epistemic_state=reused_epistemic)
+    cold_action = admit_batch(
+        cold_state,
+        _batch(_proposal(cold_obligation, required_state_keys=("source",))),
+    ).receipt.decisions[0].action_id
+    reused_action = admit_batch(
+        reused_state,
+        _batch(_proposal(reused_obligation, required_state_keys=("source",))),
+    ).receipt.decisions[0].action_id
+    assert cold_state.state_id == reused_state.state_id
+    assert cold_action == reused_action
+
+
 def test_derived_state_cannot_claim_known_value_from_unknown_input() -> None:
     with pytest.raises(ValueError, match="unresolved dependencies"):
         EpistemicState.from_iterable(
@@ -306,18 +386,22 @@ def test_model_proposed_state_cannot_resolve_admission_dependencies() -> None:
 def test_strategy_and_proposal_payloads_are_mutation_isolated() -> None:
     state, obligation = _ready_state()
     arguments = {"items": [1]}
-    parameters = {"order": [1]}
-    strategy = Strategy("stable", parameters)
+    parameters = {"steps": ["one"]}
+    strategy = Strategy(
+        "stable",
+        parameters,
+        schema=_STABLE_STRATEGY_SCHEMA,
+    )
     proposal = _proposal(obligation, arguments=arguments)
     proposal_id = proposal.proposal_id
     strategy_id = strategy.strategy_id
 
     arguments["items"].append(2)
-    parameters["order"].append(2)
+    parameters["steps"].append("two")
     proposal.arguments["items"].append(3)
-    strategy.parameters["order"].append(3)
+    strategy.parameters["steps"].append("two")
     assert proposal.arguments == {"items": [1]}
-    assert strategy.parameters == {"order": [1]}
+    assert strategy.parameters == {"steps": ["one"]}
     assert proposal.proposal_id == proposal_id
     assert strategy.strategy_id == strategy_id
     assert state.logical_tick == 0
@@ -330,25 +414,68 @@ def test_strategy_and_proposal_payloads_are_mutation_isolated() -> None:
         {"runtime": {"wall_clock": "2026-08-26T10:00:00Z"}},
         {"started-at": "2026-08-26T10:00:00Z"},
         {"elapsedSeconds": 3},
+        {"run_started": "2026-08-26T10:00:00Z"},
+        {"epoch": 1787720400},
+        {"utc_now": "2026-08-26T10:00:00Z"},
     ),
 )
 def test_strategy_identity_rejects_observational_timing_metadata(
     parameters: object,
 ) -> None:
-    with pytest.raises(ValueError, match="observational metadata"):
-        Strategy("invalid-timing", parameters)
+    with pytest.raises(ValueError, match="not allowed by the schema"):
+        Strategy(
+            "invalid-timing",
+            parameters,
+            schema=StrategySchema("invalid-timing"),
+        )
 
-    strategy = Strategy("semantic", {"algorithm": "stable", "version": 1})
+    strategy = Strategy(
+        "semantic",
+        {"algorithm": "stable", "version": 1},
+        schema=_SEMANTIC_STRATEGY_SCHEMA,
+    )
     assert strategy.canonical_record()["parameter_schema"] == (
         "IBAE-STRATEGY-PARAMETERS-V1"
     )
+    assert strategy.canonical_record()["parameter_schema_id"] == (
+        _SEMANTIC_STRATEGY_SCHEMA.schema_id
+    )
+
+
+def test_strategy_schema_identity_and_value_constraints_are_authoritative() -> None:
+    revised = StrategySchema(
+        "semantic",
+        _SEMANTIC_STRATEGY_SCHEMA.parameter_specs,
+        contract_version=2,
+    )
+    first = Strategy(
+        "semantic",
+        {"algorithm": "stable", "version": 1},
+        schema=_SEMANTIC_STRATEGY_SCHEMA,
+    )
+    second = Strategy(
+        "semantic",
+        {"algorithm": "stable", "version": 1},
+        schema=revised,
+    )
+    assert first.strategy_id != second.strategy_id
+    with pytest.raises(ValueError, match="between 1 and 1"):
+        Strategy(
+            "semantic",
+            {"algorithm": "stable", "version": 1787720400},
+            schema=_SEMANTIC_STRATEGY_SCHEMA,
+        )
 
 
 def test_proposal_batch_normalizes_caller_owned_sequence() -> None:
     _, obligation = _ready_state()
     first = _proposal(obligation, key="first")
     proposals = [first]
-    batch = ProposalBatch("isolated-batch", Strategy("stable", {}), proposals)
+    batch = ProposalBatch(
+        "isolated-batch",
+        Strategy("stable", {}, schema=_STABLE_STRATEGY_SCHEMA),
+        proposals,
+    )
     proposals.append(_proposal(obligation, key="second", arguments={"n": 2}))
     assert batch.proposals == (first,)
 
@@ -368,11 +495,164 @@ def test_proposal_batch_stops_consuming_at_the_protocol_hard_limit() -> None:
             )
 
     with pytest.raises(ValueError, match="hard limit"):
-        ProposalBatch("bounded", Strategy("stable", {}), proposals())
+        ProposalBatch(
+            "bounded",
+            Strategy("stable", {}, schema=_STABLE_STRATEGY_SCHEMA),
+            proposals(),
+        )
     assert consumed == MAX_PROPOSALS_PER_BATCH + 1
 
     with pytest.raises(ValueError, match="protocol hard limit"):
         OrchestrationLimits(max_batch_proposals=MAX_PROPOSALS_PER_BATCH + 1)
+
+
+def test_all_model_facing_collection_boundaries_use_bounded_consumption() -> None:
+    consumed: dict[str, int] = {}
+
+    def stream(name: str, count: int, factory: object) -> object:
+        for index in range(count):
+            consumed[name] = consumed.get(name, 0) + 1
+            yield factory(index)
+
+    obligation_id = canonical_obligation_id("bounded-target")
+    with pytest.raises(ValueError, match="hard limit"):
+        Obligation(
+            "bounded-dependencies",
+            "Bound dependency input.",
+            dependency_ids=stream(
+                "obligation-dependencies",
+                200,
+                lambda index: domain_fingerprint(
+                    "ibae.test-obligation-dependency.v1", {"index": index}
+                ),
+            ),
+        )
+    assert consumed["obligation-dependencies"] == 128
+
+    with pytest.raises(ValueError, match="hard limit"):
+        EpistemicRecord(
+            "bounded-derived",
+            EpistemicClass.DERIVED,
+            True,
+            dependencies=stream(
+                "epistemic-dependencies",
+                300,
+                lambda index: f"dependency-{index}",
+            ),
+        )
+    assert consumed["epistemic-dependencies"] == 256
+
+    with pytest.raises(ValueError, match="hard limit"):
+        Capability(
+            "bounded-capability",
+            ReplaySafety.CACHEABLE_READ,
+            "Bound capability dependencies.",
+            required_state_keys=stream(
+                "capability-state-keys",
+                200,
+                lambda index: f"state-{index}",
+            ),
+        )
+    assert consumed["capability-state-keys"] == 129
+
+    with pytest.raises(ValueError, match="hard limit"):
+        ActionProposal(
+            "bounded-targets",
+            "read",
+            {},
+            target_obligation_ids=stream(
+                "proposal-targets",
+                200,
+                lambda index: domain_fingerprint(
+                    "ibae.test-proposal-target.v1", {"index": index}
+                ),
+            ),
+        )
+    assert consumed["proposal-targets"] == 129
+
+    with pytest.raises(ValueError, match="hard limit"):
+        ActionProposal(
+            "bounded-state",
+            "read",
+            {},
+            target_obligation_ids=(obligation_id,),
+            required_state_keys=stream(
+                "proposal-state-keys",
+                200,
+                lambda index: f"state-{index}",
+            ),
+        )
+    assert consumed["proposal-state-keys"] == 129
+
+    with pytest.raises(ValueError, match="hard limit"):
+        ObligationRegistry.from_iterable(
+            stream(
+                "obligation-registry",
+                10,
+                lambda index: Obligation(
+                    f"registry-{index}", f"Registry obligation {index}."
+                ),
+            ),
+            max_obligations=2,
+        )
+    assert consumed["obligation-registry"] == 3
+
+    with pytest.raises(ValueError, match="hard limit"):
+        EpistemicState.from_iterable(
+            stream(
+                "epistemic-registry",
+                10,
+                lambda index: EpistemicRecord(
+                    f"record-{index}", EpistemicClass.MODEL_PROPOSED, index
+                ),
+            ),
+            max_records=2,
+        )
+    assert consumed["epistemic-registry"] == 3
+
+    with pytest.raises(ValueError, match="hard limit"):
+        OrchestrationState.create(
+            (Obligation("bounded-state-root", "Bound state registry."),),
+            capabilities=stream(
+                "capability-registry",
+                10,
+                lambda index: Capability(
+                    f"capability-{index}",
+                    ReplaySafety.CACHEABLE_READ,
+                    f"Capability {index}.",
+                ),
+            ),
+            limits=OrchestrationLimits(max_capabilities=2),
+        )
+    assert consumed["capability-registry"] == 3
+
+    with pytest.raises(ValueError, match="hard limit"):
+        StrategySchema(
+            "bounded-schema",
+            stream(
+                "strategy-specs",
+                100,
+                lambda index: StrategyParameterSpec(
+                    f"parameter-{index}",
+                    StrategyValueKind.BOOLEAN,
+                    required=False,
+                ),
+            ),
+        )
+    assert consumed["strategy-specs"] == 33
+
+    with pytest.raises(ValueError, match="hard limit"):
+        Strategy(
+            "stable",
+            {f"parameter-{index}": True for index in range(40)},
+            schema=_STABLE_STRATEGY_SCHEMA,
+        )
+    with pytest.raises(ValueError, match="hard limit"):
+        Strategy(
+            "stable",
+            {"steps": ["one"] * 65},
+            schema=_STABLE_STRATEGY_SCHEMA,
+        )
 
 
 def test_admission_is_byte_identical_across_input_orderings() -> None:
