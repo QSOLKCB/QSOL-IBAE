@@ -93,7 +93,8 @@ The v0.5 implementation candidate adds objective progress and finite governed
 continuation without changing those frozen v0.2-v0.4 records:
 
 - a versioned integer progress-measure contract over canonical obligation state
-  or governed observed/derived counters;
+  or governed observed/derived counters, bound exactly into continuation
+  policy, state, and native context;
 - closed `measurable_progress`, `no_progress`, `regression`,
   `new_information`, and `incomparable` classifications, with completion
   computed separately and model confidence/activity excluded;
@@ -107,8 +108,9 @@ continuation without changing those frozen v0.2-v0.4 records:
   compact AI recovery state, and no self-extension by runtime, tools, or future
   workers;
 - an opt-in Rust `apply_lease` transition that independently validates a full
-  governance grant, changes only exact limits plus one runtime logical tick,
-  and rejects replay/forgery/stale state without mutation;
+  governance-issued grant plus its non-constructible in-process capability,
+  changes only exact limits plus one runtime logical tick, and rejects
+  unissued/replayed/forged/stale state without mutation;
 - in-process structural checkpoints, a separate fixed-shape continuation
   evidence receipt, semantic continuation partial receipts, and watchdog
   observations that cannot claim completion or lease exhaustion;

@@ -105,6 +105,7 @@ _CONTINUATION_SNAPSHOT_FIELDS = {
     "governance_receipt_id",
     "leases_applied",
     "next_lease_index",
+    "progress_contract_id",
     "protocol_version",
     "task_id",
     "total_ceiling",
@@ -179,6 +180,11 @@ _LEASE_APPLICATION_REASONS = {
     "IBAE-RT-LEASE-REJECT-UNSUPPORTED-RESOURCE": (
         "IBAE-BND-005",
         "IBAE-BND-006",
+    ),
+    "IBAE-RT-LEASE-REJECT-UNISSUED-GRANT": (
+        "IBAE-BND-005",
+        "IBAE-BND-006",
+        "IBAE-PROG-004",
     ),
 }
 _SUPPORTED_COMMAND_TYPES = {"execute_read", "record_retry"}
@@ -992,6 +998,7 @@ class RuntimeContinuationSnapshot:
     governance_receipt_id: str
     continuation_policy_id: str
     continuation_policy_receipt_id: str
+    progress_contract_id: str
     cumulative_granted: RuntimeLeaseResourceVector
     total_ceiling: RuntimeLeaseResourceVector
     applied_grant_ids: tuple[str, ...]
@@ -1013,6 +1020,7 @@ class RuntimeContinuationSnapshot:
             "governance_receipt_id",
             "continuation_policy_id",
             "continuation_policy_receipt_id",
+            "progress_contract_id",
         ):
             if type(record[name]) is not str:
                 raise ValueError(f"runtime continuation {name} must be a fingerprint")
@@ -1053,6 +1061,7 @@ class RuntimeContinuationSnapshot:
             continuation_policy_receipt_id=record[
                 "continuation_policy_receipt_id"
             ],
+            progress_contract_id=record["progress_contract_id"],
             cumulative_granted=cumulative,
             total_ceiling=ceiling,
             applied_grant_ids=applied,
@@ -1065,6 +1074,7 @@ class RuntimeContinuationSnapshot:
             "applied_grant_ids": list(self.applied_grant_ids),
             "continuation_policy_id": self.continuation_policy_id,
             "continuation_policy_receipt_id": self.continuation_policy_receipt_id,
+            "progress_contract_id": self.progress_contract_id,
             "cumulative_granted": self.cumulative_granted.canonical_record(),
             "governance_id": self.governance_id,
             "governance_receipt_id": self.governance_receipt_id,
@@ -1357,11 +1367,17 @@ class RustRuntimeSession:
         self,
         command_json: str,
         operation: Callable[[], Any] | None = None,
+        *,
+        _lease_grant_seal: Any | None = None,
     ) -> RuntimeTransition:
         if not isinstance(command_json, str):
             raise TypeError("command_json must be canonical text")
         callback = None if operation is None else self._invocation(operation)
-        outcome_text, native_seal = self.__native.dispatch(command_json, callback)
+        outcome_text, native_seal = self.__native.dispatch(
+            command_json,
+            callback,
+            _lease_grant_seal,
+        )
         outcome = CanonicalRuntimeRecord(outcome_text).to_value()
         receipt_record = outcome["receipt"]
         if (
@@ -1528,12 +1544,34 @@ class RustRuntimeSession:
 
         if type(grant) is not LeaseGrantReceipt:
             raise TypeError("grant must be an exact LeaseGrantReceipt")
-        return self.dispatch_protocol(
+        envelope = CanonicalRuntimeRecord.from_value(
             {
                 "command_type": "apply_lease",
                 "grant_receipt": grant.canonical_record(),
                 "protocol_version": RUNTIME_PROTOCOL_VERSION,
             }
+        )
+        return self.dispatch_canonical(
+            envelope.text,
+            _lease_grant_seal=grant._native_source_seal(),
+        )
+
+    def _issue_governance_lease_grant(self, grant: Any) -> Any:
+        """Mint the native in-process capability for one exact live grant.
+
+        This is an internal governance-to-runtime bridge. The native session
+        independently verifies its current state, policy, schedule, ceiling,
+        and canonical grant before emitting a non-constructible seal.
+        """
+
+        from .continuation import LeaseGrantReceipt
+
+        if type(grant) is not LeaseGrantReceipt:
+            raise TypeError("grant must be an exact LeaseGrantReceipt")
+        if grant.source_bound:
+            raise ValueError("lease grant is already source-bound")
+        return self.__native.issue_lease_grant(
+            canonical_json(grant.canonical_record())
         )
 
     def apply_lease(self, grant: Any) -> RuntimeLeaseApplicationReceipt:

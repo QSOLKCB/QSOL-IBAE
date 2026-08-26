@@ -44,12 +44,14 @@ read coverage alone.
 v0.5 adds `IBAE-OBJECTIVE-PROGRESS-V1` and
 `IBAE-CONTINUATION-LEASE-V1`. Progress is an exact comparison of declared
 obligation/evidence measures; activity, confidence, and wall time are not
-progress authority. Structured strategy changes bind admitted strategy,
+progress authority. Policy, state, and native context bind the exact admitted
+progress contract and its prior/current orchestration lineage. Structured strategy changes bind admitted strategy,
 capability frontier, targets, dependency path, recovery mode, and cycle
 evidence; paraphrase is excluded from identity. Governance precommits an exact
 initial budget, finite indexed schedule, cumulative ceiling, request cap, and
 strategy-recovery cap. The supervisor requests, governance grants or denies,
-and an opt-in Rust session applies a full validated grant with an exact
+and an opt-in Rust session applies only a full validated governance-issued
+grant carrying a non-constructible in-process capability with an exact
 `apply_lease` transition. An accepted application changes exact limits plus one
 runtime logical tick while consuming no tool/runtime resource counter or
 history; rejection is state-neutral. Structural in-process checkpoints,

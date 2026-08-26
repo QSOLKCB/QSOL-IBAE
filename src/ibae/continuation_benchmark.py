@@ -16,6 +16,7 @@ from .continuation import (
     ContinuationPartialReason,
     ContinuationPolicy,
     ProgressClassification,
+    default_obligation_progress_contract,
     experimental_continuation_profile,
 )
 
@@ -76,6 +77,7 @@ def _policy(
         lease_schedule=schedule,
         total_ceiling=base.add_checked(_sum(schedule)),
         max_lease_requests=len(schedule) * 2,
+        progress_contract_id=default_obligation_progress_contract().contract_id,
         max_strategy_recoveries=1,
     )
 

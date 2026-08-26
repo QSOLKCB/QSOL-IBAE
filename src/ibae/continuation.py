@@ -15,7 +15,7 @@ not task completion.
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import Any, Final
 
@@ -39,6 +39,7 @@ from .runtime import (
     MAX_RUNTIME_RETRIES,
     RuntimeLeaseApplicationReceipt,
     RuntimeSnapshot,
+    RustRuntimeSession,
 )
 
 CONTINUATION_PROTOCOL_VERSION: Final = "IBAE-CONTINUATION-LEASE-V1"
@@ -349,6 +350,7 @@ class ContinuationPolicy:
     lease_schedule: tuple[BudgetVector, ...]
     total_ceiling: BudgetVector
     max_lease_requests: int
+    progress_contract_id: str
     admitted_progress: tuple[ProgressClassification, ...] = (
         ProgressClassification.MEASURABLE_PROGRESS,
     )
@@ -379,6 +381,9 @@ class ContinuationPolicy:
             raise ValueError("max_lease_requests is outside the v1 hard bound")
         if self.max_lease_requests < len(schedule):
             raise ValueError("max_lease_requests cannot be smaller than lease count")
+        require_fingerprint(
+            "continuation progress contract id", self.progress_contract_id
+        )
         _u64("max_strategy_recoveries", self.max_strategy_recoveries)
         if self.max_strategy_recoveries > len(schedule):
             raise ValueError("strategy recoveries cannot exceed scheduled leases")
@@ -393,12 +398,10 @@ class ContinuationPolicy:
         if any(not isinstance(item, ProgressClassification) for item in admitted):
             raise TypeError("admitted_progress contains an unknown classification")
         admitted = tuple(sorted(set(admitted), key=lambda item: item.value))
-        if ProgressClassification.NO_PROGRESS in admitted:
-            raise ValueError("no_progress cannot justify continuation")
-        if ProgressClassification.REGRESSION in admitted:
-            raise ValueError("regression cannot justify continuation")
-        if ProgressClassification.INCOMPARABLE in admitted:
-            raise ValueError("incomparable state cannot justify continuation")
+        if admitted != (ProgressClassification.MEASURABLE_PROGRESS,):
+            raise ValueError(
+                "only measurable_progress may independently justify continuation"
+            )
         object.__setattr__(self, "admitted_progress", admitted)
 
         if self.initial_budget.mutation_delta != 0:
@@ -460,6 +463,7 @@ class ContinuationPolicy:
             "max_strategy_recoveries": self.max_strategy_recoveries,
             "policy_key": self.policy_key,
             "policy_version": self.policy_version,
+            "progress_contract_id": self.progress_contract_id,
             "protocol_version": CONTINUATION_PROTOCOL_VERSION,
             "task_profile": self.task_profile,
             "task_profile_version": self.task_profile_version,
@@ -473,6 +477,7 @@ class ContinuationPolicyReceipt:
     governance_id: str
     governance_receipt_id: str
     continuation_policy_id: str
+    progress_contract_id: str
     task_profile: str
     task_profile_version: int
 
@@ -503,6 +508,9 @@ class ContinuationPolicyReceipt:
         object.__setattr__(
             self, "continuation_policy_id", policy.continuation_policy_id
         )
+        object.__setattr__(
+            self, "progress_contract_id", policy.progress_contract_id
+        )
         object.__setattr__(self, "task_profile", policy.task_profile)
         object.__setattr__(
             self, "task_profile_version", policy.task_profile_version
@@ -520,6 +528,7 @@ class ContinuationPolicyReceipt:
                 "continuation_policy_id": self.continuation_policy_id,
                 "governance_id": self.governance_id,
                 "governance_receipt_id": self.governance_receipt_id,
+                "progress_contract_id": self.progress_contract_id,
                 "protocol_version": CONTINUATION_POLICY_RECEIPT_VERSION,
                 "status": "admitted",
                 "task_id": self.task_id,
@@ -540,6 +549,15 @@ class ProgressDimension:
         require_symbol("progress dimension key", self.key)
         _enum("progress source", self.source, ProgressSource)
         _enum("progress direction", self.direction, ProgressDirection)
+        required_direction = {
+            ProgressSource.UNSATISFIED_OBLIGATION_COUNT: ProgressDirection.DECREASE,
+            ProgressSource.BLOCKED_OBLIGATION_COUNT: ProgressDirection.DECREASE,
+            ProgressSource.SATISFIED_OBLIGATION_COUNT: ProgressDirection.INCREASE,
+        }.get(self.source)
+        if required_direction is not None and self.direction is not required_direction:
+            raise ValueError(
+                "canonical obligation progress source has an unsafe direction"
+            )
         if self.completion_threshold is not None:
             _u64("progress completion threshold", self.completion_threshold)
         if (
@@ -601,6 +619,22 @@ class ProgressMeasureContract:
             "dimensions": [item.canonical_record() for item in self.dimensions],
             "protocol_version": PROGRESS_PROTOCOL_VERSION,
         }
+
+
+def default_obligation_progress_contract() -> ProgressMeasureContract:
+    """Return the exact built-in obligation progress contract for v0.5 presets."""
+
+    return ProgressMeasureContract(
+        "ibae.obligation-progress",
+        1,
+        (
+            ProgressDimension(
+                "unsatisfied",
+                ProgressSource.UNSATISFIED_OBLIGATION_COUNT,
+                ProgressDirection.DECREASE,
+            ),
+        ),
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -1030,6 +1064,8 @@ class StrategyMaterialization:
             target_obligation_ids,
             limit=MAX_STRATEGY_TARGETS,
         )
+        if not targets:
+            raise ValueError("recovery strategy requires at least one target obligation")
         dependencies = _fingerprints(
             "strategy dependency path",
             dependency_path,
@@ -1209,6 +1245,8 @@ def _profile_policy(
     name: str,
     base: BudgetVector,
     schedule: tuple[BudgetVector, ...],
+    *,
+    progress_contract: ProgressMeasureContract,
 ) -> ContinuationPolicy:
     ceiling = base
     for item in schedule:
@@ -1222,11 +1260,16 @@ def _profile_policy(
         lease_schedule=schedule,
         total_ceiling=ceiling,
         max_lease_requests=max(2, len(schedule) * 2),
+        progress_contract_id=progress_contract.contract_id,
         max_strategy_recoveries=min(1, len(schedule)),
     )
 
 
-def experimental_continuation_profile(name: str) -> ContinuationPolicy:
+def experimental_continuation_profile(
+    name: str,
+    *,
+    progress_contract: ProgressMeasureContract | None = None,
+) -> ContinuationPolicy:
     """Return one exact version-1 benchmark preset.
 
     These values are experimental policy fixtures, not universal optimal
@@ -1234,6 +1277,13 @@ def experimental_continuation_profile(name: str) -> ContinuationPolicy:
     """
 
     require_symbol("continuation profile name", name)
+    active_contract = (
+        default_obligation_progress_contract()
+        if progress_contract is None
+        else progress_contract
+    )
+    if type(active_contract) is not ProgressMeasureContract:
+        raise TypeError("progress_contract must be an exact ProgressMeasureContract")
     profiles = {
         "tiny": (
             BudgetVector(8, 4, 2, 0, 8),
@@ -1267,7 +1317,12 @@ def experimental_continuation_profile(name: str) -> ContinuationPolicy:
         base, schedule = profiles[name]
     except KeyError as exc:
         raise ValueError("unknown experimental continuation profile") from exc
-    return _profile_policy(name, base, schedule)
+    return _profile_policy(
+        name,
+        base,
+        schedule,
+        progress_contract=active_contract,
+    )
 
 
 def _initial_decision_aggregate(
@@ -1308,6 +1363,7 @@ class ContinuationState:
     governance_receipt_id: str
     continuation_policy_id: str
     continuation_policy_receipt_id: str
+    progress_contract_id: str
     orchestration_state_id: str
     runtime_session_id: str
     runtime_state_id: str
@@ -1338,6 +1394,7 @@ class ContinuationState:
                 "continuation policy receipt id",
                 self.continuation_policy_receipt_id,
             ),
+            ("continuation progress contract id", self.progress_contract_id),
             ("continuation orchestration state id", self.orchestration_state_id),
             ("continuation runtime session id", self.runtime_session_id),
             ("continuation runtime state id", self.runtime_state_id),
@@ -1407,6 +1464,7 @@ class ContinuationState:
         orchestration_state: OrchestrationState,
         runtime_snapshot: RuntimeSnapshot,
         strategy: StrategyMaterialization | None = None,
+        progress: ProgressRecord | None = None,
     ) -> ContinuationState:
         if type(policy) is not ContinuationPolicy:
             raise TypeError("policy must be an exact ContinuationPolicy")
@@ -1414,6 +1472,8 @@ class ContinuationState:
             raise TypeError("policy_receipt must be an exact policy receipt")
         if policy_receipt.continuation_policy_id != policy.continuation_policy_id:
             raise ValueError("continuation policy receipt identity mismatch")
+        if policy_receipt.progress_contract_id != policy.progress_contract_id:
+            raise ValueError("continuation progress contract receipt mismatch")
         if type(orchestration_state) is not OrchestrationState:
             raise TypeError("orchestration_state must be exact OrchestrationState")
         if not isinstance(runtime_snapshot, RuntimeSnapshot):
@@ -1430,6 +1490,8 @@ class ContinuationState:
             != policy.continuation_policy_id
             or native_continuation.continuation_policy_receipt_id
             != policy_receipt.receipt_id
+            or native_continuation.progress_contract_id
+            != policy.progress_contract_id
         ):
             raise ValueError("native continuation context authority binding mismatch")
         if native_continuation.leases_applied != 0 or not all(
@@ -1453,12 +1515,24 @@ class ContinuationState:
             raise ValueError("runtime base limits do not match continuation policy")
         if strategy is not None and type(strategy) is not StrategyMaterialization:
             raise TypeError("strategy must be exact StrategyMaterialization or None")
+        if progress is not None:
+            if type(progress) is not ProgressRecord:
+                raise TypeError("progress must be an exact ProgressRecord or None")
+            if (
+                progress.task_id != policy_receipt.task_id
+                or progress.governance_id != policy_receipt.governance_id
+                or progress.contract.contract_id != policy.progress_contract_id
+                or progress.current_orchestration_state_id
+                != orchestration_state.state_id
+            ):
+                raise ValueError("initial progress does not bind continuation context")
         return cls(
             task_id=policy_receipt.task_id,
             governance_id=policy_receipt.governance_id,
             governance_receipt_id=policy_receipt.governance_receipt_id,
             continuation_policy_id=policy.continuation_policy_id,
             continuation_policy_receipt_id=policy_receipt.receipt_id,
+            progress_contract_id=policy.progress_contract_id,
             orchestration_state_id=orchestration_state.state_id,
             runtime_session_id=runtime_snapshot.session_id,
             runtime_state_id=runtime_snapshot.state_id,
@@ -1477,8 +1551,12 @@ class ContinuationState:
             current_strategy_material_id=(
                 None if strategy is None else strategy.strategy_material_id
             ),
-            last_progress_id=None,
-            last_progress_classification=None,
+            last_progress_id=(
+                None if progress is None else progress.progress_id
+            ),
+            last_progress_classification=(
+                None if progress is None else progress.classification
+            ),
             last_decision="none",
             last_denial_reason=None,
             progress_state=ProgressState.STALLED,
@@ -1507,6 +1585,14 @@ class ContinuationState:
             raise TypeError("policy must be an exact ContinuationPolicy")
         if policy.continuation_policy_id != self.continuation_policy_id:
             raise ValueError("continuation state policy identity mismatch")
+        if policy.progress_contract_id != self.progress_contract_id:
+            raise ValueError("continuation state progress contract mismatch")
+        if self.leases_granted > policy.max_leases:
+            raise ValueError("continuation state exceeds the policy lease count")
+        if self.lease_requests > policy.max_lease_requests:
+            raise ValueError("continuation state exceeds the request ceiling")
+        if self.strategy_recoveries > policy.max_strategy_recoveries:
+            raise ValueError("continuation state exceeds strategy recovery capacity")
 
     def compact_projection(self, policy: ContinuationPolicy) -> dict[str, Any]:
         self._require_policy(policy)
@@ -1524,6 +1610,7 @@ class ContinuationState:
             recovery_actions = ["apply_pending_lease"]
         return {
             "continuation_policy_id": self.continuation_policy_id,
+            "progress_contract_id": self.progress_contract_id,
             "continuation_state_id": self.continuation_state_id,
             "current_progress_classification": (
                 None
@@ -1557,6 +1644,7 @@ class ContinuationState:
             "continuation_logical_tick": self.continuation_logical_tick,
             "continuation_policy_id": self.continuation_policy_id,
             "continuation_policy_receipt_id": self.continuation_policy_receipt_id,
+            "progress_contract_id": self.progress_contract_id,
             "cumulative_granted": self.cumulative_granted.canonical_record(),
             "current_strategy_material_id": self.current_strategy_material_id,
             "decision_aggregate_id": self.decision_aggregate_id,
@@ -1623,6 +1711,8 @@ def observe_continuation_context(
         != state.continuation_policy_id
         or native_continuation.continuation_policy_receipt_id
         != state.continuation_policy_receipt_id
+        or native_continuation.progress_contract_id
+        != state.progress_contract_id
         or native_continuation.leases_applied != state.leases_granted
         or native_continuation.cumulative_granted.canonical_record()
         != state.cumulative_granted.canonical_record()
@@ -1645,9 +1735,16 @@ def observe_continuation_context(
         if (
             progress.task_id != state.task_id
             or progress.governance_id != state.governance_id
+            or progress.contract.contract_id != state.progress_contract_id
+            or progress.prior_orchestration_state_id
+            != state.orchestration_state_id
             or progress.current_orchestration_state_id != orchestration_state.state_id
         ):
             raise ValueError("progress does not bind the observed context")
+    elif orchestration_state.state_id != state.orchestration_state_id:
+        raise ValueError(
+            "orchestration state cannot advance without exact progress lineage"
+        )
     if strategy is not None and type(strategy) is not StrategyMaterialization:
         raise TypeError("strategy must be exact StrategyMaterialization or None")
     return replace(
@@ -1734,6 +1831,8 @@ def commit_lease_application(
         != state.continuation_policy_id
         or native_continuation.continuation_policy_receipt_id
         != state.continuation_policy_receipt_id
+        or native_continuation.progress_contract_id
+        != state.progress_contract_id
         or native_continuation.leases_applied != state.leases_granted
         or native_continuation.applied_grant_ids[-1:] != (grant.lease_grant_id,)
         or native_continuation.cumulative_granted.canonical_record()
@@ -1814,6 +1913,15 @@ class ContinuationRequest:
             strategy_change
         ) is not StrategyChangeReceipt:
             raise TypeError("strategy_change must be exact receipt or None")
+        if (
+            progress.task_id != state.task_id
+            or progress.governance_id != state.governance_id
+            or progress.contract.contract_id != state.progress_contract_id
+            or progress.current_orchestration_state_id
+            != state.orchestration_state_id
+            or progress.progress_id != state.last_progress_id
+        ):
+            raise ValueError("progress does not match the live continuation ledger")
         return cls(
             task_id=state.task_id,
             governance_id=state.governance_id,
@@ -1876,6 +1984,7 @@ class LeaseGrantReceipt:
     cumulative_granted: BudgetVector
     total_ceiling: BudgetVector
     decision_logical_tick: int
+    _native_seal: Any | None = field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         for name, value in (
@@ -1914,6 +2023,15 @@ class LeaseGrantReceipt:
             raise ValueError("v0.5 lease grants cannot authorize mutations")
         if not self.cumulative_granted.is_within(self.total_ceiling):
             raise ValueError("cumulative lease resources exceed the total ceiling")
+        if self._native_seal is not None:
+            from ._runtime import NativeLeaseGrantSeal
+
+            if type(self._native_seal) is not NativeLeaseGrantSeal:
+                raise TypeError("lease grant requires a native governance seal")
+            if not bool(
+                self._native_seal.validates(canonical_json(self.canonical_record()))
+            ):
+                raise ValueError("native lease grant seal does not match its receipt")
 
     def _grant_body(self) -> dict[str, Any]:
         return {
@@ -1952,6 +2070,28 @@ class LeaseGrantReceipt:
             LEASE_GRANT_RECEIPT_ID_DOMAIN,
             {**self._grant_body(), "lease_grant_id": self.lease_grant_id},
         )
+
+    @property
+    def source_bound(self) -> bool:
+        return self._native_seal is not None
+
+    def _with_native_seal(self, seal: Any) -> LeaseGrantReceipt:
+        if self._native_seal is not None:
+            raise ValueError("lease grant is already source-bound")
+        return replace(self, _native_seal=seal)
+
+    def _native_source_seal(self) -> Any | None:
+        if self._native_seal is None:
+            return None
+        from ._runtime import NativeLeaseGrantSeal
+
+        if type(self._native_seal) is not NativeLeaseGrantSeal:
+            raise ValueError("lease grant native source seal is not trusted")
+        if not bool(
+            self._native_seal.validates(canonical_json(self.canonical_record()))
+        ):
+            raise ValueError("lease grant native source seal no longer matches")
+        return self._native_seal
 
 
 @dataclass(frozen=True, slots=True)
@@ -2139,6 +2279,7 @@ def evaluate_continuation(
     state: ContinuationState,
     request: ContinuationRequest,
     *,
+    runtime_session: RustRuntimeSession,
     policy: ContinuationPolicy,
     policy_receipt: ContinuationPolicyReceipt,
     progress: ProgressRecord,
@@ -2158,6 +2299,8 @@ def evaluate_continuation(
         raise TypeError("state must be an exact ContinuationState")
     if type(request) is not ContinuationRequest:
         raise TypeError("request must be an exact ContinuationRequest")
+    if type(runtime_session) is not RustRuntimeSession:
+        raise TypeError("runtime_session must be an exact RustRuntimeSession")
     if type(policy) is not ContinuationPolicy:
         raise TypeError("policy must be an exact ContinuationPolicy")
     if type(policy_receipt) is not ContinuationPolicyReceipt:
@@ -2184,8 +2327,11 @@ def evaluate_continuation(
         or policy_receipt.receipt_id != state.continuation_policy_receipt_id
         or policy_receipt.task_id != state.task_id
         or policy_receipt.governance_id != state.governance_id
+        or policy_receipt.progress_contract_id != state.progress_contract_id
     ):
         raise ValueError("active continuation policy receipt does not bind state")
+
+    live_runtime_snapshot = runtime_session.snapshot
 
     reason: LeaseDenialReason | None = None
     blocking_id: str | None = None
@@ -2202,6 +2348,8 @@ def evaluate_continuation(
     elif (
         request.runtime_session_id != state.runtime_session_id
         or request.runtime_state_id != state.runtime_state_id
+        or live_runtime_snapshot.session_id != state.runtime_session_id
+        or live_runtime_snapshot.state_id != state.runtime_state_id
     ):
         reason = LeaseDenialReason.STALE_RUNTIME_STATE
     elif request.requester is not ContinuationRequester.OPENAI_SUPERVISOR:
@@ -2211,6 +2359,8 @@ def evaluate_continuation(
     elif (
         progress.task_id != state.task_id
         or progress.governance_id != state.governance_id
+        or progress.contract.contract_id != state.progress_contract_id
+        or progress.progress_id != state.last_progress_id
         or progress.current_orchestration_state_id != state.orchestration_state_id
         or request.progress_id != progress.progress_id
     ):
@@ -2334,6 +2484,9 @@ def evaluate_continuation(
         total_ceiling=policy.total_ceiling,
         decision_logical_tick=decision_tick,
     )
+    grant = grant._with_native_seal(
+        runtime_session._issue_governance_lease_grant(grant)
+    )
     used_strategy_recovery = strategy_admitted and (
         cycle_evidence is not None or not progress_admitted
     )
@@ -2387,6 +2540,7 @@ class ContinuationCheckpoint:
     runtime_state_id: str
     continuation_policy_id: str
     continuation_policy_receipt_id: str
+    progress_contract_id: str
     continuation_state_id: str
     progress_id: str | None
     strategy_material_id: str | None
@@ -2394,6 +2548,8 @@ class ContinuationCheckpoint:
     leases_remaining: int
     lease_requests: int
     leases_denied: int
+    strategy_recoveries_used: int
+    strategy_recoveries_remaining: int
     cumulative_granted: BudgetVector
     remaining_capacity: BudgetVector
     compact_evidence_receipt_id: str | None
@@ -2432,14 +2588,46 @@ class ContinuationCheckpoint:
             or runtime_snapshot.state_id != state.runtime_state_id
         ):
             raise ValueError("checkpoint runtime state is stale")
+        native_continuation = runtime_snapshot.continuation
+        if native_continuation is None:
+            raise ValueError("checkpoint requires an opt-in native runtime")
+        if (
+            native_continuation.task_id != state.task_id
+            or native_continuation.governance_id != state.governance_id
+            or native_continuation.governance_receipt_id
+            != state.governance_receipt_id
+            or native_continuation.continuation_policy_id
+            != state.continuation_policy_id
+            or native_continuation.continuation_policy_receipt_id
+            != state.continuation_policy_receipt_id
+            or native_continuation.progress_contract_id
+            != state.progress_contract_id
+            or native_continuation.leases_applied != state.leases_granted
+            or native_continuation.cumulative_granted.canonical_record()
+            != state.cumulative_granted.canonical_record()
+        ):
+            raise ValueError("checkpoint native continuation ledger is stale")
+        expected_limits = policy.initial_budget.add_checked(
+            state.cumulative_granted
+        )
+        if (
+            runtime_snapshot.limits.max_requests != expected_limits.request_delta
+            or runtime_snapshot.limits.max_executions
+            != expected_limits.execution_delta
+            or runtime_snapshot.limits.max_retries != expected_limits.retry_delta
+            or runtime_snapshot.limits.max_history != expected_limits.history_delta
+        ):
+            raise ValueError("checkpoint native continuation limits are stale")
         if progress is not None:
             if type(progress) is not ProgressRecord:
                 raise TypeError("progress must be an exact ProgressRecord")
             if (
                 progress.task_id != state.task_id
                 or progress.governance_id != state.governance_id
+                or progress.contract.contract_id != state.progress_contract_id
                 or progress.current_orchestration_state_id
                 != state.orchestration_state_id
+                or progress.progress_id != state.last_progress_id
             ):
                 raise ValueError("checkpoint progress identity is stale")
         if strategy is not None:
@@ -2475,6 +2663,7 @@ class ContinuationCheckpoint:
             "continuation_policy_receipt_id": (
                 state.continuation_policy_receipt_id
             ),
+            "progress_contract_id": state.progress_contract_id,
             "continuation_state_id": state.continuation_state_id,
             "progress_id": (
                 state.last_progress_id if progress is None else progress.progress_id
@@ -2488,6 +2677,10 @@ class ContinuationCheckpoint:
             "leases_remaining": state.leases_remaining(policy),
             "lease_requests": state.lease_requests,
             "leases_denied": state.leases_denied,
+            "strategy_recoveries_used": state.strategy_recoveries,
+            "strategy_recoveries_remaining": (
+                policy.max_strategy_recoveries - state.strategy_recoveries
+            ),
             "cumulative_granted": state.cumulative_granted,
             "remaining_capacity": state.remaining_capacity(policy),
             "compact_evidence_receipt_id": compact_evidence_receipt_id,
@@ -2512,6 +2705,7 @@ class ContinuationCheckpoint:
             "continuation_logical_tick": self.continuation_logical_tick,
             "continuation_policy_id": self.continuation_policy_id,
             "continuation_policy_receipt_id": self.continuation_policy_receipt_id,
+            "progress_contract_id": self.progress_contract_id,
             "continuation_state_id": self.continuation_state_id,
             "cumulative_granted": self.cumulative_granted.canonical_record(),
             "governance_id": self.governance_id,
@@ -2520,6 +2714,8 @@ class ContinuationCheckpoint:
             "leases_denied": self.leases_denied,
             "leases_remaining": self.leases_remaining,
             "leases_used": self.leases_used,
+            "strategy_recoveries_remaining": self.strategy_recoveries_remaining,
+            "strategy_recoveries_used": self.strategy_recoveries_used,
             "orchestration_logical_tick": self.orchestration_logical_tick,
             "orchestration_state_id": self.orchestration_state_id,
             "partial_reason": (
@@ -2597,6 +2793,7 @@ class ContinuationEvidenceReceipt:
     task_id: str
     governance_id: str
     continuation_policy_id: str
+    progress_contract_id: str
     continuation_state_id: str
     progress_events: int
     leases_requested: int
@@ -2632,8 +2829,26 @@ class ContinuationEvidenceReceipt:
             if (
                 record.task_id != state.task_id
                 or record.governance_id != state.governance_id
+                or record.contract.contract_id != state.progress_contract_id
             ):
                 raise ValueError("progress evidence authority binding mismatch")
+        if state.last_progress_id is None:
+            if records:
+                raise ValueError("progress evidence contradicts an empty live ledger")
+        elif not records or records[-1].progress_id != state.last_progress_id:
+            raise ValueError("progress evidence endpoint does not match live ledger")
+        for prior, current in zip(records, records[1:], strict=False):
+            if (
+                prior.current_orchestration_state_id
+                != current.prior_orchestration_state_id
+            ):
+                raise ValueError("progress evidence is not a contiguous ordered trace")
+        if (
+            records
+            and records[-1].current_orchestration_state_id
+            != state.orchestration_state_id
+        ):
+            raise ValueError("progress evidence endpoint orchestration is stale")
         if compact_execution_evidence_receipt_id is not None:
             require_fingerprint(
                 "compact execution evidence receipt id",
@@ -2643,6 +2858,7 @@ class ContinuationEvidenceReceipt:
             "task_id": state.task_id,
             "governance_id": state.governance_id,
             "continuation_policy_id": state.continuation_policy_id,
+            "progress_contract_id": state.progress_contract_id,
             "continuation_state_id": state.continuation_state_id,
             "progress_events": len(records),
             "leases_requested": state.lease_requests,
@@ -2677,6 +2893,7 @@ class ContinuationEvidenceReceipt:
                 self.compact_execution_evidence_receipt_id
             ),
             "continuation_policy_id": self.continuation_policy_id,
+            "progress_contract_id": self.progress_contract_id,
             "continuation_state_id": self.continuation_state_id,
             "continuation_status": self.continuation_status.value,
             "decision_aggregate_id": self.decision_aggregate_id,
@@ -2805,6 +3022,38 @@ class ContinuationPartialReceipt:
         }.get(reason)
         if required_state is not None and state.progress_state is not required_state:
             raise ValueError("partial reason does not match continuation progress state")
+        required_denial = {
+            ContinuationPartialReason.LEASE_CEILING_EXHAUSTED: (
+                LeaseDenialReason.LEASE_CEILING_REACHED,
+            ),
+            ContinuationPartialReason.NO_PROGRESS: (
+                LeaseDenialReason.NO_MEASURABLE_PROGRESS,
+            ),
+            ContinuationPartialReason.TERMINAL_CYCLE: (
+                LeaseDenialReason.TERMINAL_CYCLE,
+                LeaseDenialReason.STRATEGY_CHANGE_CYCLE_EQUIVALENT,
+            ),
+            ContinuationPartialReason.STRATEGY_RECOVERY_EXHAUSTED: (
+                LeaseDenialReason.STRATEGY_RECOVERY_EXHAUSTED,
+            ),
+        }.get(reason)
+        if required_denial is not None and (
+            state.last_decision != "denied"
+            or state.last_denial_reason not in required_denial
+        ):
+            raise ValueError("partial reason does not match the actual lease denial")
+        if (
+            reason is ContinuationPartialReason.LEASE_CEILING_EXHAUSTED
+            and checkpoint.leases_remaining != 0
+        ):
+            raise ValueError("lease-ceiling partial requires exhausted lease capacity")
+        if (
+            reason is ContinuationPartialReason.STRATEGY_RECOVERY_EXHAUSTED
+            and checkpoint.strategy_recoveries_remaining != 0
+        ):
+            raise ValueError(
+                "strategy-recovery partial requires exhausted recovery capacity"
+            )
         for name, value in (
             ("partial compact evidence receipt id", compact_evidence_receipt_id),
             ("partial execution receipt id", execution_receipt_id),
@@ -2819,6 +3068,10 @@ class ContinuationPartialReceipt:
                 != state.continuation_state_id
                 or watchdog_observation.task_id != state.task_id
                 or watchdog_observation.governance_id != state.governance_id
+                or watchdog_observation.orchestration_state_id
+                != state.orchestration_state_id
+                or watchdog_observation.runtime_state_id
+                != state.runtime_state_id
             ):
                 raise ValueError("watchdog observation does not bind partial state")
             if watchdog_observation.lease_exhausted != (

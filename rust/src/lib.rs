@@ -126,6 +126,7 @@ enum LeaseApplyReason {
     LeaseScheduleExceeded,
     LeaseCeilingExceeded,
     UnsupportedResource,
+    UnissuedGrant,
     ArithmeticOverflow,
 }
 
@@ -141,6 +142,7 @@ impl LeaseApplyReason {
             Self::LeaseScheduleExceeded => "IBAE-RT-LEASE-REJECT-SCHEDULE",
             Self::LeaseCeilingExceeded => "IBAE-RT-LEASE-REJECT-CEILING",
             Self::UnsupportedResource => "IBAE-RT-LEASE-REJECT-UNSUPPORTED-RESOURCE",
+            Self::UnissuedGrant => "IBAE-RT-LEASE-REJECT-UNISSUED-GRANT",
             Self::ArithmeticOverflow => "IBAE-RT-LEASE-REJECT-ARITHMETIC-OVERFLOW",
         }
     }
@@ -156,6 +158,7 @@ impl LeaseApplyReason {
                 &["IBAE-BND-005", "IBAE-BND-007"]
             }
             Self::UnsupportedResource => &["IBAE-BND-005", "IBAE-BND-006"],
+            Self::UnissuedGrant => &["IBAE-BND-005", "IBAE-BND-006", "IBAE-PROG-004"],
             Self::ArithmeticOverflow => &["IBAE-BND-007", "IBAE-CLK-001"],
         }
     }
@@ -614,6 +617,7 @@ impl LeaseResources {
 #[derive(Clone)]
 struct ContinuationPolicySpec {
     policy_id: String,
+    progress_contract_id: String,
     initial: LeaseResources,
     schedule: Vec<LeaseResources>,
     total_ceiling: LeaseResources,
@@ -638,6 +642,7 @@ impl ContinuationPolicySpec {
                 "max_strategy_recoveries",
                 "policy_key",
                 "policy_version",
+                "progress_contract_id",
                 "protocol_version",
                 "task_profile",
                 "task_profile_version",
@@ -682,12 +687,19 @@ impl ContinuationPolicySpec {
             let classification = item
                 .as_str()
                 .ok_or("continuation progress classifications must be strings")?;
-            if !matches!(classification, "measurable_progress" | "new_information")
-                || !admitted_set.insert(classification)
-            {
+            if classification != "measurable_progress" || !admitted_set.insert(classification) {
                 return Err("continuation policy admits an unsafe progress class");
             }
         }
+        if admitted_set.len() != 1 {
+            return Err("continuation policy admits an unsafe progress class");
+        }
+        let progress_contract_id = mapping
+            .get("progress_contract_id")
+            .and_then(Value::as_str)
+            .filter(|item| is_fingerprint(item))
+            .ok_or("continuation policy progress contract identity is invalid")?
+            .to_owned();
 
         let initial = LeaseResources::parse(
             mapping
@@ -768,6 +780,7 @@ impl ContinuationPolicySpec {
             .map_err(|_| "continuation policy is outside the canonical profile")?;
         Ok(Self {
             policy_id: domain_fingerprint(CONTINUATION_POLICY_ID_DOMAIN, &canonical),
+            progress_contract_id,
             initial,
             schedule,
             total_ceiling,
@@ -822,6 +835,7 @@ impl ContinuationContext {
                 "continuation_policy_id",
                 "governance_id",
                 "governance_receipt_id",
+                "progress_contract_id",
                 "protocol_version",
                 "receipt_id",
                 "status",
@@ -844,6 +858,8 @@ impl ContinuationContext {
                 != Some(policy.task_profile.as_str())
             || receipt.get("task_profile_version").and_then(Value::as_u64)
                 != Some(policy.task_profile_version)
+            || receipt.get("progress_contract_id").and_then(Value::as_str)
+                != Some(policy.progress_contract_id.as_str())
         {
             return Err("continuation policy receipt binding is invalid");
         }
@@ -893,6 +909,7 @@ impl ContinuationRuntimeState {
             "governance_receipt_id": self.context.governance_receipt_id,
             "leases_applied": self.applied_grant_ids.len(),
             "next_lease_index": self.applied_grant_ids.len() + 1,
+            "progress_contract_id": self.context.policy.progress_contract_id,
             "protocol_version": CONTINUATION_PROTOCOL_VERSION,
             "task_id": self.context.task_id,
             "total_ceiling": self.context.policy.total_ceiling.value(),
@@ -963,6 +980,7 @@ struct LeaseGrant {
     cumulative_granted: LeaseResources,
     total_ceiling: LeaseResources,
     identity_valid: bool,
+    canonical_receipt: Arc<str>,
 }
 
 impl LeaseGrant {
@@ -1058,6 +1076,7 @@ impl LeaseGrant {
             canonical_value(&Value::Object(receipt_body)).map_err(|_| Reason::InvalidCommand)?;
         let expected_receipt_id =
             domain_fingerprint(LEASE_GRANT_RECEIPT_ID_DOMAIN, &receipt_canonical);
+        let canonical_receipt = canonical_value(value).map_err(|_| Reason::InvalidCommand)?;
 
         Ok(Self {
             task_id: identity("task_id")?,
@@ -1075,7 +1094,44 @@ impl LeaseGrant {
             total_ceiling,
             identity_valid: lease_grant_id == expected_grant_id
                 && identity("receipt_id")? == expected_receipt_id,
+            canonical_receipt: Arc::from(canonical_receipt),
         })
+    }
+}
+
+/// Non-constructible in-process proof that the exact live native session
+/// admitted one exact governance grant for application. It is not producer
+/// authentication, a signature, or durable remote attestation.
+#[pyclass(name = "NativeLeaseGrantSeal", module = "ibae._runtime", unsendable)]
+struct NativeLeaseGrantSeal {
+    canonical_grant: Arc<str>,
+    lease_grant_id: String,
+    prior_runtime_state_id: String,
+    runtime_session_id: String,
+}
+
+impl NativeLeaseGrantSeal {
+    fn from_grant(grant: &LeaseGrant) -> Self {
+        Self {
+            canonical_grant: Arc::clone(&grant.canonical_receipt),
+            lease_grant_id: grant.lease_grant_id.clone(),
+            prior_runtime_state_id: grant.prior_runtime_state_id.clone(),
+            runtime_session_id: grant.runtime_session_id.clone(),
+        }
+    }
+
+    fn matches(&self, grant: &LeaseGrant, prior_state_id: &str, session_id: &str) -> bool {
+        self.canonical_grant.as_ref() == grant.canonical_receipt.as_ref()
+            && self.lease_grant_id == grant.lease_grant_id
+            && self.prior_runtime_state_id == prior_state_id
+            && self.runtime_session_id == session_id
+    }
+}
+
+#[pymethods]
+impl NativeLeaseGrantSeal {
+    fn validates(&self, canonical_grant: &str) -> bool {
+        self.canonical_grant.as_ref() == canonical_grant
     }
 }
 
@@ -1794,10 +1850,23 @@ impl RuntimeCore {
         command_id: &str,
         grant: &LeaseGrant,
         prior_state_id: &str,
+        grant_seal: Option<&NativeLeaseGrantSeal>,
     ) -> Result<String, CanonicalError> {
         let before_tick = self.counters.logical_tick;
         match self.validate_lease_application(grant, prior_state_id) {
             Ok((cumulative, resulting_limits, logical_tick)) => {
+                if !grant_seal.is_some_and(|seal| {
+                    seal.matches(grant, prior_state_id, self.session_id.as_str())
+                }) {
+                    return self.lease_application_outcome(
+                        command_id,
+                        grant,
+                        prior_state_id,
+                        before_tick,
+                        LeaseResources::default(),
+                        Some(LeaseApplyReason::UnissuedGrant),
+                    );
+                }
                 self.limits = resulting_limits;
                 self.counters.logical_tick = logical_tick;
                 let continuation = self
@@ -1828,12 +1897,17 @@ impl RuntimeCore {
         }
     }
 
-    fn dispatch<F>(&mut self, command_json: &str, invoke: F) -> Result<String, CanonicalError>
+    fn dispatch<F>(
+        &mut self,
+        command_json: &str,
+        grant_seal: Option<&NativeLeaseGrantSeal>,
+        invoke: F,
+    ) -> Result<String, CanonicalError>
     where
         F: FnOnce() -> Invocation,
     {
         let mut candidate = self.clone();
-        let outcome = candidate.dispatch_in_place(command_json, invoke)?;
+        let outcome = candidate.dispatch_in_place(command_json, grant_seal, invoke)?;
         *self = candidate;
         Ok(outcome)
     }
@@ -1841,6 +1915,7 @@ impl RuntimeCore {
     fn dispatch_in_place<F>(
         &mut self,
         command_json: &str,
+        grant_seal: Option<&NativeLeaseGrantSeal>,
         invoke: F,
     ) -> Result<String, CanonicalError>
     where
@@ -1859,7 +1934,7 @@ impl RuntimeCore {
 
         match command {
             Command::ApplyLease(command) => {
-                self.apply_lease(&command_id, &command.grant, &prior_state_id)
+                self.apply_lease(&command_id, &command.grant, &prior_state_id, grant_seal)
             }
             Command::RecordRetry(command) => {
                 let rejection = self.increment_retry().err();
@@ -3878,16 +3953,17 @@ impl NativeRuntimeSession {
         Ok(Self { core })
     }
 
-    #[pyo3(signature = (command_json, operation=None))]
+    #[pyo3(signature = (command_json, operation=None, lease_grant_seal=None))]
     fn dispatch(
         &mut self,
         py: Python<'_>,
         command_json: &str,
         operation: Option<Py<PyAny>>,
+        lease_grant_seal: Option<PyRef<'_, NativeLeaseGrantSeal>>,
     ) -> PyResult<(String, Option<Py<NativeRuntimeReceiptSeal>>)> {
         let outcome = self
             .core
-            .dispatch(command_json, || {
+            .dispatch(command_json, lease_grant_seal.as_deref(), || {
                 let Some(callback) = operation else {
                     return Invocation::OperationFailed;
                 };
@@ -3909,6 +3985,29 @@ impl NativeRuntimeSession {
             Err(_) => None,
         };
         Ok((outcome, seal))
+    }
+
+    fn issue_lease_grant(
+        &self,
+        py: Python<'_>,
+        canonical_grant: &str,
+    ) -> PyResult<Py<NativeLeaseGrantSeal>> {
+        let value = parse_runtime_canonical(canonical_grant)
+            .map_err(|_| PyValueError::new_err("lease grant must be canonical JSON"))?;
+        let grant = LeaseGrant::parse(&value)
+            .map_err(|_| PyValueError::new_err("lease grant record is invalid"))?;
+        let prior_state_id = self.core.state_id().map_err(|_| {
+            PyValueError::new_err("native runtime state cannot issue a lease grant")
+        })?;
+        self.core
+            .validate_lease_application(&grant, &prior_state_id)
+            .map_err(|reason| {
+                PyValueError::new_err(format!(
+                    "native runtime rejected governance grant issuance: {}",
+                    reason.code()
+                ))
+            })?;
+        Py::new(py, NativeLeaseGrantSeal::from_grant(&grant))
     }
 
     fn snapshot(&self) -> PyResult<String> {
@@ -3934,6 +4033,7 @@ fn canonicalize_json(canonical_json: &str) -> PyResult<String> {
 fn _runtime(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<NativeRuntimeSession>()?;
     module.add_class::<NativeRuntimeReceiptSeal>()?;
+    module.add_class::<NativeLeaseGrantSeal>()?;
     module.add_class::<NativeEvidenceAccumulator>()?;
     module.add_class::<NativeEvidenceSummarySeal>()?;
     module.add_class::<NativeEvidenceReceiptSeal>()?;
@@ -4001,6 +4101,7 @@ mod tests {
             "max_strategy_recoveries": 1,
             "policy_key": "experimental.tiny",
             "policy_version": 1,
+            "progress_contract_id": continuation_identity('a'),
             "protocol_version": CONTINUATION_PROTOCOL_VERSION,
             "task_profile": "tiny",
             "task_profile_version": 1,
@@ -4019,6 +4120,7 @@ mod tests {
             "continuation_policy_id": policy_id,
             "governance_id": continuation_identity('b'),
             "governance_receipt_id": continuation_identity('c'),
+            "progress_contract_id": continuation_identity('a'),
             "protocol_version": CONTINUATION_POLICY_RECEIPT_VERSION,
             "status": "admitted",
             "task_id": continuation_identity('d'),
@@ -4118,7 +4220,17 @@ mod tests {
     where
         F: FnOnce() -> Invocation,
     {
-        runtime.dispatch(command, invoke).unwrap()
+        runtime.dispatch(command, None, invoke).unwrap()
+    }
+
+    fn run_with_issued_grant<F>(runtime: &mut RuntimeCore, command: &str, invoke: F) -> String
+    where
+        F: FnOnce() -> Invocation,
+    {
+        let value = parse_runtime_canonical(command).unwrap();
+        let grant = LeaseGrant::parse(&value["grant_receipt"]).unwrap();
+        let seal = NativeLeaseGrantSeal::from_grant(&grant);
+        runtime.dispatch(command, Some(&seal), invoke).unwrap()
     }
 
     #[test]
@@ -4343,7 +4455,7 @@ mod tests {
                 history: 4,
             },
         );
-        let outcome = run(&mut runtime, &command, || Invocation::OperationFailed);
+        let outcome = run_with_issued_grant(&mut runtime, &command, || Invocation::OperationFailed);
         let receipt = outcome_receipt(&outcome);
         assert_eq!(
             receipt["protocol_version"],
@@ -4374,6 +4486,36 @@ mod tests {
     }
 
     #[test]
+    fn rejects_hash_consistent_but_unissued_lease_without_state_change() {
+        let mut runtime = continuation_core();
+        let resources = LeaseResources {
+            requests: 4,
+            executions: 2,
+            retries: 1,
+            mutations: 0,
+            history: 4,
+        };
+        let command = lease_command(&runtime, 1, resources, resources);
+        let prior = runtime.state_id().unwrap();
+        let outcome = run(&mut runtime, &command, || Invocation::OperationFailed);
+        assert_eq!(
+            outcome_receipt(&outcome)["reason_code"],
+            LeaseApplyReason::UnissuedGrant.code()
+        );
+        assert_eq!(runtime.state_id().unwrap(), prior);
+        assert_eq!(runtime.limits.requests, 8);
+        assert_eq!(
+            runtime
+                .continuation
+                .as_ref()
+                .unwrap()
+                .applied_grant_ids
+                .len(),
+            0
+        );
+    }
+
+    #[test]
     fn rejects_duplicate_and_skipped_lease_applications_without_state_change() {
         let mut runtime = continuation_core();
         let resources = LeaseResources {
@@ -4384,9 +4526,10 @@ mod tests {
             history: 4,
         };
         let command = lease_command(&runtime, 1, resources, resources);
-        run(&mut runtime, &command, || Invocation::OperationFailed);
+        run_with_issued_grant(&mut runtime, &command, || Invocation::OperationFailed);
         let accepted_state = runtime.state_id().unwrap();
-        let duplicate = run(&mut runtime, &command, || Invocation::OperationFailed);
+        let duplicate =
+            run_with_issued_grant(&mut runtime, &command, || Invocation::OperationFailed);
         assert_eq!(
             outcome_receipt(&duplicate)["reason_code"],
             LeaseApplyReason::StaleRuntimeState.code()
@@ -4395,7 +4538,8 @@ mod tests {
 
         let mut fresh = continuation_core();
         let skipped_command = lease_command(&fresh, 2, resources, resources);
-        let skipped = run(&mut fresh, &skipped_command, || Invocation::OperationFailed);
+        let skipped =
+            run_with_issued_grant(&mut fresh, &skipped_command, || Invocation::OperationFailed);
         assert_eq!(
             outcome_receipt(&skipped)["reason_code"],
             LeaseApplyReason::LeaseIndexMismatch.code()
@@ -4421,7 +4565,7 @@ mod tests {
         value["grant_receipt"]["lease_grant_id"] = Value::String(continuation_identity('9'));
         let forged = canonical_runtime_value(&value).unwrap();
         let prior = runtime.state_id().unwrap();
-        let rejected = run(&mut runtime, &forged, || Invocation::OperationFailed);
+        let rejected = run_with_issued_grant(&mut runtime, &forged, || Invocation::OperationFailed);
         assert_eq!(
             outcome_receipt(&rejected)["reason_code"],
             LeaseApplyReason::GrantIdentityMismatch.code()
@@ -4432,7 +4576,8 @@ mod tests {
         overflow.counters.logical_tick = u64::MAX;
         let command = lease_command(&overflow, 1, resources, resources);
         let prior = overflow.state_id().unwrap();
-        let rejected = run(&mut overflow, &command, || Invocation::OperationFailed);
+        let rejected =
+            run_with_issued_grant(&mut overflow, &command, || Invocation::OperationFailed);
         assert_eq!(
             outcome_receipt(&rejected)["reason_code"],
             LeaseApplyReason::ArithmeticOverflow.code()

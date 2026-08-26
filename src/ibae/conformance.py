@@ -858,15 +858,6 @@ def v0_5_reference_fixture() -> dict[str, object]:
         {"claim": "objective progress admits only finite continuation"},
         requester=PrincipalAuthority.OPENAI_SUPERVISOR,
     )
-    continuation_policy = experimental_continuation_profile("standard")
-    continuation_policy_receipt = ContinuationPolicyReceipt(
-        continuation_policy, governance_policy, governance
-    )
-    runtime = RustRuntimeSession(
-        "v0.5-progress-continuation-reference",
-        continuation_policy=continuation_policy,
-        continuation_policy_receipt=continuation_policy_receipt,
-    )
     progress_contract = ProgressMeasureContract(
         "reference.obligations",
         1,
@@ -877,6 +868,17 @@ def v0_5_reference_fixture() -> dict[str, object]:
                 ProgressDirection.DECREASE,
             ),
         ),
+    )
+    continuation_policy = experimental_continuation_profile(
+        "standard", progress_contract=progress_contract
+    )
+    continuation_policy_receipt = ContinuationPolicyReceipt(
+        continuation_policy, governance_policy, governance
+    )
+    runtime = RustRuntimeSession(
+        "v0.5-progress-continuation-reference",
+        continuation_policy=continuation_policy,
+        continuation_policy_receipt=continuation_policy_receipt,
     )
     first_progress = evaluate_progress(
         task_id=task.task_id,
@@ -891,6 +893,7 @@ def v0_5_reference_fixture() -> dict[str, object]:
         orchestration_state=current,
         runtime_snapshot=runtime.snapshot,
         strategy=prior_strategy,
+        progress=first_progress,
     )
 
     first_request = ContinuationRequest.from_state(
@@ -902,6 +905,7 @@ def v0_5_reference_fixture() -> dict[str, object]:
     first_decision = evaluate_continuation(
         continuation_state,
         first_request,
+        runtime_session=runtime,
         policy=continuation_policy,
         policy_receipt=continuation_policy_receipt,
         progress=first_progress,
@@ -924,6 +928,13 @@ def v0_5_reference_fixture() -> dict[str, object]:
         prior_state=current,
         current_state=current,
     )
+    continuation_state = observe_continuation_context(
+        continuation_state,
+        policy=continuation_policy,
+        orchestration_state=current,
+        runtime_snapshot=runtime.snapshot,
+        progress=stalled_progress,
+    )
     stalled_request = ContinuationRequest.from_state(
         continuation_state,
         progress=stalled_progress,
@@ -933,6 +944,7 @@ def v0_5_reference_fixture() -> dict[str, object]:
     stalled_decision = evaluate_continuation(
         continuation_state,
         stalled_request,
+        runtime_session=runtime,
         policy=continuation_policy,
         policy_receipt=continuation_policy_receipt,
         progress=stalled_progress,
@@ -956,6 +968,7 @@ def v0_5_reference_fixture() -> dict[str, object]:
     recovery_decision = evaluate_continuation(
         continuation_state,
         recovery_request,
+        runtime_session=runtime,
         policy=continuation_policy,
         policy_receipt=continuation_policy_receipt,
         progress=stalled_progress,
@@ -996,6 +1009,7 @@ def v0_5_reference_fixture() -> dict[str, object]:
     exhausted_decision = evaluate_continuation(
         continuation_state,
         exhausted_request,
+        runtime_session=runtime,
         policy=continuation_policy,
         policy_receipt=continuation_policy_receipt,
         progress=final_progress,

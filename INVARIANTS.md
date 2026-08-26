@@ -211,11 +211,13 @@ ceiling before changing limits.
 No model, local worker, tool backend, runtime, GPU kernel, or scheduler may grant itself additional execution budget.
 
 Current enforcement: only the closed OpenAI-supervisor principal can request;
-governance alone emits a grant; Rust accepts only a complete identity-checked
-governance grant. Tool, runtime, orchestrator, and candidate-worker requesters
-deny deterministically. `request_lease` is not a Rust command, and a rejected
-or forged `apply_lease` transition is state-, tick-, limit-, and
-resource-neutral.
+governance alone emits a grant plus a non-serialized, non-constructible native
+capability for the exact live session/state; Rust accepts only that
+source-bound, identity-checked governance grant. A reconstructed
+hash-consistent grant is insufficient. Tool, runtime, orchestrator, and
+candidate-worker requesters deny deterministically. `request_lease` is not a
+Rust command, and a rejected or forged `apply_lease` transition is state-,
+tick-, limit-, and resource-neutral.
 
 ## IBAE-BND-007 — Exact authority-bearing counters
 
@@ -314,7 +316,10 @@ Current enforcement: `IBAE-OBJECTIVE-PROGRESS-V1` compares a finite declared
 integer measure contract over canonical obligation counts or governed external
 counters. It emits closed measurable/no-progress/regression/new-information/
 incomparable classes and computes completion independently. Tool activity and
-elapsed time are absent.
+elapsed time are absent. Canonical obligation sources enforce their safe
+direction, and continuation policy/state/native context commit the exact
+admitted progress-contract identity. Only `measurable_progress` may
+independently authorize continuation.
 
 ## IBAE-PROG-002 — Model confidence is not progress authority
 
@@ -348,8 +353,10 @@ A continuation lease may be granted only when:
 - measurable progress occurred or an explicitly admitted non-cyclic strategy change is available.
 
 Current enforcement: one pure ordered decision function binds exact task,
-governance/policy receipt, continuation/orchestration/runtime state, progress,
-strategy, and cycle evidence. It returns a domain-separated grant or a closed
+governance/policy receipt, continuation/orchestration/runtime state, the exact
+policy-bound live progress endpoint, strategy, and cycle evidence. Context
+rebind requires the progress record's prior endpoint to equal the live
+pre-rebind orchestration state. It returns a domain-separated grant or a closed
 denial, advances a bounded continuation decision ledger, and cannot exceed the
 precommitted request/schedule/cumulative ceilings. Repeated inputs produce
 byte-identical fixtures across hash seeds.
@@ -365,9 +372,9 @@ v0.5 material identity over available capability frontier, target obligations,
 ordered dependency path, recovery mode, and initial transition pattern.
 Description/paraphrase is excluded. Admission requires a different strategy
 identity, structured material difference, active schema, known targets and
-capabilities, and a pattern that does not reproduce bound period-1/2/3 cycle
-evidence. A strategy receipt may authorize only the policy-bounded recovery
-count and is never classified as progress.
+capabilities, at least one bound target, and a pattern that does not reproduce
+bound period-1/2/3 cycle evidence. A strategy receipt may authorize only the
+policy-bounded recovery count and is never classified as progress.
 
 ---
 

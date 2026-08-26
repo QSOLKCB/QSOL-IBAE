@@ -21,11 +21,15 @@ All notable changes to QSOL-IBAE will be documented here.
   governance grant/receipt identities, policy/session/state lineage, schedule,
   replay index, and checked ceiling before changing exact limits. Accepted
   application consumes one runtime logical tick and no tool counters/history;
-  rejection is state-neutral.
+  rejection is state-neutral. A non-serialized, non-constructible native grant
+  capability prevents hash-consistent but unissued records from extending
+  limits.
 - structural in-process `IBAE-CONTINUATION-CHECKPOINT-V1`, fixed-shape
   continuation evidence capped at 4,096 bytes, semantic continuation partial
   receipts, and non-authoritative watchdog observations that cannot establish
-  completion or lease exhaustion.
+  completion or lease exhaustion. Exact progress-contract and prior/current
+  endpoints, live evidence/checkpoint endpoints, actual partial-denial causes,
+  recovery counters, and watchdog orchestration/runtime context fail closed.
 - exact experimental `tiny`, `standard`, `extended`, and `repository`
   continuation profiles plus a model-free benchmark of fixed, front-loaded,
   geometric-candidate, and bounded-recovery schedules without a promoted

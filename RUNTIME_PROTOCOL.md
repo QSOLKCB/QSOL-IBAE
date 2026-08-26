@@ -220,6 +220,11 @@ delta, status, and closed rejection evidence. It deliberately carries no
 v0.3 source seal; `IBAE-CONTINUATION-CHECKPOINT-V1` supports structural
 in-process lineage, not authentication or durable reconstruction.
 
+An accepted application additionally requires the non-serialized,
+non-constructible native capability attached to the exact grant by the live
+governance decision path. Canonical hash consistency alone cannot authorize a
+lease, and a missing or mismatched capability is state-neutral.
+
 ## Rejection taxonomy
 
 ```text
@@ -247,6 +252,7 @@ IBAE-RT-LEASE-REJECT-LEASE-INDEX
 IBAE-RT-LEASE-REJECT-SCHEDULE
 IBAE-RT-LEASE-REJECT-CEILING
 IBAE-RT-LEASE-REJECT-UNSUPPORTED-RESOURCE
+IBAE-RT-LEASE-REJECT-UNISSUED-GRANT
 IBAE-RT-LEASE-REJECT-ARITHMETIC-OVERFLOW
 ```
 

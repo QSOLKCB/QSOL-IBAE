@@ -621,10 +621,15 @@ exact v0.2 and v0.3 fixtures remain frozen compatibility evidence.
 The v0.5 candidate implements an exact objective-progress contract, structured
 material strategy changes, period-1-to-3 cycle-bound recovery, finite
 precommitted continuation policies, a single task/session continuation ledger,
-governance grant/deny receipts, and opt-in exact Rust lease application. It
-also implements fixed-shape continuation evidence, compact AI recovery state,
-structural in-process checkpoint/resume, semantic continuation partials, and a
-watchdog record that cannot become completion authority. The existing v0.4
+governance grant/deny receipts, and opt-in exact Rust lease application. The
+policy, state, and native context bind one exact progress contract; progress
+rebinds preserve both prior and current orchestration endpoints. Rust requires
+a non-constructible in-process capability for the exact governance-issued
+grant, so a self-consistent reconstructed grant cannot extend limits. The
+candidate also implements endpoint-checked fixed-shape continuation evidence,
+compact AI recovery state, exact structural in-process checkpoint/resume,
+denial-bound semantic continuation partials, and an exact-context watchdog
+record that cannot become completion authority. The existing v0.4
 governance/evidence schema remains unchanged.
 
 Live OpenAI integration, mutation/effect execution, durable cross-process
