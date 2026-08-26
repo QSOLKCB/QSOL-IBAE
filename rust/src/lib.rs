@@ -311,13 +311,7 @@ fn canonical_value_with_limits(
     max_collection_items: usize,
 ) -> Result<String, CanonicalError> {
     let mut stats = CanonicalStats::default();
-    let output = render_canonical(
-        value,
-        0,
-        &mut stats,
-        max_nodes,
-        max_collection_items,
-    )?;
+    let output = render_canonical(value, 0, &mut stats, max_nodes, max_collection_items)?;
     if output.len() > max_bytes {
         return Err(CanonicalError);
     }
@@ -527,11 +521,11 @@ fn parse_command_value(value: &Value) -> Result<Command, Reason> {
                 .ok_or(Reason::InvalidCommand)?
                 .to_owned();
             Ok(Command::ExecuteRead(ExecuteRead {
-                    admission_id,
-                    arguments_canonical,
-                    dependency_fingerprint,
-                    tool_name,
-                }))
+                admission_id,
+                arguments_canonical,
+                dependency_fingerprint,
+                tool_name,
+            }))
         }
         "record_retry" => {
             if !object_has_exact_keys(
@@ -553,8 +547,8 @@ fn parse_command_value(value: &Value) -> Result<Command, Reason> {
 }
 
 fn parse_command(command_json: &str) -> Result<(Command, Value), (Reason, Option<Value>)> {
-    let value = parse_canonical(command_json)
-        .map_err(|_| (Reason::InvalidCanonicalCommand, None))?;
+    let value =
+        parse_canonical(command_json).map_err(|_| (Reason::InvalidCanonicalCommand, None))?;
     match parse_command_value(&value) {
         Ok(command) => Ok((command, value)),
         Err(reason) => Err((reason, Some(value))),
@@ -802,11 +796,7 @@ impl RuntimeCore {
         sha256_hex(record.as_bytes())
     }
 
-    fn command_id(
-        &self,
-        command: &Value,
-        prior_state_id: &str,
-    ) -> Result<String, CanonicalError> {
+    fn command_id(&self, command: &Value, prior_state_id: &str) -> Result<String, CanonicalError> {
         let record = json!({
             "command": command,
             "prior_state_id": prior_state_id,
@@ -978,16 +968,9 @@ impl RuntimeCore {
         let prior_state_id = self.state_id()?;
         let (command, command_value) = match parse_command(command_json) {
             Ok(parsed) => parsed,
-            Err((reason, None)) => {
-                return self.rejected_unparsed(before, prior_state_id, reason)
-            }
+            Err((reason, None)) => return self.rejected_unparsed(before, prior_state_id, reason),
             Err((reason, Some(command_value))) => {
-                return self.rejected_parsed(
-                    before,
-                    prior_state_id,
-                    &command_value,
-                    reason,
-                )
+                return self.rejected_parsed(before, prior_state_id, &command_value, reason)
             }
         };
         let command_id = self.command_id(&command_value, &prior_state_id)?;
@@ -1231,32 +1214,29 @@ impl NativeRuntimeSession {
         command_json: &str,
         operation: Option<Py<PyAny>>,
     ) -> PyResult<String> {
-        self.core.dispatch(command_json, || {
-            let Some(callback) = operation else {
-                return Invocation::OperationFailed;
-            };
-            let result = match callback.call0(py) {
-                Ok(result) => result,
-                Err(_) => return Invocation::OperationFailed,
-            };
-            let envelope = match result.extract::<String>(py) {
-                Ok(envelope) => envelope,
-                Err(_) => return Invocation::InvalidObservation,
-            };
-            parse_invocation_envelope(&envelope)
-        })
-        .map_err(|_| {
-            PyValueError::new_err(
-                "runtime record exceeds the declared deterministic envelope",
-            )
-        })
+        self.core
+            .dispatch(command_json, || {
+                let Some(callback) = operation else {
+                    return Invocation::OperationFailed;
+                };
+                let result = match callback.call0(py) {
+                    Ok(result) => result,
+                    Err(_) => return Invocation::OperationFailed,
+                };
+                let envelope = match result.extract::<String>(py) {
+                    Ok(envelope) => envelope,
+                    Err(_) => return Invocation::InvalidObservation,
+                };
+                parse_invocation_envelope(&envelope)
+            })
+            .map_err(|_| {
+                PyValueError::new_err("runtime record exceeds the declared deterministic envelope")
+            })
     }
 
     fn snapshot(&self) -> PyResult<String> {
         self.core.snapshot_json().map_err(|_| {
-            PyValueError::new_err(
-                "runtime snapshot exceeds the declared deterministic envelope",
-            )
+            PyValueError::new_err("runtime snapshot exceeds the declared deterministic envelope")
         })
     }
 
@@ -1425,9 +1405,15 @@ mod tests {
     fn request_limit_includes_cache_hits() {
         let mut runtime = core(2, 2, 1, 8);
         let command = read_command("x", "c");
-        run(&mut runtime, &command, || Invocation::Observation("1".to_owned()));
-        run(&mut runtime, &command, || panic!("cache hit must not invoke"));
-        let rejected = run(&mut runtime, &command, || panic!("budget must reject first"));
+        run(&mut runtime, &command, || {
+            Invocation::Observation("1".to_owned())
+        });
+        run(&mut runtime, &command, || {
+            panic!("cache hit must not invoke")
+        });
+        let rejected = run(&mut runtime, &command, || {
+            panic!("budget must reject first")
+        });
         assert_eq!(
             outcome_receipt(&rejected)["rejection"]["reason_code"],
             Reason::RequestBudgetExhausted.code()
