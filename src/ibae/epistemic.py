@@ -317,9 +317,15 @@ class EpistemicState:
         }
 
     def identity_record(self) -> dict[str, object]:
+        """Authority-bearing state, excluding unadmitted model proposals."""
+
         return {
             "max_records": self.max_records,
-            "records": [record.identity_record() for record in self.records],
+            "records": [
+                record.identity_record()
+                for record in self.records
+                if record.epistemic_class is not EpistemicClass.MODEL_PROPOSED
+            ],
         }
 
     def projection(self) -> dict[str, list[dict[str, object]]]:

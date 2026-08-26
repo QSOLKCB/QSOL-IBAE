@@ -30,7 +30,9 @@ from .obligations import (
 AGENT_PROTOCOL = "IBAE-AGENT-PROTOCOL-V1"
 LOGICAL_CLOCK_PROFILE = "IBAE-LOGICAL-CLOCK-V1"
 STRATEGY_PARAMETER_SCHEMA = "IBAE-STRATEGY-PARAMETERS-V1"
+CAPABILITY_ARGUMENT_SCHEMA = "IBAE-CAPABILITY-ARGUMENTS-V1"
 MAX_CAPABILITIES = 64
+MAX_CAPABILITY_ARGUMENTS = 32
 MAX_PROPOSALS_PER_BATCH = 64
 MAX_HISTORY_EVENTS = 256
 MAX_OCCURRENCE_OWNERS = 256
@@ -82,8 +84,10 @@ class BatchStatus(str, Enum):
 
 class RejectionReason(str, Enum):
     BATCH_LIMIT_EXCEEDED = "IBAE-REJECT-BATCH-LIMIT-EXCEEDED"
+    STRATEGY_SCHEMA_NOT_ADMITTED = "IBAE-REJECT-STRATEGY-SCHEMA-NOT-ADMITTED"
     UNKNOWN_CAPABILITY = "IBAE-REJECT-UNKNOWN-CAPABILITY"
     CAPABILITY_UNAVAILABLE = "IBAE-REJECT-CAPABILITY-UNAVAILABLE"
+    ARGUMENT_SCHEMA_MISMATCH = "IBAE-REJECT-ARGUMENT-SCHEMA-MISMATCH"
     UNKNOWN_OBLIGATION = "IBAE-REJECT-UNKNOWN-OBLIGATION"
     OBLIGATION_SATISFIED = "IBAE-REJECT-OBLIGATION-SATISFIED"
     OBLIGATION_BLOCKED = "IBAE-REJECT-OBLIGATION-BLOCKED"
@@ -98,7 +102,9 @@ class RejectionReason(str, Enum):
 
 class RecoveryAction(str, Enum):
     SPLIT_BATCH = "IBAE-RECOVERY-SPLIT-BATCH"
+    USE_ADMITTED_STRATEGY_SCHEMA = "IBAE-RECOVERY-USE-ADMITTED-STRATEGY-SCHEMA"
     CHOOSE_AVAILABLE_CAPABILITY = "IBAE-RECOVERY-CHOOSE-AVAILABLE-CAPABILITY"
+    USE_ADMITTED_ARGUMENT_SCHEMA = "IBAE-RECOVERY-USE-ADMITTED-ARGUMENT-SCHEMA"
     CHOOSE_KNOWN_OBLIGATION = "IBAE-RECOVERY-CHOOSE-KNOWN-OBLIGATION"
     TARGET_UNSATISFIED_OBLIGATION = "IBAE-RECOVERY-TARGET-UNSATISFIED-OBLIGATION"
     RESOLVE_BLOCKER = "IBAE-RECOVERY-RESOLVE-BLOCKER"
@@ -113,8 +119,18 @@ class RecoveryAction(str, Enum):
 
 _REJECTION_INVARIANTS: dict[RejectionReason, tuple[str, ...]] = {
     RejectionReason.BATCH_LIMIT_EXCEEDED: ("IBAE-BND-008", "IBAE-ORCH-006"),
+    RejectionReason.STRATEGY_SCHEMA_NOT_ADMITTED: (
+        "IBAE-AI-002",
+        "IBAE-CLK-002",
+        "IBAE-PROG-005",
+    ),
     RejectionReason.UNKNOWN_CAPABILITY: ("IBAE-GOV-006", "IBAE-ORCH-001"),
     RejectionReason.CAPABILITY_UNAVAILABLE: ("IBAE-ORCH-001",),
+    RejectionReason.ARGUMENT_SCHEMA_MISMATCH: (
+        "IBAE-CLK-002",
+        "IBAE-ORCH-001",
+        "IBAE-ORCH-003",
+    ),
     RejectionReason.UNKNOWN_OBLIGATION: ("IBAE-ORCH-005",),
     RejectionReason.OBLIGATION_SATISFIED: (
         "IBAE-ORCH-005",
@@ -349,6 +365,7 @@ class Capability:
     available: bool = True
     contract_version: int = 1
     required_state_keys: tuple[str, ...] = ()
+    semantic_argument_keys: tuple[str, ...] = ()
     replay_evidence_id: str | None = None
 
     def __post_init__(self) -> None:
@@ -373,6 +390,25 @@ class Capability:
         for state_key in required_state_keys:
             require_symbol("capability required state key", state_key)
         object.__setattr__(self, "required_state_keys", required_state_keys)
+
+        semantic_argument_keys = tuple(
+            sorted(
+                materialize_bounded_iterable(
+                    "capability semantic argument keys",
+                    self.semantic_argument_keys,
+                    limit=MAX_CAPABILITY_ARGUMENTS,
+                )
+            )
+        )
+        if len(semantic_argument_keys) != len(set(semantic_argument_keys)):
+            raise ValueError("capability semantic argument keys must be unique")
+        for argument_key in semantic_argument_keys:
+            require_symbol("capability semantic argument key", argument_key)
+        object.__setattr__(
+            self,
+            "semantic_argument_keys",
+            semantic_argument_keys,
+        )
         if self.replay_safety is ReplaySafety.PROVEN_REPLAY_SAFE:
             if self.replay_evidence_id is None:
                 raise ValueError(
@@ -397,15 +433,47 @@ class Capability:
             CAPABILITY_ID_DOMAIN,
             {
                 "contract_version": self.contract_version,
+                "argument_schema": CAPABILITY_ARGUMENT_SCHEMA,
                 "name": self.name,
                 "replay_evidence_id": self.replay_evidence_id,
                 "replay_safety": self.replay_safety.value,
                 "required_state_keys": list(self.required_state_keys),
+                "semantic_argument_keys": list(self.semantic_argument_keys),
             },
         )
 
+    def normalize_arguments(self, arguments: Any) -> dict[str, Any]:
+        """Validate capability-owned semantic arguments for action identity."""
+
+        if not isinstance(arguments, Mapping):
+            raise TypeError("capability arguments must be a semantic mapping")
+        supplied = materialize_bounded_iterable(
+            "capability arguments",
+            arguments.items(),
+            limit=MAX_CAPABILITY_ARGUMENTS,
+        )
+        normalized: dict[str, Any] = {}
+        for item in supplied:
+            if not isinstance(item, tuple) or len(item) != 2:
+                raise TypeError("capability argument items must be key/value pairs")
+            name, value = item
+            if not isinstance(name, str):
+                raise TypeError("capability argument keys must be strings")
+            require_symbol("capability argument key", name)
+            if name in normalized:
+                raise ValueError("capability argument keys must be unique")
+            normalized[name] = value
+        unknown = tuple(sorted(set(normalized) - set(self.semantic_argument_keys)))
+        if unknown:
+            raise ValueError(
+                "capability arguments are not admitted by the schema: "
+                + ",".join(unknown)
+            )
+        return CanonicalValue.from_value(normalized).to_value()
+
     def canonical_record(self) -> dict[str, object]:
         return {
+            "argument_schema": CAPABILITY_ARGUMENT_SCHEMA,
             "available": self.available,
             "capability_id": self.capability_id,
             "contract_version": self.contract_version,
@@ -414,6 +482,7 @@ class Capability:
             "replay_evidence_id": self.replay_evidence_id,
             "replay_safety": self.replay_safety.value,
             "required_state_keys": list(self.required_state_keys),
+            "semantic_argument_keys": list(self.semantic_argument_keys),
         }
 
 
@@ -521,6 +590,7 @@ class ActionProposal:
     required_state_keys: tuple[str, ...]
     occurrence_key: str | None
     _arguments: CanonicalValue
+    _observational_metadata: CanonicalValue | None
 
     def __init__(
         self,
@@ -531,6 +601,7 @@ class ActionProposal:
         target_obligation_ids: Iterable[str],
         required_state_keys: Iterable[str] = (),
         occurrence_key: str | None = None,
+        observational_metadata: Any | None = None,
     ) -> None:
         require_symbol("proposal key", proposal_key)
         require_symbol("capability", capability)
@@ -574,16 +645,33 @@ class ActionProposal:
         object.__setattr__(self, "required_state_keys", state_keys)
         object.__setattr__(self, "occurrence_key", occurrence_key)
         object.__setattr__(self, "_arguments", CanonicalValue.from_value(arguments))
+        object.__setattr__(
+            self,
+            "_observational_metadata",
+            (
+                None
+                if observational_metadata is None
+                else CanonicalValue.from_value(observational_metadata)
+            ),
+        )
 
     @property
     def arguments(self) -> Any:
         return self._arguments.to_value()
 
     @property
+    def observational_metadata(self) -> Any | None:
+        if self._observational_metadata is None:
+            return None
+        return self._observational_metadata.to_value()
+
+    @property
     def proposal_id(self) -> str:
         return domain_fingerprint(PROPOSAL_ID_DOMAIN, self.canonical_record())
 
     def canonical_record(self) -> dict[str, object]:
+        """Correctness-bearing proposal data; observations are excluded."""
+
         return {
             "arguments": self._arguments.to_value(),
             "capability": self.capability,
@@ -592,6 +680,14 @@ class ActionProposal:
             "proposal_key": self.proposal_key,
             "required_state_keys": list(self.required_state_keys),
             "target_obligation_ids": list(self.target_obligation_ids),
+        }
+
+    def agent_record(self) -> dict[str, object]:
+        """Agent-facing proposal data including non-correctness observations."""
+
+        return {
+            **self.canonical_record(),
+            "observational_metadata": self.observational_metadata,
         }
 
 
@@ -1236,6 +1332,46 @@ def _event_id(batch_id: str, record: dict[str, object]) -> str:
     )
 
 
+def _rejected_batch_transition(
+    state: OrchestrationState,
+    batch: ProposalBatch,
+    *,
+    reason: RejectionReason,
+    recovery_actions: tuple[RecoveryAction, ...],
+) -> AdmissionTransition:
+    """Consume one logical tick for a canonical batch-level rejection."""
+
+    prior_state_id = state.state_id
+    logical_tick = state.logical_tick + 1
+    rejection = BatchRejection(
+        reason=reason,
+        recovery_actions=recovery_actions,
+        logical_tick=logical_tick,
+        invariant_ids=_REJECTION_INVARIANTS[reason],
+    )
+    batch_id = batch.batch_id
+    event_id = _event_id(
+        batch_id,
+        {"batch_rejection": rejection.canonical_record()},
+    )
+    next_state = state.advance(
+        logical_tick=logical_tick,
+        event_ids=(event_id,),
+    )
+    receipt = AdmissionReceipt(
+        batch_id=batch_id,
+        strategy_id=batch.strategy.strategy_id,
+        prior_state_id=prior_state_id,
+        next_state_id=next_state.state_id,
+        status=BatchStatus.REJECTED,
+        proposal_ordering=batch.ordering,
+        logical_tick_start=state.logical_tick,
+        logical_tick_end=logical_tick,
+        batch_rejection=rejection,
+    )
+    return AdmissionTransition(next_state=next_state, receipt=receipt)
+
+
 def _rejected_decision(
     proposal: ActionProposal,
     *,
@@ -1341,16 +1477,17 @@ def _validate_targets(
 
 def _action_id(
     capability: Capability,
-    proposal: ActionProposal,
+    semantic_arguments: Mapping[str, Any],
+    occurrence_key: str | None,
     dependency_state_id: str,
 ) -> str:
     record: dict[str, object] = {
-        "arguments": proposal.arguments,
+        "arguments": dict(semantic_arguments),
         "capability_id": capability.capability_id,
         "dependency_state_id": dependency_state_id,
     }
     if capability.replay_safety is ReplaySafety.OCCURRENCE_SENSITIVE:
-        record["occurrence_key"] = proposal.occurrence_key
+        record["occurrence_key"] = occurrence_key
     return domain_fingerprint(ACTION_ID_DOMAIN, record)
 
 
@@ -1361,8 +1498,8 @@ def admit_batch(
     """Pure deterministic proposal-to-admission transition.
 
     Every processed proposal advances the logical clock exactly once. A
-    rejected over-size batch advances it once as a canonical batch rejection.
-    No wall-clock value participates in ordering, identity, or boundedness.
+    rejected batch-level policy check advances it once as a canonical batch
+    rejection. No wall-clock value participates in admitted action identity.
     """
 
     if not isinstance(state, OrchestrationState):
@@ -1375,39 +1512,21 @@ def admit_batch(
         admitted_strategy_schema is None
         or admitted_strategy_schema.schema_id != batch.strategy.schema.schema_id
     ):
-        raise ValueError(
-            "strategy schema is not admitted by the orchestration state"
+        return _rejected_batch_transition(
+            state,
+            batch,
+            reason=RejectionReason.STRATEGY_SCHEMA_NOT_ADMITTED,
+            recovery_actions=(RecoveryAction.USE_ADMITTED_STRATEGY_SCHEMA,),
         )
 
     prior_state_id = state.state_id
     if len(batch.proposals) > state.limits.max_batch_proposals:
-        logical_tick = state.logical_tick + 1
-        rejection = BatchRejection(
+        return _rejected_batch_transition(
+            state,
+            batch,
             reason=RejectionReason.BATCH_LIMIT_EXCEEDED,
             recovery_actions=(RecoveryAction.SPLIT_BATCH,),
-            logical_tick=logical_tick,
-            invariant_ids=_REJECTION_INVARIANTS[RejectionReason.BATCH_LIMIT_EXCEEDED],
         )
-        event_id = _event_id(
-            batch.batch_id,
-            {"batch_rejection": rejection.canonical_record()},
-        )
-        next_state = state.advance(
-            logical_tick=logical_tick,
-            event_ids=(event_id,),
-        )
-        receipt = AdmissionReceipt(
-            batch_id=batch.batch_id,
-            strategy_id=batch.strategy.strategy_id,
-            prior_state_id=prior_state_id,
-            next_state_id=next_state.state_id,
-            status=BatchStatus.REJECTED,
-            proposal_ordering=batch.ordering,
-            logical_tick_start=state.logical_tick,
-            logical_tick_end=logical_tick,
-            batch_rejection=rejection,
-        )
-        return AdmissionTransition(next_state=next_state, receipt=receipt)
 
     decisions: list[AdmissionDecision] = []
     event_ids: list[str] = []
@@ -1421,6 +1540,8 @@ def admit_batch(
         logical_tick += 1
         capability = state.capability(proposal.capability)
         dependency_state_keys = proposal.required_state_keys
+        semantic_arguments: dict[str, Any] | None = None
+        decision: AdmissionDecision | None = None
         if capability is None:
             decision = _rejected_decision(
                 proposal,
@@ -1450,7 +1571,19 @@ def admit_batch(
                     | set(proposal.required_state_keys)
                 )
             )
-            if (
+            try:
+                semantic_arguments = capability.normalize_arguments(
+                    proposal.arguments
+                )
+            except (TypeError, ValueError):
+                decision = _rejected_decision(
+                    proposal,
+                    logical_tick=logical_tick,
+                    reason=RejectionReason.ARGUMENT_SCHEMA_MISMATCH,
+                    recovery_actions=(RecoveryAction.USE_ADMITTED_ARGUMENT_SCHEMA,),
+                    dependency_state_keys=dependency_state_keys,
+                )
+            if decision is None and (
                 capability.replay_safety is not ReplaySafety.CACHEABLE_READ
                 and batch.ordering is not ProposalOrdering.DECLARED_SEQUENCE
             ):
@@ -1461,7 +1594,7 @@ def admit_batch(
                     recovery_actions=(RecoveryAction.USE_DECLARED_SEQUENCE,),
                     dependency_state_keys=dependency_state_keys,
                 )
-            else:
+            if decision is None:
                 decision = _validate_targets(
                     state,
                     proposal,
@@ -1503,10 +1636,16 @@ def admit_batch(
                 )
 
         if decision is None and capability is not None:
+            assert semantic_arguments is not None
             dependency_state_id = state.epistemic_state.dependency_digest(
                 dependency_state_keys
             )
-            action_id = _action_id(capability, proposal, dependency_state_id)
+            action_id = _action_id(
+                capability,
+                semantic_arguments,
+                proposal.occurrence_key,
+                dependency_state_id,
+            )
             if capability.is_replay_safe:
                 equivalent = replay_safe_actions.get(action_id)
                 if equivalent is None:

@@ -107,12 +107,14 @@ def v0_2_reference_fixture() -> dict[str, object]:
                 ReplaySafety.CACHEABLE_READ,
                 "Read a file from an admitted source revision.",
                 required_state_keys=("repo-head",),
+                semantic_argument_keys=("path", "ref"),
             ),
             Capability(
                 "write.patch",
                 ReplaySafety.OCCURRENCE_SENSITIVE,
                 "Apply one occurrence-identified patch mutation.",
                 required_state_keys=("failing-tests", "repo-head"),
+                semantic_argument_keys=("patch",),
             ),
             Capability(
                 "ci.remote",
@@ -120,6 +122,7 @@ def v0_2_reference_fixture() -> dict[str, object]:
                 "Inspect remote continuous-integration state.",
                 available=False,
                 required_state_keys=("repo-head",),
+                semantic_argument_keys=("ref",),
             ),
         ),
         strategy_schemas=(strategy_schema,),

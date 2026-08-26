@@ -457,10 +457,11 @@ The v0.2 Python reference implements deterministic orchestration semantics for:
 - within-batch deduplication only for replay-safe actions;
 - distinct bounded occurrence identity/ownership for mutations and non-idempotent effects, persisted across batches;
 - explicit epistemic state classes and dependency-bound state identity;
-- semantic epistemic identity that excludes fresh-versus-cache delivery metadata while preserving it in the AI projection;
-- strategy-specific, typed, finite parameter allowlists stored in admitted orchestration state, verified before strategy/batch identity is used, and bound into strategy identity;
-- bounded proposal/state/history/occurrence containers, with bounded consumption at every model-facing iterable boundary and bounded canonical-value traversal before serialization;
-- canonical rejection codes, recovery actions, compact state projection, and logical orchestration ticks;
+- semantic epistemic identity that excludes fresh-versus-cache delivery metadata and unadmitted model-proposed values while preserving both in the AI projection;
+- strategy-specific, typed, finite parameter allowlists stored in admitted orchestration state and bound into strategy identity, with schema drift returned as a structured batch rejection;
+- capability-owned finite semantic argument-key allowlists, with observational proposal metadata retained for the agent but excluded from correctness identity and replay-safe deduplication;
+- bounded proposal/state/history/occurrence containers, with bounded consumption at every model-facing iterable boundary, incrementally measured free text, bounded identity integers, and bounded canonical-value traversal before serialization;
+- canonical rejection codes (including strategy/argument policy drift), recovery actions, compact state projection, and logical orchestration ticks;
 - byte-stable, model-free conformance fixtures.
 
 v0.2 remains a Python semantic reference. It does not execute admitted actions, grant continuation leases, own governance receipts, call models, or provide a Rust authority boundary.

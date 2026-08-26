@@ -22,6 +22,71 @@ MAX_CANONICAL_VALUE_NODES = 4_096
 MAX_CANONICAL_COLLECTION_ITEMS = 1_024
 MAX_CANONICAL_STRING_BYTES = 65_536
 MAX_CANONICAL_INTEGER_BITS = 256
+MAX_IDENTITY_INTEGER_BITS = 256
+MAX_RECORD_TEXT_BYTES = 4_096
+
+
+def bounded_utf8_length(name: str, value: str, *, limit: int) -> int:
+    """Count UTF-8 bytes without allocating an encoded copy of ``value``."""
+
+    if not isinstance(value, str):
+        raise TypeError(f"{name} must be a string")
+    require_positive_int("UTF-8 byte limit", limit)
+    total = 0
+    for character in value:
+        codepoint = ord(character)
+        if codepoint <= 0x7F:
+            width = 1
+        elif codepoint <= 0x7FF:
+            width = 2
+        elif 0xD800 <= codepoint <= 0xDFFF:
+            raise ValueError(f"{name} must not contain unpaired surrogates")
+        elif codepoint <= 0xFFFF:
+            width = 3
+        else:
+            width = 4
+        total += width
+        if total > limit:
+            raise ValueError(f"{name} exceeds maximum UTF-8 bytes {limit}")
+    return total
+
+
+def _bounded_json_string_length(name: str, value: str) -> int:
+    """Measure an unescaped JSON string incrementally under the string cap."""
+
+    raw_bytes = 0
+    serialized_bytes = 2  # opening and closing quotes
+    short_escapes = {'"', "\\", "\b", "\f", "\n", "\r", "\t"}
+    for character in value:
+        codepoint = ord(character)
+        if codepoint <= 0x7F:
+            width = 1
+        elif codepoint <= 0x7FF:
+            width = 2
+        elif 0xD800 <= codepoint <= 0xDFFF:
+            raise ValueError(f"{name} must not contain unpaired surrogates")
+        elif codepoint <= 0xFFFF:
+            width = 3
+        else:
+            width = 4
+        raw_bytes += width
+        if raw_bytes > MAX_CANONICAL_STRING_BYTES:
+            raise ValueError(
+                f"{name} exceeds maximum UTF-8 bytes "
+                f"{MAX_CANONICAL_STRING_BYTES}"
+            )
+        if character in short_escapes:
+            serialized_bytes += 2
+        elif codepoint <= 0x1F:
+            serialized_bytes += 6
+        else:
+            serialized_bytes += width
+        if serialized_bytes > MAX_CANONICAL_VALUE_BYTES:
+            raise ValueError(
+                "canonical value exceeds maximum UTF-8 bytes "
+                f"{MAX_CANONICAL_VALUE_BYTES}"
+            )
+    return serialized_bytes
 
 
 def materialize_bounded_iterable(
@@ -69,12 +134,20 @@ def require_invariant_id(value: str) -> str:
 def require_nonnegative_int(name: str, value: int) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         raise ValueError(f"{name} must be a non-negative integer")
+    if value.bit_length() > MAX_IDENTITY_INTEGER_BITS:
+        raise ValueError(
+            f"{name} exceeds maximum bit length {MAX_IDENTITY_INTEGER_BITS}"
+        )
     return value
 
 
 def require_positive_int(name: str, value: int) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
         raise ValueError(f"{name} must be a positive integer")
+    if value.bit_length() > MAX_IDENTITY_INTEGER_BITS:
+        raise ValueError(
+            f"{name} exceeds maximum bit length {MAX_IDENTITY_INTEGER_BITS}"
+        )
     return value
 
 
@@ -87,7 +160,10 @@ def require_bounded_positive_int(name: str, value: int, hard_limit: int) -> int:
 
 
 def require_text(name: str, value: str) -> str:
-    if not isinstance(value, str) or not value or value != value.strip():
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"{name} must be non-empty with no surrounding whitespace")
+    bounded_utf8_length(name, value, limit=MAX_RECORD_TEXT_BYTES)
+    if value != value.strip():
         raise ValueError(f"{name} must be non-empty with no surrounding whitespace")
     return value
 
@@ -138,14 +214,7 @@ def _normalize_bounded_json(
         consume_bytes(len(json.dumps(value, allow_nan=False).encode("ascii")))
         return value
     if isinstance(value, str):
-        if len(value.encode("utf-8")) > MAX_CANONICAL_STRING_BYTES:
-            raise ValueError(
-                "canonical string exceeds maximum UTF-8 bytes "
-                f"{MAX_CANONICAL_STRING_BYTES}"
-            )
-        consume_bytes(
-            len(json.dumps(value, ensure_ascii=False).encode("utf-8"))
-        )
+        consume_bytes(_bounded_json_string_length("canonical string", value))
         return value
     if isinstance(value, Mapping):
         items = materialize_bounded_iterable(
@@ -161,12 +230,10 @@ def _normalize_bounded_json(
             key, nested = item
             if not isinstance(key, str):
                 raise TypeError("canonical JSON mapping keys must be strings")
-            if len(key.encode("utf-8")) > MAX_CANONICAL_STRING_BYTES:
-                raise ValueError("canonical mapping key exceeds maximum UTF-8 bytes")
             if key in normalized:
                 raise ValueError("canonical mapping keys must be unique")
             consume_bytes(
-                len(json.dumps(key, ensure_ascii=False).encode("utf-8")) + 1
+                _bounded_json_string_length("canonical mapping key", key) + 1
             )
             normalized[key] = _normalize_bounded_json(
                 nested,
@@ -206,11 +273,9 @@ class CanonicalValue:
     def __post_init__(self) -> None:
         if not isinstance(self.text, str):
             raise TypeError("canonical value text must be a string")
-        if len(self.text.encode("utf-8")) > MAX_CANONICAL_VALUE_BYTES:
-            raise ValueError(
-                "canonical value exceeds maximum UTF-8 bytes "
-                f"{MAX_CANONICAL_VALUE_BYTES}"
-            )
+        bounded_utf8_length(
+            "canonical value", self.text, limit=MAX_CANONICAL_VALUE_BYTES
+        )
         try:
             decoded = json.loads(self.text)
         except (json.JSONDecodeError, RecursionError) as exc:

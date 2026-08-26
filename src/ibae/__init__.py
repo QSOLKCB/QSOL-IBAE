@@ -1,5 +1,6 @@
 """QSOL-IBAE deterministic execution kernel."""
 
+from ._records import MAX_IDENTITY_INTEGER_BITS, MAX_RECORD_TEXT_BYTES
 from .canonical import (
     canonical_fingerprint,
     canonical_json,
@@ -23,6 +24,7 @@ from .obligations import (
 )
 from .orchestration import (
     AGENT_PROTOCOL,
+    CAPABILITY_ARGUMENT_SCHEMA,
     LOGICAL_CLOCK_PROFILE,
     MAX_PROPOSALS_PER_BATCH,
     STRATEGY_PARAMETER_SCHEMA,
@@ -53,8 +55,11 @@ from .policy import PolicyViolation, require_openai_remote_provider
 
 __all__ = [
     "AGENT_PROTOCOL",
+    "CAPABILITY_ARGUMENT_SCHEMA",
     "LOGICAL_CLOCK_PROFILE",
+    "MAX_IDENTITY_INTEGER_BITS",
     "MAX_PROPOSALS_PER_BATCH",
+    "MAX_RECORD_TEXT_BYTES",
     "STRATEGY_PARAMETER_SCHEMA",
     "ActionProposal",
     "AdmissionDecision",

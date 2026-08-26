@@ -118,7 +118,7 @@ Current v0.2 partial implementation domain-separates obligation, epistemic, capa
 
 Primary execution progression is counted from canonical admitted transitions, not elapsed seconds.
 
-Current v0.2 reference implementation: `IBAE-LOGICAL-CLOCK-V1` consumes one exact logical tick per canonical proposal decision and one tick for a rejected over-size batch. Integration with v0.1 execution/cache transitions remains a v0.3 conformance obligation.
+Current v0.2 reference implementation: `IBAE-LOGICAL-CLOCK-V1` consumes one exact logical tick per canonical proposal decision and one tick for a canonical batch-level rejection such as an over-size batch or unadmitted strategy schema. Integration with v0.1 execution/cache transitions remains a v0.3 conformance obligation.
 
 ## IBAE-CLK-002 — Wall clock is non-correctness observation
 
@@ -126,7 +126,7 @@ Current v0.2 reference implementation: `IBAE-LOGICAL-CLOCK-V1` consumes one exac
 
 Elapsed time, throughput, queue delay, and tool latency are benchmark/environment observations and cannot enter correctness identity unless a separately reviewed protocol explicitly makes timing itself the subject of the task.
 
-Current enforcement: the v0.2 canonical orchestration state, events, action identities, and receipts expose no wall-clock field. Strategy identity uses `IBAE-STRATEGY-PARAMETERS-V1` plus a strategy-specific typed allowlist schema stored in admitted orchestration state. `admit_batch` verifies the exact schema identity before reading any batch/strategy identity; unlisted keys, out-of-contract values, and caller-forged schemas therefore cannot enter correctness identity.
+Current enforcement: the v0.2 canonical orchestration state, events, admitted action identities, and receipts expose no wall-clock field. Strategy identity uses `IBAE-STRATEGY-PARAMETERS-V1` plus a strategy-specific typed allowlist schema stored in admitted orchestration state; a mismatch returns a structured batch rejection and admits no proposal. Capability contracts use `IBAE-CAPABILITY-ARGUMENTS-V1` to allowlist semantic argument keys before action identity is computed. Proposal `observational_metadata` remains agent-visible but is excluded from proposal, batch, action, event, state, and receipt identity; placing an unlisted observation in semantic arguments returns a structured rejection.
 
 ## IBAE-CLK-003 — Wall-clock watchdog is failsafe only
 
@@ -192,7 +192,7 @@ Requests, executions, retries, mutations, logical ticks, lease counters, executi
 
 Batch proposal size, ready queue size, worker count, and other resident execution structures must have explicit finite bounds or deterministic streaming rules.
 
-Current enforcement: v0.2 gives every model-facing collection boundary an explicit protocol/configuration cap, including obligation and epistemic registries/dependencies, capability and proposal state keys, proposal targets/batches, admitted strategy schemas/parameters, persistent occurrence ownership, and retained history. Canonical model values additionally have explicit byte, depth, total-node, per-collection, string, and integer-size bounds enforced while copying the input before serialization. Bounded consumers stop at cap + 1 instead of fully materializing over-size/infinite iterables. No worker queue exists yet; any later worker phase inherits this invariant.
+Current enforcement: v0.2 gives every model-facing collection boundary an explicit protocol/configuration cap, including obligation and epistemic registries/dependencies, capability semantic-argument keys and state keys, proposal targets/batches, admitted strategy schemas/parameters, persistent occurrence ownership, and retained history. Canonical model values additionally have explicit byte, depth, total-node, per-collection, string, and integer-size bounds enforced while copying the input before serialization. Free-text record fields have a 4,096-byte UTF-8 cap, identity-bearing integers have a 256-bit cap, and oversized strings are measured incrementally without allocating a full encoded copy. Bounded consumers stop at cap + 1 instead of fully materializing over-size/infinite iterables. No worker queue exists yet; any later worker phase inherits this invariant.
 
 ---
 
@@ -296,7 +296,7 @@ A continuation lease may be granted only when:
 
 A strategy change used to justify continuation must have a canonical identity distinct from superficial rewording of the same action sequence.
 
-Current v0.2 partial implementation provides a domain-separated identity over structured strategy key, normalized parameters, and an admitted typed parameter-schema identity. Each schema has a finite parameter-key allowlist and bounded value contract; schemas live in canonical orchestration state, and admission rejects a non-matching proposal schema before computing proposal-derived correctness identities. Determining whether a proposed strategy is materially non-cyclic remains deferred to the v0.5 continuation gate.
+Current v0.2 partial implementation provides a domain-separated identity over structured strategy key, normalized parameters, and an admitted typed parameter-schema identity. Each schema has a finite parameter-key allowlist and bounded value contract; schemas live in canonical orchestration state, and a non-matching proposal schema produces a canonical batch rejection before any proposal is admitted. Determining whether a proposed strategy is materially non-cyclic remains deferred to the v0.5 continuation gate.
 
 ---
 
@@ -356,7 +356,7 @@ No final execution may be labelled accepted without the required governance/orch
 
 OpenAI supplies intelligence and proposed actions. The deterministic orchestrator canonicalizes, classifies action authority/replay safety, deduplicates only where replay-safe equivalence is proven, dependency-checks, budget-checks, and admits/rejects those actions.
 
-Current v0.2 partial implementation covers immutable proposal records, orchestrator-owned capability/replay classification, obligation and epistemic dependency checks, bounded batches, and structured admission/rejection. Governance authority and execution-budget admission remain later phases.
+Current v0.2 partial implementation covers immutable proposal records, orchestrator-owned capability/replay and semantic-argument classification, observation-versus-correctness metadata separation, obligation and epistemic dependency checks, bounded batches, and structured admission/rejection. Governance authority and execution-budget admission remain later phases.
 
 ## IBAE-ORCH-002 — Ready-set calculation is deterministic
 
@@ -374,7 +374,7 @@ Canonical equivalence and unchanged dependency state are sufficient for deduplic
 
 Mutations, non-idempotent external effects, and any action with occurrence-sensitive semantics must preserve each admitted occurrence even when canonical arguments are identical. Repeated proposal does not by itself authorize suppressing a required effect.
 
-Current enforcement: replay classification is read from the orchestrator-owned versioned capability record, capability-owned dependencies cannot be omitted by a proposal, non-read replay safety requires an explicit evidence identity, and only cacheable-read/proven-replay-safe equal action identities are coalesced within a batch.
+Current enforcement: replay classification and semantic argument-key allowlists are read from the orchestrator-owned versioned capability record, capability-owned dependencies cannot be omitted by a proposal, observational metadata is excluded from action identity, non-read replay safety requires an explicit evidence identity, and only cacheable-read/proven-replay-safe equal action identities are coalesced within a batch.
 
 ## IBAE-ORCH-004 — Batch admission preserves semantics
 
@@ -398,7 +398,7 @@ Current enforcement: unknown, satisfied, explicitly blocked, dependency-blocked,
 
 Obligation graphs, ready sets, pending proposals, and retained orchestration history require explicit bounds or deterministic streaming/compaction policies.
 
-Current enforcement: `OrchestrationLimits` cannot exceed protocol hard caps; all exposed iterable inputs and canonical model payloads are validated through explicit structural/byte bounds; over-size proposal construction/admission fails closed; admitted strategy schemas have a finite registry; retained history uses deterministic bounded truncation; and persistent occurrence ownership rejects new effects when its exact registry reaches capacity.
+Current enforcement: `OrchestrationLimits` cannot exceed protocol hard caps; all exposed iterable inputs, free-text records, identity integers, and canonical model payloads are validated through explicit structural/byte bounds before retention/serialization; over-size proposal construction/admission fails closed; admitted strategy schemas have a finite registry; retained history uses deterministic bounded truncation; and persistent occurrence ownership rejects new effects when its exact registry reaches capacity.
 
 ## IBAE-ORCH-007 — Occurrence identity is preserved for effectful actions
 
@@ -464,7 +464,7 @@ If runtime state can be computed exactly by software, the supervisor must receiv
 
 Every governed rejection exposes a stable machine-readable reason code and relevant invariant/authority class.
 
-Current v0.2 partial implementation: every orchestration-admission rejection is represented by the closed `RejectionReason` enum and carries authority layer, relevant invariant IDs, and structured blocking/unresolved state where applicable. Converting all v0.1 runtime exceptions and future governance/execution rejections remains a later-phase obligation.
+Current v0.2 partial implementation: every orchestration-admission rejection is represented by the closed `RejectionReason` enum and carries authority layer, relevant invariant IDs, and structured blocking/unresolved state where applicable. This includes strategy-policy drift and capability semantic-argument mismatch as well as batch, dependency, ordering, and occurrence failures. Converting all v0.1 runtime exceptions and future governance/execution rejections remains a later-phase obligation.
 
 ## IBAE-AI-003 — Safe recovery actions are exposed when known
 
@@ -489,7 +489,7 @@ unknown
 
 A proposal cannot silently become an observation. Unknown/unqueried cannot silently become false.
 
-Current enforcement: v0.2 uses distinct immutable record classes, forbids values on `unknown`, requires provenance on `observed`, marks every proposal `model_proposed`, prevents model-proposed values from satisfying admitted dependencies, and exposes separate compact-projection collections.
+Current enforcement: v0.2 uses distinct immutable record classes, forbids values on `unknown`, requires provenance on `observed`, marks every proposal `model_proposed`, prevents model-proposed values from satisfying admitted dependencies or changing authoritative orchestration-state identity, and still exposes them in a separate compact-projection collection.
 
 ## IBAE-AI-005 — Runtime bookkeeping belongs to runtime
 

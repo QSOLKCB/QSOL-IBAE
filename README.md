@@ -32,9 +32,10 @@ The v0.2 Python orchestration reference adds:
 - immutable model proposals separated from admitted actions;
 - orchestrator-owned replay classification and safe batch deduplication;
 - persistent bounded occurrence ownership for mutations and other non-replay-safe effects;
-- explicit `observed`, `derived`, `model_proposed`, and `unknown` state, with cache-delivery metadata excluded from correctness identity;
-- versioned capability, admitted typed strategy-schema, action, state, event, and receipt identities;
-- hard-bounded consumption for every model-facing collection and byte/depth/node-bounded canonical payloads;
+- explicit `observed`, `derived`, `model_proposed`, and `unknown` state, with cache-delivery metadata and unadmitted model proposals excluded from authoritative correctness identity;
+- versioned capability-owned semantic argument allowlists, admitted typed strategy schemas, and action, state, event, and receipt identities;
+- observational proposal metadata retained outside correctness identity, with misplaced/unlisted arguments rejected structurally;
+- hard-bounded consumption for every model-facing collection, 4,096-byte record text, 256-bit identity integers, and incrementally measured byte/depth/node-bounded canonical payloads;
 - `IBAE-LOGICAL-CLOCK-V1` transition accounting;
 - stable rejection reason codes and deterministic recovery actions;
 - a compact AI-facing state projection with actionable obligation/blocker context;

@@ -6,7 +6,10 @@ from pathlib import Path
 import pytest
 
 from ibae import (
+    CAPABILITY_ARGUMENT_SCHEMA,
+    MAX_IDENTITY_INTEGER_BITS,
     MAX_PROPOSALS_PER_BATCH,
+    MAX_RECORD_TEXT_BYTES,
     ActionProposal,
     AuthorityLayer,
     BatchStatus,
@@ -76,6 +79,18 @@ _SEMANTIC_STRATEGY_SCHEMA = StrategySchema(
         ),
     ),
 )
+_READ_ARGUMENT_KEYS = (
+    "a",
+    "b",
+    "index",
+    "items",
+    "n",
+    "path",
+    "payload",
+    "q",
+    "ref",
+)
+_WRITE_ARGUMENT_KEYS = ("changed", "payload")
 
 
 def _provenance(*, revision: int = 1, reused: bool = False) -> ObservationProvenance:
@@ -101,11 +116,17 @@ def _ready_state(
 ) -> tuple[OrchestrationState, Obligation]:
     obligation = Obligation("ready", "Perform ready work.")
     active_capabilities = capabilities or (
-        Capability("read", ReplaySafety.CACHEABLE_READ, "Read deterministic state."),
+        Capability(
+            "read",
+            ReplaySafety.CACHEABLE_READ,
+            "Read deterministic state.",
+            semantic_argument_keys=_READ_ARGUMENT_KEYS,
+        ),
         Capability(
             "write",
             ReplaySafety.OCCURRENCE_SENSITIVE,
             "Perform one occurrence-identified mutation.",
+            semantic_argument_keys=_WRITE_ARGUMENT_KEYS,
         ),
     )
     active_strategy_schemas = strategy_schemas or (_DEFAULT_STRATEGY_SCHEMA,)
@@ -470,7 +491,7 @@ def test_strategy_schema_identity_and_value_constraints_are_authoritative() -> N
         )
 
 
-def test_strategy_schema_must_be_admitted_before_any_batch_identity_is_used() -> None:
+def test_unadmitted_strategy_schema_returns_a_structured_batch_rejection() -> None:
     state, obligation = _ready_state()
     forged_schema = StrategySchema(
         "default",
@@ -492,11 +513,40 @@ def test_strategy_schema_must_be_admitted_before_any_batch_identity_is_used() ->
         ),
         (_proposal(obligation),),
     )
-    with pytest.raises(ValueError, match="not admitted by the orchestration state"):
-        admit_batch(state, batch)
+    transition = admit_batch(state, batch)
+    receipt = transition.receipt
+    assert receipt.status is BatchStatus.REJECTED
+    assert receipt.decisions == ()
+    assert receipt.batch_rejection is not None
+    assert receipt.batch_rejection.reason is (
+        RejectionReason.STRATEGY_SCHEMA_NOT_ADMITTED
+    )
+    assert receipt.batch_rejection.recovery_actions == (
+        RecoveryAction.USE_ADMITTED_STRATEGY_SCHEMA,
+    )
+    assert receipt.batch_rejection.invariant_ids == (
+        "IBAE-AI-002",
+        "IBAE-CLK-002",
+        "IBAE-PROG-005",
+    )
     assert state.logical_tick == 0
     assert state.history == ()
+    assert transition.next_state.logical_tick == 1
+    assert len(transition.next_state.history) == 1
     assert state.strategy_schema("default") is _DEFAULT_STRATEGY_SCHEMA
+
+
+def test_strategy_contract_integers_are_bounded_before_identity() -> None:
+    oversized = 1 << MAX_IDENTITY_INTEGER_BITS
+    with pytest.raises(ValueError, match="maximum bit length"):
+        StrategyParameterSpec(
+            "oversized",
+            StrategyValueKind.BOUNDED_INTEGER,
+            minimum=0,
+            maximum=oversized,
+        )
+    with pytest.raises(ValueError, match="maximum bit length"):
+        StrategySchema("oversized-version", contract_version=oversized)
 
 
 def test_proposal_batch_normalizes_caller_owned_sequence() -> None:
@@ -699,9 +749,32 @@ def test_all_model_facing_collection_boundaries_use_bounded_consumption() -> Non
         )
 
 
+def test_record_text_is_bounded_without_encoding_the_full_input() -> None:
+    class EncodeForbiddenString(str):
+        def encode(self, *_args: object, **_kwargs: object) -> bytes:
+            raise AssertionError("oversized input must not be encoded wholesale")
+
+    oversized = EncodeForbiddenString("x" * (MAX_RECORD_TEXT_BYTES + 1))
+    with pytest.raises(ValueError, match="maximum UTF-8 bytes"):
+        Obligation("oversized-description", oversized)
+    with pytest.raises(ValueError, match="maximum UTF-8 bytes"):
+        Obligation(
+            "oversized-block-reason",
+            "Bounded description.",
+            status=ObligationStatus.BLOCKED,
+            block_reason=oversized,
+        )
+    with pytest.raises(ValueError, match="maximum UTF-8 bytes"):
+        Capability("oversized-description", ReplaySafety.CACHEABLE_READ, oversized)
+
+
 def test_canonical_model_payloads_have_shape_depth_and_byte_bounds() -> None:
     obligation = Obligation("payload-bound", "Bound canonical payloads.")
     targets = (obligation.obligation_id,)
+
+    class EncodeForbiddenString(str):
+        def encode(self, *_args: object, **_kwargs: object) -> bytes:
+            raise AssertionError("oversized input must not be encoded wholesale")
 
     with pytest.raises(ValueError, match="canonical sequence items.*hard limit"):
         ActionProposal(
@@ -734,7 +807,7 @@ def test_canonical_model_payloads_have_shape_depth_and_byte_bounds() -> None:
         EpistemicRecord(
             "long-string",
             EpistemicClass.MODEL_PROPOSED,
-            "x" * 65_537,
+            EncodeForbiddenString("x" * 65_537),
         )
     with pytest.raises(ValueError, match="maximum UTF-8 bytes 262144"):
         EpistemicRecord(
@@ -799,6 +872,45 @@ def test_state_identity_ignores_registry_and_policy_insertion_order() -> None:
     )
 
 
+def test_unadmitted_model_proposals_do_not_rewrite_correctness_identity() -> None:
+    obligation = Obligation("proposal-neutral", "Ignore unrelated proposals.")
+    capability = Capability(
+        "read",
+        ReplaySafety.CACHEABLE_READ,
+        "Read admitted state.",
+        semantic_argument_keys=("path",),
+    )
+
+    def build(proposed_value: object) -> OrchestrationState:
+        return OrchestrationState.create(
+            (obligation,),
+            epistemic_state=EpistemicState.from_iterable(
+                (
+                    EpistemicRecord(
+                        "candidate",
+                        EpistemicClass.MODEL_PROPOSED,
+                        proposed_value,
+                    ),
+                )
+            ),
+            capabilities=(capability,),
+            strategy_schemas=(_DEFAULT_STRATEGY_SCHEMA,),
+        )
+
+    first_state = build({"suggestion": "first"})
+    second_state = build({"suggestion": "second"})
+    assert first_state.state_id == second_state.state_id
+    assert first_state.compact_projection()["epistemic_state"] != (
+        second_state.compact_projection()["epistemic_state"]
+    )
+
+    proposal = _proposal(obligation, arguments={"path": "same"})
+    first_transition = admit_batch(first_state, _batch(proposal))
+    second_transition = admit_batch(second_state, _batch(proposal))
+    assert first_transition.next_state.state_id == second_transition.next_state.state_id
+    assert first_transition.receipt.receipt_id == second_transition.receipt.receipt_id
+
+
 def test_replay_safe_duplicates_coalesce_but_keep_proposal_decisions() -> None:
     other = Obligation("other-ready", "Other ready work.")
     state, obligation = _ready_state(extra_obligations=(other,))
@@ -841,7 +953,10 @@ def test_dependency_state_changes_replay_safe_action_identity() -> None:
             epistemic_state=epistemic,
             capabilities=(
                 Capability(
-                    "read", ReplaySafety.CACHEABLE_READ, "Read deterministic state."
+                    "read",
+                    ReplaySafety.CACHEABLE_READ,
+                    "Read deterministic state.",
+                    semantic_argument_keys=("path",),
                 ),
             ),
             strategy_schemas=(_DEFAULT_STRATEGY_SCHEMA,),
@@ -1123,15 +1238,68 @@ def test_capability_contract_version_and_dependencies_are_identity_bearing() -> 
         "Versioned action.",
         required_state_keys=("source",),
     )
+    with_argument_schema = Capability(
+        "versioned",
+        ReplaySafety.CACHEABLE_READ,
+        "Versioned action.",
+        semantic_argument_keys=("path",),
+    )
     assert (
         len(
             {
                 base.capability_id,
                 next_version.capability_id,
                 with_dependency.capability_id,
+                with_argument_schema.capability_id,
             }
         )
-        == 3
+        == 4
+    )
+    assert with_argument_schema.canonical_record()["argument_schema"] == (
+        CAPABILITY_ARGUMENT_SCHEMA
+    )
+
+
+def test_observational_arguments_cannot_enter_action_identity() -> None:
+    capability = Capability(
+        "read",
+        ReplaySafety.CACHEABLE_READ,
+        "Read a semantic path.",
+        semantic_argument_keys=("path",),
+    )
+    state, obligation = _ready_state(capabilities=(capability,))
+    first = ActionProposal(
+        "observed-first",
+        "read",
+        {"path": "same"},
+        target_obligation_ids=(obligation.obligation_id,),
+        observational_metadata={"requested_at": "2026-08-26T10:00:00Z"},
+    )
+    second = ActionProposal(
+        "observed-second",
+        "read",
+        {"path": "same"},
+        target_obligation_ids=(obligation.obligation_id,),
+        observational_metadata={"epoch": 1_787_720_400, "latency_ms": 17},
+    )
+    assert "observational_metadata" not in first.canonical_record()
+    assert first.agent_record()["observational_metadata"] == {
+        "requested_at": "2026-08-26T10:00:00Z"
+    }
+    decisions = admit_batch(state, _batch(first, second)).receipt.decisions
+    assert [item.status for item in decisions].count(DecisionStatus.ADMITTED) == 1
+    assert [item.status for item in decisions].count(DecisionStatus.DEDUPLICATED) == 1
+    assert len({item.action_id for item in decisions}) == 1
+
+    invalid = _proposal(
+        obligation,
+        key="invalid-observation-placement",
+        arguments={"path": "same", "requested_at": "2026-08-26T10:00:00Z"},
+    )
+    rejection = admit_batch(state, _batch(invalid)).receipt.decisions[0]
+    assert rejection.rejection_reason is RejectionReason.ARGUMENT_SCHEMA_MISMATCH
+    assert rejection.recovery_actions == (
+        RecoveryAction.USE_ADMITTED_ARGUMENT_SCHEMA,
     )
 
 
