@@ -424,5 +424,6 @@ def test_legacy_executor_api_is_now_rust_backed() -> None:
 def test_rust_crate_uses_the_authoritative_repository_license() -> None:
     manifest = tomllib.loads(Path("rust/Cargo.toml").read_text(encoding="utf-8"))
     package = manifest["package"]
-    assert package["license-file"] == "../LICENSE"
+    assert package["license-file"] == "LICENSE"
     assert "license" not in package
+    assert Path("rust/LICENSE").read_bytes() == Path("LICENSE").read_bytes()
