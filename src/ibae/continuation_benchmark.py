@@ -228,8 +228,17 @@ def _simulate(policy: ContinuationPolicy, scenario: _Scenario) -> dict[str, Any]
     base_consumed = _bounded_consumption(
         scenario.base_consumed, policy.initial_budget
     )
+    base_deficit = scenario.base_consumed.subtract_checked(base_consumed)
+    base_exhausted = not base_deficit.is_zero
 
-    if scenario.key == "ceiling_exhaustion":
+    if base_exhausted:
+        requests = ()
+        classifications = ()
+        strategies = ()
+        cycles = ()
+        completed = False
+        denial_reason = "base_budget_exhausted"
+    elif scenario.key == "ceiling_exhaustion":
         requests = (*policy.lease_schedule, BudgetVector(request_delta=1))
         classifications = (ProgressClassification.MEASURABLE_PROGRESS,) * len(requests)
         strategies = (False,) * len(requests)
@@ -286,6 +295,7 @@ def _simulate(policy: ContinuationPolicy, scenario: _Scenario) -> dict[str, Any]
     return {
         "base_budget": policy.initial_budget.canonical_record(),
         "base_budget_consumed": base_consumed.canonical_record(),
+        "base_budget_deficit": base_deficit.canonical_record(),
         "cycle_denials": cycle_denials,
         "denial_reason": denial_reason,
         "lease_count": len(granted),

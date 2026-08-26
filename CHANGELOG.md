@@ -8,11 +8,15 @@ All notable changes to QSOL-IBAE will be documented here.
 
 - `IBAE-OBJECTIVE-PROGRESS-V1`, with exact versioned progress dimensions over
   canonical obligation state or task/governance-bound observed/derived
-  counters; activity, confidence, wall time, and strategy rephrasing remain
-  non-authoritative.
+  counters. Classification and completion are derived from exact bound
+  prior/current sources, and external counters require matching governed tool
+  admission plus a source-bound native observation; activity, confidence, wall
+  time, and strategy rephrasing remain non-authoritative.
 - structured strategy-material and strategy-change receipts that bind admitted
   strategy identity, capability frontier, target obligations, dependency path,
-  recovery mode, and period-1/2/3 cycle-breaking evidence.
+  recovery mode, and period-1/2/3 cycle-breaking evidence. Receipts revalidate
+  their exact material, while continuation admission derives live cycles from
+  native history even when optional caller evidence is omitted.
 - `IBAE-CONTINUATION-LEASE-V1`, with governance-precommitted initial budgets,
   finite indexed lease schedules, exact cumulative ceilings, request caps,
   strategy-recovery caps, one task/session continuation ledger, and closed
@@ -21,19 +25,22 @@ All notable changes to QSOL-IBAE will be documented here.
   governance grant/receipt identities, policy/session/state lineage, schedule,
   replay index, and checked ceiling before changing exact limits. Accepted
   application consumes one runtime logical tick and no tool counters/history;
-  rejection is state-neutral. A non-serialized, non-constructible native grant
-  capability prevents hash-consistent but unissued records from extending
+  rejection is state-neutral. An evaluator-only governance capability gates
+  issuance of the separate non-constructible native grant seal, preventing a
+  runtime caller with a hash-consistent but unissued record from extending
   limits.
 - structural in-process `IBAE-CONTINUATION-CHECKPOINT-V1`, fixed-shape
   continuation evidence capped at 4,096 bytes, semantic continuation partial
   receipts, and non-authoritative watchdog observations that cannot establish
   completion or lease exhaustion. Exact progress-contract and prior/current
   endpoints, live evidence/checkpoint endpoints, actual partial-denial causes,
-  recovery counters, and watchdog orchestration/runtime context fail closed.
+  recovery counters, exact checkpoint status/evidence bindings, and watchdog
+  orchestration/runtime/lease-exhaustion identity fail closed.
 - exact experimental `tiny`, `standard`, `extended`, and `repository`
   continuation profiles plus a model-free benchmark of fixed, front-loaded,
   geometric-candidate, and bounded-recovery schedules without a promoted
-  winner or correctness claim.
+  winner or correctness claim. Exact unmet base demand is reported as a
+  `base_budget_deficit` and cannot be clipped into a false completion.
 - byte-stable v0.5 Python/Rust progress/continuation and budget-profile fixtures
   under multiple `PYTHONHASHSEED` values while preserving all frozen v0.2-v0.4
   fixture bytes.

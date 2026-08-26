@@ -27,9 +27,15 @@ from ._records import (
     require_symbol,
     require_text,
 )
-from .canonical import canonical_json, domain_fingerprint
+from .canonical import canonical_fingerprint, canonical_json, domain_fingerprint
 from .epistemic import EpistemicClass
-from .governance import GovernancePolicy, GovernanceReceipt, PrincipalAuthority
+from .governance import (
+    GovernancePolicy,
+    GovernanceReceipt,
+    PrincipalAuthority,
+    ToolAdmissionReceipt,
+    ToolAuthorityClass,
+)
 from .obligations import ObligationStatus
 from .orchestration import OrchestrationState, Strategy
 from .runtime import (
@@ -38,7 +44,9 @@ from .runtime import (
     MAX_RUNTIME_REQUESTS,
     MAX_RUNTIME_RETRIES,
     RuntimeLeaseApplicationReceipt,
+    RuntimeReceipt,
     RuntimeSnapshot,
+    RuntimeTransition,
     RustRuntimeSession,
 )
 
@@ -637,7 +645,7 @@ def default_obligation_progress_contract() -> ProgressMeasureContract:
     )
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, init=False)
 class ProgressCounterEvidence:
     task_id: str
     governance_id: str
@@ -646,29 +654,137 @@ class ProgressCounterEvidence:
     basis_identity: str
     source_receipt_id: str
     epistemic_class: EpistemicClass
+    _tool_admission: ToolAdmissionReceipt = field(repr=False, compare=False)
+    _source_observation: CanonicalValue = field(repr=False, compare=False)
+    _source_receipt: RuntimeReceipt = field(repr=False, compare=False)
 
-    def __post_init__(self) -> None:
-        require_fingerprint("progress evidence task id", self.task_id)
-        require_fingerprint("progress evidence governance id", self.governance_id)
-        require_symbol("progress evidence dimension key", self.dimension_key)
-        _u64("progress evidence value", self.value)
-        require_fingerprint("progress evidence basis identity", self.basis_identity)
-        require_fingerprint(
-            "progress evidence source receipt id", self.source_receipt_id
-        )
-        if self.epistemic_class not in {
+    def __init__(
+        self,
+        source_transition: RuntimeTransition,
+        tool_admission: ToolAdmissionReceipt,
+    ) -> None:
+        """Derive one counter from an exact source-bound native observation."""
+
+        if type(source_transition) is not RuntimeTransition:
+            raise TypeError("progress counter source must be an exact RuntimeTransition")
+        if type(tool_admission) is not ToolAdmissionReceipt:
+            raise TypeError("progress counter source requires exact tool governance")
+        if type(source_transition.receipt) is not RuntimeReceipt:
+            raise TypeError("progress counter source must carry a runtime receipt")
+        if (
+            source_transition.receipt.status != "accepted"
+            or not source_transition.receipt.source_bound
+        ):
+            raise ValueError("progress counter source must be accepted and source-bound")
+        observation = CanonicalValue.from_value(source_transition.observation)
+        value = observation.to_value()
+        fields = {
+            "basis_identity",
+            "dimension_key",
+            "epistemic_class",
+            "governance_id",
+            "task_id",
+            "value",
+        }
+        if type(value) is not dict or set(value) != fields:
+            raise ValueError("progress counter observation does not match its schema")
+        epistemic_raw = value["epistemic_class"]
+        if type(epistemic_raw) is not str:
+            raise TypeError("progress counter epistemic class must be a string")
+        try:
+            epistemic_class = EpistemicClass(epistemic_raw)
+        except ValueError as exc:
+            raise ValueError("progress counter epistemic class is unknown") from exc
+        if epistemic_class not in {
             EpistemicClass.OBSERVED,
             EpistemicClass.DERIVED,
         }:
             raise ValueError(
                 "progress evidence must be observed or deterministically derived"
             )
+        require_fingerprint("progress evidence task id", value["task_id"])
+        require_fingerprint(
+            "progress evidence governance id", value["governance_id"]
+        )
+        require_symbol("progress evidence dimension key", value["dimension_key"])
+        _u64("progress evidence value", value["value"])
+        require_fingerprint(
+            "progress evidence basis identity", value["basis_identity"]
+        )
+        receipt_record = source_transition.receipt.canonical_record()
+        if receipt_record["observation_id"] != canonical_fingerprint(value):
+            raise ValueError("runtime receipt does not bind the counter observation")
+        if (
+            tool_admission.task_id != value["task_id"]
+            or tool_admission.governance_id != value["governance_id"]
+            or not tool_admission.authority_class.is_read
+            or receipt_record["admission_id"] != tool_admission.action_id
+            or receipt_record["tool_name"] != tool_admission.tool_name
+            or receipt_record["arguments_id"] != tool_admission.arguments_id
+            or receipt_record["dependency_fingerprint"]
+            != tool_admission.dependency_fingerprint
+        ):
+            raise ValueError("runtime counter source does not match tool governance")
+        for name in (
+            "task_id",
+            "governance_id",
+            "dimension_key",
+            "value",
+            "basis_identity",
+        ):
+            object.__setattr__(self, name, value[name])
+        object.__setattr__(self, "epistemic_class", epistemic_class)
+        object.__setattr__(
+            self, "source_receipt_id", source_transition.receipt.receipt_id
+        )
+        object.__setattr__(self, "_source_observation", observation)
+        object.__setattr__(self, "_source_receipt", source_transition.receipt)
+        object.__setattr__(self, "_tool_admission", tool_admission)
+
+    def _validate_source(self) -> None:
+        observation = object.__getattribute__(self, "_source_observation")
+        receipt = object.__getattribute__(self, "_source_receipt")
+        admission = object.__getattribute__(self, "_tool_admission")
+        if (
+            type(observation) is not CanonicalValue
+            or type(receipt) is not RuntimeReceipt
+            or type(admission) is not ToolAdmissionReceipt
+        ):
+            raise ValueError("progress counter source provenance is not trusted")
+        if receipt.status != "accepted" or not receipt.source_bound:
+            raise ValueError("progress counter source provenance is not source-bound")
+        value = observation.to_value()
+        if receipt.canonical_record()["observation_id"] != canonical_fingerprint(value):
+            raise ValueError("progress counter source observation no longer matches")
+        expected = {
+            "basis_identity": self.basis_identity,
+            "dimension_key": self.dimension_key,
+            "epistemic_class": self.epistemic_class.value,
+            "governance_id": self.governance_id,
+            "task_id": self.task_id,
+            "value": self.value,
+        }
+        if value != expected or receipt.receipt_id != self.source_receipt_id:
+            raise ValueError("progress counter fields do not match source provenance")
+        receipt_record = receipt.canonical_record()
+        if (
+            admission.task_id != self.task_id
+            or admission.governance_id != self.governance_id
+            or not admission.authority_class.is_read
+            or receipt_record["admission_id"] != admission.action_id
+            or receipt_record["tool_name"] != admission.tool_name
+            or receipt_record["arguments_id"] != admission.arguments_id
+            or receipt_record["dependency_fingerprint"]
+            != admission.dependency_fingerprint
+        ):
+            raise ValueError("progress counter tool governance no longer matches")
 
     @property
     def evidence_id(self) -> str:
         return domain_fingerprint(PROGRESS_EVIDENCE_ID_DOMAIN, self.canonical_record())
 
     def canonical_record(self) -> dict[str, Any]:
+        self._validate_source()
         return {
             "basis_identity": self.basis_identity,
             "dimension_key": self.dimension_key,
@@ -708,6 +824,73 @@ class ProgressMeasure:
         }
 
 
+def _derive_progress_classification(
+    contract: ProgressMeasureContract,
+    prior_measures: tuple[ProgressMeasure, ...],
+    current_measures: tuple[ProgressMeasure, ...],
+) -> ProgressClassification:
+    improvements = 0
+    regressions = 0
+    new_information = False
+    for dimension, prior, current in zip(
+        contract.dimensions, prior_measures, current_measures, strict=True
+    ):
+        if (
+            prior.value is None
+            or current.value is None
+            or prior.basis_identity != current.basis_identity
+        ):
+            if prior.canonical_record() != current.canonical_record():
+                new_information = True
+            continue
+        if prior.value == current.value:
+            continue
+        improved = (
+            current.value < prior.value
+            if dimension.direction is ProgressDirection.DECREASE
+            else current.value > prior.value
+        )
+        if improved:
+            improvements += 1
+        else:
+            regressions += 1
+    if new_information:
+        return ProgressClassification.NEW_INFORMATION
+    if improvements and regressions:
+        return ProgressClassification.INCOMPARABLE
+    if improvements:
+        return ProgressClassification.MEASURABLE_PROGRESS
+    if regressions:
+        return ProgressClassification.REGRESSION
+    return ProgressClassification.NO_PROGRESS
+
+
+def _derive_task_complete(
+    contract: ProgressMeasureContract,
+    current_measures: tuple[ProgressMeasure, ...],
+    current_state: OrchestrationState,
+) -> bool:
+    if not all(
+        item.status is ObligationStatus.SATISFIED
+        for item in current_state.obligations.obligations
+    ):
+        return False
+    current_by_key = {item.dimension_key: item for item in current_measures}
+    for dimension in contract.dimensions:
+        threshold = dimension.completion_threshold
+        if threshold is None:
+            continue
+        measure = current_by_key[dimension.key]
+        if measure.value is None:
+            return False
+        if dimension.direction is ProgressDirection.DECREASE:
+            if measure.value > threshold:
+                return False
+        elif measure.value < threshold:
+            return False
+    return True
+
+
 @dataclass(frozen=True, slots=True)
 class ProgressRecord:
     task_id: str
@@ -719,6 +902,14 @@ class ProgressRecord:
     current_measures: tuple[ProgressMeasure, ...]
     classification: ProgressClassification
     task_complete: bool
+    _prior_state: OrchestrationState = field(repr=False, compare=False)
+    _current_state: OrchestrationState = field(repr=False, compare=False)
+    _prior_external_evidence: tuple[ProgressCounterEvidence, ...] = field(
+        repr=False, compare=False
+    )
+    _current_external_evidence: tuple[ProgressCounterEvidence, ...] = field(
+        repr=False, compare=False
+    )
 
     def __post_init__(self) -> None:
         require_fingerprint("progress task id", self.task_id)
@@ -746,6 +937,95 @@ class ProgressRecord:
             if tuple(item.dimension_key for item in active) != expected:
                 raise ValueError(f"{name} do not match the declared dimensions")
             object.__setattr__(self, name.replace(" ", "_"), active)
+        for name, attribute, values in (
+            (
+                "prior external evidence",
+                "_prior_external_evidence",
+                self._prior_external_evidence,
+            ),
+            (
+                "current external evidence",
+                "_current_external_evidence",
+                self._current_external_evidence,
+            ),
+        ):
+            active = materialize_bounded_iterable(
+                name, values, limit=MAX_PROGRESS_DIMENSIONS
+            )
+            if any(type(item) is not ProgressCounterEvidence for item in active):
+                raise TypeError(f"{name} must contain exact counter evidence")
+            active = tuple(sorted(active, key=lambda item: item.dimension_key))
+            if len({item.dimension_key for item in active}) != len(active):
+                raise ValueError(f"{name} contains duplicate dimensions")
+            object.__setattr__(self, attribute, active)
+        self._validate_bound_claims()
+
+    def _validate_bound_claims(self) -> None:
+        if type(self._prior_state) is not OrchestrationState or type(
+            self._current_state
+        ) is not OrchestrationState:
+            raise TypeError("progress records require exact bound orchestration states")
+        if (
+            self._prior_state.state_id != self.prior_orchestration_state_id
+            or self._current_state.state_id != self.current_orchestration_state_id
+        ):
+            raise ValueError("progress state objects do not match their declared identities")
+
+        evidence_maps: list[dict[str, ProgressCounterEvidence]] = []
+        for name, values in (
+            ("prior external evidence", self._prior_external_evidence),
+            ("current external evidence", self._current_external_evidence),
+        ):
+            if type(values) is not tuple or any(
+                type(item) is not ProgressCounterEvidence for item in values
+            ):
+                raise TypeError(f"{name} must contain exact counter evidence")
+            if tuple(sorted(values, key=lambda item: item.dimension_key)) != values:
+                raise ValueError(f"{name} is not canonically ordered")
+            if len({item.dimension_key for item in values}) != len(values):
+                raise ValueError(f"{name} contains duplicate dimensions")
+            evidence_maps.append({item.dimension_key: item for item in values})
+        external_keys = {
+            item.key
+            for item in self.contract.dimensions
+            if item.source is ProgressSource.GOVERNED_EXTERNAL_COUNTER
+        }
+        if any(set(mapping) - external_keys for mapping in evidence_maps):
+            raise ValueError("progress record carries undeclared external evidence")
+
+        for index, dimension in enumerate(self.contract.dimensions):
+            if dimension.source is ProgressSource.GOVERNED_EXTERNAL_COUNTER:
+                expected_prior = _external_measure(
+                    dimension,
+                    evidence_maps[0],
+                    task_id=self.task_id,
+                    governance_id=self.governance_id,
+                )
+                expected_current = _external_measure(
+                    dimension,
+                    evidence_maps[1],
+                    task_id=self.task_id,
+                    governance_id=self.governance_id,
+                )
+            else:
+                expected_prior = _state_measure(dimension, self._prior_state)
+                expected_current = _state_measure(dimension, self._current_state)
+            if (
+                self.prior_measures[index] != expected_prior
+                or self.current_measures[index] != expected_current
+            ):
+                raise ValueError("progress measures do not match their bound sources")
+
+        derived_classification = _derive_progress_classification(
+            self.contract, self.prior_measures, self.current_measures
+        )
+        if self.classification is not derived_classification:
+            raise ValueError("progress classification does not match bound measures")
+        derived_complete = _derive_task_complete(
+            self.contract, self.current_measures, self._current_state
+        )
+        if self.task_complete is not derived_complete:
+            raise ValueError("task completion does not match bound measures and state")
 
     @property
     def progress_id(self) -> str:
@@ -764,6 +1044,7 @@ class ProgressRecord:
         )
 
     def canonical_record(self) -> dict[str, Any]:
+        self._validate_bound_claims()
         return {
             "classification": self.classification.value,
             "current_measures": [item.canonical_record() for item in self.current_measures],
@@ -870,13 +1151,19 @@ def evaluate_progress(
         current_external, Mapping
     ):
         raise TypeError("progress evidence collections must be mappings")
+    external_keys = {
+        item.key
+        for item in contract.dimensions
+        if item.source is ProgressSource.GOVERNED_EXTERNAL_COUNTER
+    }
+    for evidence in (prior_external, current_external):
+        if any(type(key) is not str for key in evidence):
+            raise TypeError("progress evidence mapping keys must be exact strings")
+        if set(evidence) - external_keys:
+            raise ValueError("progress evidence contains an undeclared dimension")
 
     prior_measures: list[ProgressMeasure] = []
     current_measures: list[ProgressMeasure] = []
-    improvements = 0
-    regressions = 0
-    new_information = False
-    current_by_key: dict[str, ProgressMeasure] = {}
     for dimension in contract.dimensions:
         if dimension.source is ProgressSource.GOVERNED_EXTERNAL_COUNTER:
             prior = _external_measure(
@@ -896,55 +1183,12 @@ def evaluate_progress(
             current = _state_measure(dimension, current_state)
         prior_measures.append(prior)
         current_measures.append(current)
-        current_by_key[dimension.key] = current
-
-        if (
-            prior.value is None
-            or current.value is None
-            or prior.basis_identity != current.basis_identity
-        ):
-            if prior.canonical_record() != current.canonical_record():
-                new_information = True
-            continue
-        if prior.value == current.value:
-            continue
-        improved = (
-            current.value < prior.value
-            if dimension.direction is ProgressDirection.DECREASE
-            else current.value > prior.value
-        )
-        if improved:
-            improvements += 1
-        else:
-            regressions += 1
-
-    if new_information:
-        classification = ProgressClassification.NEW_INFORMATION
-    elif improvements and regressions:
-        classification = ProgressClassification.INCOMPARABLE
-    elif improvements:
-        classification = ProgressClassification.MEASURABLE_PROGRESS
-    elif regressions:
-        classification = ProgressClassification.REGRESSION
-    else:
-        classification = ProgressClassification.NO_PROGRESS
-
-    obligations_complete = all(
-        item.status is ObligationStatus.SATISFIED
-        for item in current_state.obligations.obligations
+    prior_tuple = tuple(prior_measures)
+    current_tuple = tuple(current_measures)
+    classification = _derive_progress_classification(
+        contract, prior_tuple, current_tuple
     )
-    thresholds_complete = True
-    for dimension in contract.dimensions:
-        threshold = dimension.completion_threshold
-        if threshold is None:
-            continue
-        measure = current_by_key[dimension.key]
-        if measure.value is None:
-            thresholds_complete = False
-        elif dimension.direction is ProgressDirection.DECREASE:
-            thresholds_complete &= measure.value <= threshold
-        else:
-            thresholds_complete &= measure.value >= threshold
+    task_complete = _derive_task_complete(contract, current_tuple, current_state)
 
     return ProgressRecord(
         task_id=task_id,
@@ -952,10 +1196,14 @@ def evaluate_progress(
         contract=contract,
         prior_orchestration_state_id=prior_state.state_id,
         current_orchestration_state_id=current_state.state_id,
-        prior_measures=tuple(prior_measures),
-        current_measures=tuple(current_measures),
+        prior_measures=prior_tuple,
+        current_measures=current_tuple,
         classification=classification,
-        task_complete=obligations_complete and thresholds_complete,
+        task_complete=task_complete,
+        _prior_state=prior_state,
+        _current_state=current_state,
+        _prior_external_evidence=tuple(prior_external.values()),
+        _current_external_evidence=tuple(current_external.values()),
     )
 
 
@@ -1119,6 +1367,43 @@ class StrategyMaterialization:
         }
 
 
+def _derive_strategy_change_reason(
+    orchestration_state: OrchestrationState,
+    prior_strategy: StrategyMaterialization,
+    proposed_strategy: StrategyMaterialization,
+    cycle_evidence: CycleEvidence | None,
+) -> StrategyChangeReason:
+    active_schema = orchestration_state.strategy_schema(proposed_strategy.strategy.key)
+    if (
+        active_schema is None
+        or active_schema.schema_id != proposed_strategy.strategy.schema.schema_id
+    ):
+        return StrategyChangeReason.INVALID_ACTIVE_SCHEMA
+    if proposed_strategy.strategy.strategy_id == prior_strategy.strategy.strategy_id:
+        return StrategyChangeReason.SAME_STRATEGY_IDENTITY
+    if (
+        proposed_strategy.semantic_difference_record()
+        == prior_strategy.semantic_difference_record()
+    ):
+        return StrategyChangeReason.NOT_MATERIAL
+    if any(
+        orchestration_state.capability(name) is None
+        or not orchestration_state.capability(name).available  # type: ignore[union-attr]
+        for name in proposed_strategy.capability_frontier
+    ):
+        return StrategyChangeReason.UNKNOWN_CAPABILITY
+    if any(
+        target not in orchestration_state.obligations.known_ids
+        for target in proposed_strategy.target_obligation_ids
+    ):
+        return StrategyChangeReason.UNKNOWN_TARGET_OBLIGATION
+    if cycle_evidence is not None and cycle_evidence.reproduces(
+        proposed_strategy.initial_transition_pattern
+    ):
+        return StrategyChangeReason.CYCLE_EQUIVALENT
+    return StrategyChangeReason.ADMITTED_MATERIAL_CHANGE
+
+
 @dataclass(frozen=True, slots=True)
 class StrategyChangeReceipt:
     task_id: str
@@ -1129,6 +1414,10 @@ class StrategyChangeReceipt:
     proposed_strategy_id: str
     status: StrategyChangeStatus
     reason: StrategyChangeReason
+    _orchestration_state: OrchestrationState = field(repr=False, compare=False)
+    _prior_strategy: StrategyMaterialization = field(repr=False, compare=False)
+    _proposed_strategy: StrategyMaterialization = field(repr=False, compare=False)
+    _cycle_evidence: CycleEvidence | None = field(repr=False, compare=False)
     cycle_evidence_id: str | None = None
 
     def __post_init__(self) -> None:
@@ -1150,12 +1439,55 @@ class StrategyChangeReceipt:
             self.reason is StrategyChangeReason.ADMITTED_MATERIAL_CHANGE
         ):
             raise ValueError("strategy change status and reason are inconsistent")
+        self._validate_bound_material()
+
+    def _validate_bound_material(self) -> None:
+        if type(self._orchestration_state) is not OrchestrationState:
+            raise TypeError("strategy receipt requires exact orchestration state")
+        if type(self._prior_strategy) is not StrategyMaterialization or type(
+            self._proposed_strategy
+        ) is not StrategyMaterialization:
+            raise TypeError("strategy receipt requires exact strategy material")
+        if self._cycle_evidence is not None and type(
+            self._cycle_evidence
+        ) is not CycleEvidence:
+            raise TypeError("strategy receipt requires exact cycle evidence or None")
+        expected_reason = _derive_strategy_change_reason(
+            self._orchestration_state,
+            self._prior_strategy,
+            self._proposed_strategy,
+            self._cycle_evidence,
+        )
+        expected_status = (
+            StrategyChangeStatus.ADMITTED
+            if expected_reason is StrategyChangeReason.ADMITTED_MATERIAL_CHANGE
+            else StrategyChangeStatus.REJECTED
+        )
+        expected_cycle_id = (
+            None
+            if self._cycle_evidence is None
+            else self._cycle_evidence.cycle_evidence_id
+        )
+        if (
+            self.orchestration_state_id != self._orchestration_state.state_id
+            or self.prior_strategy_material_id
+            != self._prior_strategy.strategy_material_id
+            or self.proposed_strategy_material_id
+            != self._proposed_strategy.strategy_material_id
+            or self.proposed_strategy_id
+            != self._proposed_strategy.strategy.strategy_id
+            or self.cycle_evidence_id != expected_cycle_id
+            or self.reason is not expected_reason
+            or self.status is not expected_status
+        ):
+            raise ValueError("strategy change claims do not match bound material")
 
     @property
     def strategy_change_id(self) -> str:
         return domain_fingerprint(STRATEGY_CHANGE_ID_DOMAIN, self.canonical_record())
 
     def canonical_record(self) -> dict[str, Any]:
+        self._validate_bound_material()
         return {
             "authority_layer": "orchestration",
             "cycle_evidence_id": self.cycle_evidence_id,
@@ -1191,35 +1523,9 @@ def evaluate_strategy_change(
     if cycle_evidence is not None and type(cycle_evidence) is not CycleEvidence:
         raise TypeError("cycle_evidence must be exact CycleEvidence or None")
 
-    reason = StrategyChangeReason.ADMITTED_MATERIAL_CHANGE
-    active_schema = orchestration_state.strategy_schema(proposed_strategy.strategy.key)
-    if (
-        active_schema is None
-        or active_schema.schema_id != proposed_strategy.strategy.schema.schema_id
-    ):
-        reason = StrategyChangeReason.INVALID_ACTIVE_SCHEMA
-    elif proposed_strategy.strategy.strategy_id == prior_strategy.strategy.strategy_id:
-        reason = StrategyChangeReason.SAME_STRATEGY_IDENTITY
-    elif (
-        proposed_strategy.semantic_difference_record()
-        == prior_strategy.semantic_difference_record()
-    ):
-        reason = StrategyChangeReason.NOT_MATERIAL
-    elif any(
-        orchestration_state.capability(name) is None
-        or not orchestration_state.capability(name).available  # type: ignore[union-attr]
-        for name in proposed_strategy.capability_frontier
-    ):
-        reason = StrategyChangeReason.UNKNOWN_CAPABILITY
-    elif any(
-        target not in orchestration_state.obligations.known_ids
-        for target in proposed_strategy.target_obligation_ids
-    ):
-        reason = StrategyChangeReason.UNKNOWN_TARGET_OBLIGATION
-    elif cycle_evidence is not None and cycle_evidence.reproduces(
-        proposed_strategy.initial_transition_pattern
-    ):
-        reason = StrategyChangeReason.CYCLE_EQUIVALENT
+    reason = _derive_strategy_change_reason(
+        orchestration_state, prior_strategy, proposed_strategy, cycle_evidence
+    )
 
     status = (
         StrategyChangeStatus.ADMITTED
@@ -1238,6 +1544,10 @@ def evaluate_strategy_change(
         cycle_evidence_id=(
             None if cycle_evidence is None else cycle_evidence.cycle_evidence_id
         ),
+        _orchestration_state=orchestration_state,
+        _prior_strategy=prior_strategy,
+        _proposed_strategy=proposed_strategy,
+        _cycle_evidence=cycle_evidence,
     )
 
 
@@ -1596,8 +1906,12 @@ class ContinuationState:
 
     def compact_projection(self, policy: ContinuationPolicy) -> dict[str, Any]:
         self._require_policy(policy)
+        request_decisions_remaining = policy.max_lease_requests - self.lease_requests
+        schedule_slots_remaining = self.leases_remaining(policy)
         recovery_actions: list[str] = []
-        if self.progress_state is ProgressState.STALLED:
+        if request_decisions_remaining == 0:
+            recovery_actions = []
+        elif self.progress_state is ProgressState.STALLED:
             recovery_actions.append("provide_objective_progress")
             if self.strategy_recoveries < policy.max_strategy_recoveries:
                 recovery_actions.append("propose_material_strategy_change")
@@ -1624,11 +1938,17 @@ class ContinuationState:
                 else self.last_denial_reason.value
             ),
             "last_lease_decision": self.last_decision,
-            "leases_remaining": self.leases_remaining(policy),
+            "lease_requests_remaining": request_decisions_remaining,
+            "lease_schedule_slots_remaining": schedule_slots_remaining,
+            "leases_remaining": min(
+                request_decisions_remaining, schedule_slots_remaining
+            ),
             "leases_used": self.leases_granted,
             "legal_recovery_actions": recovery_actions,
             "material_strategy_change_admissible": (
-                self.strategy_recoveries < policy.max_strategy_recoveries
+                request_decisions_remaining > 0
+                and not self.has_pending_grant
+                and self.strategy_recoveries < policy.max_strategy_recoveries
                 and self.progress_state
                 not in {ProgressState.COMPLETE, ProgressState.LEASE_EXHAUSTED}
             ),
@@ -1965,6 +2285,15 @@ class ContinuationRequest:
         }
 
 
+class _GovernanceDecisionCapability:
+    """Non-public in-process capability for one exact evaluated grant."""
+
+    __slots__ = ("__authority", "__canonical_grant")
+
+    def __new__(cls) -> _GovernanceDecisionCapability:
+        raise TypeError("governance decision capabilities are not constructible")
+
+
 @dataclass(frozen=True, slots=True)
 class LeaseGrantReceipt:
     task_id: str
@@ -1984,6 +2313,9 @@ class LeaseGrantReceipt:
     cumulative_granted: BudgetVector
     total_ceiling: BudgetVector
     decision_logical_tick: int
+    _governance_capability: Any | None = field(
+        default=None, repr=False, compare=False
+    )
     _native_seal: Any | None = field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
@@ -2023,7 +2355,17 @@ class LeaseGrantReceipt:
             raise ValueError("v0.5 lease grants cannot authorize mutations")
         if not self.cumulative_granted.is_within(self.total_ceiling):
             raise ValueError("cumulative lease resources exceed the total ceiling")
+        if self._governance_capability is not None:
+            if type(self._governance_capability) is not _GovernanceDecisionCapability:
+                raise TypeError("lease grant governance capability is not trusted")
+            if not _validate_governance_capability(
+                self._governance_capability,
+                canonical_json(self.canonical_record())
+            ):
+                raise ValueError("lease grant governance capability does not match")
         if self._native_seal is not None:
+            if not self.governance_bound:
+                raise ValueError("native lease grant seal requires governance authority")
             from ._runtime import NativeLeaseGrantSeal
 
             if type(self._native_seal) is not NativeLeaseGrantSeal:
@@ -2073,9 +2415,20 @@ class LeaseGrantReceipt:
 
     @property
     def source_bound(self) -> bool:
-        return self._native_seal is not None
+        return self.governance_bound and self._native_seal is not None
+
+    @property
+    def governance_bound(self) -> bool:
+        capability = self._governance_capability
+        return bool(
+            _validate_governance_capability(
+                capability, canonical_json(self.canonical_record())
+            )
+        )
 
     def _with_native_seal(self, seal: Any) -> LeaseGrantReceipt:
+        if not self.governance_bound:
+            raise ValueError("lease grant lacks evaluated governance authority")
         if self._native_seal is not None:
             raise ValueError("lease grant is already source-bound")
         return replace(self, _native_seal=seal)
@@ -2083,6 +2436,8 @@ class LeaseGrantReceipt:
     def _native_source_seal(self) -> Any | None:
         if self._native_seal is None:
             return None
+        if not self.governance_bound:
+            raise ValueError("lease grant lacks evaluated governance authority")
         from ._runtime import NativeLeaseGrantSeal
 
         if type(self._native_seal) is not NativeLeaseGrantSeal:
@@ -2182,6 +2537,8 @@ class ContinuationDecision:
             raise TypeError("next_state must be an exact ContinuationState")
         if type(self.receipt) not in {LeaseGrantReceipt, LeaseDenyReceipt}:
             raise TypeError("receipt must be an exact lease decision receipt")
+        if type(self.receipt) is LeaseGrantReceipt and not self.receipt.source_bound:
+            raise ValueError("granted decisions require evaluated native authority")
 
     @property
     def granted(self) -> bool:
@@ -2275,7 +2632,7 @@ def _deny_continuation(
     return ContinuationDecision(next_state, denial)
 
 
-def evaluate_continuation(
+def _evaluate_continuation(
     state: ContinuationState,
     request: ContinuationRequest,
     *,
@@ -2287,6 +2644,7 @@ def evaluate_continuation(
     cycle_evidence: CycleEvidence | None = None,
     blocking_governance_violation_id: str | None = None,
     benchmark_observation: Any | None = None,
+    _grant_capability_issuer: Any,
 ) -> ContinuationDecision:
     """Return a deterministic finite GRANT or DENY decision.
 
@@ -2332,6 +2690,7 @@ def evaluate_continuation(
         raise ValueError("active continuation policy receipt does not bind state")
 
     live_runtime_snapshot = runtime_session.snapshot
+    live_cycle_evidence = CycleEvidence.from_snapshot(live_runtime_snapshot)
 
     reason: LeaseDenialReason | None = None
     blocking_id: str | None = None
@@ -2379,8 +2738,9 @@ def evaluate_continuation(
     elif not state.cumulative_granted.is_within(policy.continuation_capacity):
         reason = LeaseDenialReason.LEASE_CEILING_REACHED
     elif cycle_evidence is not None and (
-        cycle_evidence.runtime_session_id != state.runtime_session_id
-        or cycle_evidence.runtime_state_id != state.runtime_state_id
+        live_cycle_evidence is None
+        or cycle_evidence.cycle_evidence_id
+        != live_cycle_evidence.cycle_evidence_id
     ):
         reason = LeaseDenialReason.STALE_RUNTIME_STATE
 
@@ -2401,8 +2761,10 @@ def evaluate_continuation(
             != state.current_strategy_material_id
         ):
             reason = LeaseDenialReason.STRATEGY_CHANGE_NOT_MATERIAL
-        elif cycle_evidence is not None and (
-            strategy_change.cycle_evidence_id != cycle_evidence.cycle_evidence_id
+        elif strategy_change.cycle_evidence_id != (
+            None
+            if live_cycle_evidence is None
+            else live_cycle_evidence.cycle_evidence_id
         ):
             reason = LeaseDenialReason.STRATEGY_CHANGE_CYCLE_EQUIVALENT
         elif strategy_change.status is StrategyChangeStatus.REJECTED:
@@ -2418,7 +2780,7 @@ def evaluate_continuation(
         reason = LeaseDenialReason.STRATEGY_CHANGE_NOT_MATERIAL
 
     progress_admitted = progress.classification in policy.admitted_progress
-    if reason is None and cycle_evidence is not None and not strategy_admitted:
+    if reason is None and live_cycle_evidence is not None and not strategy_admitted:
         reason = LeaseDenialReason.TERMINAL_CYCLE
     elif reason is None and not progress_admitted and not strategy_admitted:
         reason = LeaseDenialReason.NO_MEASURABLE_PROGRESS
@@ -2484,11 +2846,17 @@ def evaluate_continuation(
         total_ceiling=policy.total_ceiling,
         decision_logical_tick=decision_tick,
     )
+    grant = replace(
+        grant,
+        _governance_capability=_grant_capability_issuer(
+            canonical_json(grant.canonical_record())
+        ),
+    )
     grant = grant._with_native_seal(
-        runtime_session._issue_governance_lease_grant(grant)
+        runtime_session._bind_evaluated_lease_grant(grant)
     )
     used_strategy_recovery = strategy_admitted and (
-        cycle_evidence is not None or not progress_admitted
+        live_cycle_evidence is not None or not progress_admitted
     )
     next_state = replace(
         state,
@@ -2521,6 +2889,82 @@ def evaluate_continuation(
         pending_grant_receipt_id=grant.receipt_id,
     )
     return ContinuationDecision(next_state, grant)
+
+
+def _build_continuation_evaluator(
+    internal_evaluator: Any,
+) -> tuple[Any, Any]:
+    authority = object()
+
+    def issue_capability(canonical_grant: str) -> _GovernanceDecisionCapability:
+        if type(canonical_grant) is not str:
+            raise TypeError("canonical grant must be exact text")
+        capability = object.__new__(_GovernanceDecisionCapability)
+        object.__setattr__(
+            capability,
+            "_GovernanceDecisionCapability__authority",
+            authority,
+        )
+        object.__setattr__(
+            capability,
+            "_GovernanceDecisionCapability__canonical_grant",
+            canonical_grant,
+        )
+        return capability
+
+    def validate_capability(capability: Any, canonical_grant: str) -> bool:
+        if type(capability) is not _GovernanceDecisionCapability:
+            return False
+        try:
+            bound_authority = object.__getattribute__(
+                capability, "_GovernanceDecisionCapability__authority"
+            )
+            bound_grant = object.__getattribute__(
+                capability, "_GovernanceDecisionCapability__canonical_grant"
+            )
+        except AttributeError:
+            return False
+        return bound_authority is authority and bound_grant == canonical_grant
+
+    def public_evaluator(
+        state: ContinuationState,
+        request: ContinuationRequest,
+        *,
+        runtime_session: RustRuntimeSession,
+        policy: ContinuationPolicy,
+        policy_receipt: ContinuationPolicyReceipt,
+        progress: ProgressRecord,
+        strategy_change: StrategyChangeReceipt | None = None,
+        cycle_evidence: CycleEvidence | None = None,
+        blocking_governance_violation_id: str | None = None,
+        benchmark_observation: Any | None = None,
+    ) -> ContinuationDecision:
+        """Return one deterministic, finite governance GRANT or DENY."""
+
+        return internal_evaluator(
+            state,
+            request,
+            runtime_session=runtime_session,
+            policy=policy,
+            policy_receipt=policy_receipt,
+            progress=progress,
+            strategy_change=strategy_change,
+            cycle_evidence=cycle_evidence,
+            blocking_governance_violation_id=blocking_governance_violation_id,
+            benchmark_observation=benchmark_observation,
+            _grant_capability_issuer=issue_capability,
+        )
+
+    public_evaluator.__name__ = "evaluate_continuation"
+    public_evaluator.__qualname__ = "evaluate_continuation"
+    return public_evaluator, validate_capability
+
+
+evaluate_continuation, _validate_governance_capability = (
+    _build_continuation_evaluator(_evaluate_continuation)
+)
+del _build_continuation_evaluator
+del _evaluate_continuation
 
 
 @dataclass(frozen=True, slots=True, init=False)
@@ -2647,6 +3091,8 @@ class ContinuationCheckpoint:
                 require_fingerprint(name, value)
         status = state.progress_state if checkpoint_status is None else checkpoint_status
         _enum("checkpoint status", status, ProgressState)
+        if status is not state.progress_state:
+            raise ValueError("checkpoint status does not match live continuation state")
         if partial_reason is not None:
             _enum("checkpoint partial reason", partial_reason, ContinuationPartialReason)
         if status is ProgressState.COMPLETE and partial_reason is not None:
@@ -2950,6 +3396,7 @@ class WatchdogObservation:
             {
                 "continuation_state_id": self.continuation_state_id,
                 "governance_id": self.governance_id,
+                "lease_exhausted": self.lease_exhausted,
                 "orchestration_state_id": self.orchestration_state_id,
                 "reason": ContinuationPartialReason.WATCHDOG_EXPIRED.value,
                 "runtime_state_id": self.runtime_state_id,
@@ -3054,12 +3501,24 @@ class ContinuationPartialReceipt:
             raise ValueError(
                 "strategy-recovery partial requires exhausted recovery capacity"
             )
-        for name, value in (
-            ("partial compact evidence receipt id", compact_evidence_receipt_id),
-            ("partial execution receipt id", execution_receipt_id),
+        for name, supplied, bound in (
+            (
+                "partial compact evidence receipt id",
+                compact_evidence_receipt_id,
+                checkpoint.compact_evidence_receipt_id,
+            ),
+            (
+                "partial execution receipt id",
+                execution_receipt_id,
+                checkpoint.relevant_receipt_id,
+            ),
         ):
-            if value is not None:
-                require_fingerprint(name, value)
+            if supplied is not None:
+                require_fingerprint(name, supplied)
+            if supplied is not None and supplied != bound:
+                raise ValueError(f"{name} does not match checkpoint evidence")
+        bound_compact_evidence_id = checkpoint.compact_evidence_receipt_id
+        bound_execution_receipt_id = checkpoint.relevant_receipt_id
         if reason is ContinuationPartialReason.WATCHDOG_EXPIRED:
             if type(watchdog_observation) is not WatchdogObservation:
                 raise ValueError("watchdog expiry requires a watchdog observation")
@@ -3091,8 +3550,8 @@ class ContinuationPartialReceipt:
             "progress_id": state.last_progress_id,
             "decision_aggregate_id": state.decision_aggregate_id,
             "checkpoint_id": checkpoint.checkpoint_id,
-            "compact_evidence_receipt_id": compact_evidence_receipt_id,
-            "execution_receipt_id": execution_receipt_id,
+            "compact_evidence_receipt_id": bound_compact_evidence_id,
+            "execution_receipt_id": bound_execution_receipt_id,
             "watchdog_observation_id": (
                 None
                 if watchdog_observation is None

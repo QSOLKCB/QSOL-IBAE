@@ -1035,8 +1035,6 @@ def v0_5_reference_fixture() -> dict[str, object]:
         state=continuation_state,
         checkpoint=checkpoint,
         reason=ContinuationPartialReason.LEASE_CEILING_EXHAUSTED,
-        compact_evidence_receipt_id=evidence.receipt_id,
-        execution_receipt_id=recovery_application.receipt_id,
     )
     return {
         "authority": {

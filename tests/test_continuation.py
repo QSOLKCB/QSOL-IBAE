@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from ibae.canonical import canonical_fingerprint, canonical_json
+from ibae.canonical import canonical_fingerprint, canonical_json, domain_fingerprint
 from ibae.continuation import (
     MAX_U64,
     BudgetVector,
@@ -59,10 +59,16 @@ from ibae.governance import (
     GovernanceWrapper,
     PrincipalAuthority,
     ProviderAuthority,
+    ToolAuthorityClass,
+    ToolPermission,
 )
 from ibae.obligations import Obligation, ObligationStatus
 from ibae.orchestration import (
+    ACTION_ID_DOMAIN,
+    ActionProposal,
+    AdmissionDecision,
     Capability,
+    DecisionStatus,
     OrchestrationState,
     ReplaySafety,
     Strategy,
@@ -74,6 +80,8 @@ from ibae.runtime import (
     RUNTIME_PROTOCOL_VERSION,
     RuntimeLeaseApplicationReceipt,
     RuntimeLimits,
+    RuntimeReceipt,
+    RuntimeTransition,
     RustRuntimeSession,
 )
 
@@ -90,7 +98,14 @@ def _governed_runtime(profile: str = "tiny", *, session: str = "continuation"):
         task_profile=profile,
         task_profile_version=1,
         provider_authority=ProviderAuthority.OPENAI,
-        tool_permissions=(),
+        tool_permissions=(
+            ToolPermission(
+                "progress_counter",
+                ToolAuthorityClass.PURE_READ,
+                False,
+                True,
+            ),
+        ),
         required_gate_keys=(
             COMPACT_EVIDENCE_GATE_KEY,
             ORCHESTRATION_RECEIPT_GATE_KEY,
@@ -149,6 +164,99 @@ def _progress(task, governance, prior, current):
     )
 
 
+def _counter_source(
+    governance_policy,
+    task,
+    governance,
+    dimension_key,
+    value,
+    basis_identity,
+    epistemic_class,
+    *,
+    source,
+):
+    capability = Capability(
+        "progress_counter",
+        ReplaySafety.CACHEABLE_READ,
+        "Read one governance-admitted objective progress counter.",
+        semantic_argument_keys=("source",),
+    )
+    arguments = {"source": source}
+    proposal = ActionProposal(
+        f"progress-counter.{source}",
+        capability.name,
+        arguments,
+        target_obligation_ids=(_id(f"counter-obligation-{source}"),),
+    )
+    dependency_fingerprint = _id(f"counter-dependency-{source}")
+    decision = AdmissionDecision(
+        proposal_id=proposal.proposal_id,
+        proposal_key=proposal.proposal_key,
+        status=DecisionStatus.ADMITTED,
+        logical_tick=1,
+        action_id=domain_fingerprint(
+            ACTION_ID_DOMAIN,
+            {
+                "arguments": capability.normalize_arguments(proposal.arguments),
+                "capability_id": capability.capability_id,
+                "dependency_state_id": dependency_fingerprint,
+            },
+        ),
+    )
+    tool_admission = GovernanceWrapper(governance_policy).admit_tool(
+        task,
+        governance,
+        decision,
+        proposal,
+        capability,
+        ToolAuthorityClass.PURE_READ,
+        dependency_state_id=dependency_fingerprint,
+        requester=PrincipalAuthority.DETERMINISTIC_ORCHESTRATOR,
+    )
+    runtime = RustRuntimeSession(f"counter-evidence-{source}")
+    observation = {
+        "basis_identity": basis_identity,
+        "dimension_key": dimension_key,
+        "epistemic_class": epistemic_class.value,
+        "governance_id": governance.governance_id,
+        "task_id": task.task_id,
+        "value": value,
+    }
+    transition = runtime.execute_admitted_read(
+        decision,
+        proposal,
+        capability,
+        dependency_fingerprint,
+        lambda: observation,
+    )
+    return transition, tool_admission
+
+
+def _counter_evidence(
+    governance_policy,
+    task,
+    governance,
+    dimension_key,
+    value,
+    basis_identity,
+    epistemic_class,
+    *,
+    source,
+):
+    return ProgressCounterEvidence(
+        *_counter_source(
+            governance_policy,
+            task,
+            governance,
+            dimension_key,
+            value,
+            basis_identity,
+            epistemic_class,
+            source=source,
+        )
+    )
+
+
 def _state_and_progress(profile: str = "tiny", *, progressing: bool = True):
     bundle = _governed_runtime(profile, session=f"state-{profile}-{progressing}")
     policy, _, task, governance, policy_receipt, runtime = bundle
@@ -201,6 +309,30 @@ def _request_and_decide(
         benchmark_observation=benchmark_observation,
     )
     return request, decision
+
+
+def _structural_grant(grant: LeaseGrantReceipt, **overrides):
+    values = {
+        "task_id": grant.task_id,
+        "governance_id": grant.governance_id,
+        "governance_receipt_id": grant.governance_receipt_id,
+        "continuation_policy_id": grant.continuation_policy_id,
+        "continuation_policy_receipt_id": grant.continuation_policy_receipt_id,
+        "continuation_request_id": grant.continuation_request_id,
+        "prior_continuation_state_id": grant.prior_continuation_state_id,
+        "orchestration_state_id": grant.orchestration_state_id,
+        "runtime_session_id": grant.runtime_session_id,
+        "prior_runtime_state_id": grant.prior_runtime_state_id,
+        "progress_id": grant.progress_id,
+        "strategy_change_id": grant.strategy_change_id,
+        "lease_index": grant.lease_index,
+        "granted_resources": grant.granted_resources,
+        "cumulative_granted": grant.cumulative_granted,
+        "total_ceiling": grant.total_ceiling,
+        "decision_logical_tick": grant.decision_logical_tick,
+    }
+    values.update(overrides)
+    return LeaseGrantReceipt(**values)
 
 
 def test_named_profiles_are_exact_versioned_and_finite():
@@ -323,9 +455,9 @@ def test_activity_without_progress_is_no_progress_and_denied():
         state,
     ) = _state_and_progress(progressing=False)
     runtime.execute_read("read", {"path": "a"}, "same", lambda: {"ok": True})
-    runtime.execute_read("read", {"path": "a"}, "same", lambda: pytest.fail())
+    runtime.execute_read("read", {"path": "b"}, "same", lambda: {"ok": True})
     assert runtime.snapshot.requests == 2
-    assert runtime.snapshot.executions == 1
+    assert runtime.snapshot.executions == 2
     assert progress.classification is ProgressClassification.NO_PROGRESS
     state = observe_continuation_context(
         state,
@@ -338,6 +470,17 @@ def test_activity_without_progress_is_no_progress_and_denied():
     )
     assert not decision.granted
     assert decision.receipt.denial_reason is LeaseDenialReason.NO_MEASURABLE_PROGRESS
+
+
+def test_progress_record_claims_are_derived_from_bound_measures_and_state():
+    *_, progress, _ = _state_and_progress(progressing=False)
+    with pytest.raises(ValueError, match="classification does not match"):
+        replace(
+            progress,
+            classification=ProgressClassification.MEASURABLE_PROGRESS,
+        )
+    with pytest.raises(ValueError, match="completion does not match"):
+        replace(progress, task_complete=True)
 
 
 def test_model_confidence_theatre_cannot_change_no_progress_denial():
@@ -404,7 +547,9 @@ def test_benchmark_observations_are_non_authoritative_for_grants():
 
 
 def test_regression_new_information_and_incomparable_are_distinct():
-    policy, _, task, governance, _, _, *_ = _state_and_progress()
+    policy, governance_policy, task, governance, _, _, *_ = (
+        _state_and_progress()
+    )
     del policy
     more_satisfied = _obligation_states(total=3, satisfied=2)
     fewer_satisfied = _obligation_states(total=3, satisfied=1)
@@ -441,28 +586,48 @@ def test_regression_new_information_and_incomparable_are_distinct():
     )
     basis = _id("external-basis")
     prior_evidence = {
-        "failing": ProgressCounterEvidence(
-            task.task_id,
-            governance.governance_id,
+        "failing": _counter_evidence(
+            governance_policy,
+            task,
+            governance,
             "failing",
             7,
             basis,
-            _id("prior-failing"),
             EpistemicClass.OBSERVED,
+            source="prior-failing",
         ),
-        "gates": ProgressCounterEvidence(
-            task.task_id,
-            governance.governance_id,
+        "gates": _counter_evidence(
+            governance_policy,
+            task,
+            governance,
             "gates",
             3,
             basis,
-            _id("prior-gates"),
             EpistemicClass.DERIVED,
+            source="prior-gates",
         ),
     }
     current_evidence = {
-        "failing": replace(prior_evidence["failing"], value=3),
-        "gates": replace(prior_evidence["gates"], value=2),
+        "failing": _counter_evidence(
+            governance_policy,
+            task,
+            governance,
+            "failing",
+            3,
+            basis,
+            EpistemicClass.OBSERVED,
+            source="current-failing",
+        ),
+        "gates": _counter_evidence(
+            governance_policy,
+            task,
+            governance,
+            "gates",
+            2,
+            basis,
+            EpistemicClass.DERIVED,
+            source="current-gates",
+        ),
     }
     mixed = evaluate_progress(
         task_id=task.task_id,
@@ -478,19 +643,59 @@ def test_regression_new_information_and_incomparable_are_distinct():
 
 def test_model_proposed_external_counter_is_rejected():
     with pytest.raises(ValueError, match="observed or deterministically derived"):
-        ProgressCounterEvidence(
-            _id("task"),
-            _id("governance"),
+        task_bundle = _governed_runtime(session="model-counter")
+        governance_policy, task, governance = task_bundle[1:4]
+        _counter_evidence(
+            governance_policy,
+            task,
+            governance,
             "tests.failing",
             1,
             _id("basis"),
-            _id("source"),
             EpistemicClass.MODEL_PROPOSED,
+            source="model-proposed",
         )
 
 
+def test_external_counter_requires_source_bound_native_provenance():
+    _, governance_policy, task, governance, _, _ = _governed_runtime(
+        session="structural-counter"
+    )
+    live, admission = _counter_source(
+        governance_policy,
+        task,
+        governance,
+        "tests.failing",
+        1,
+        _id("structural-counter-basis"),
+        EpistemicClass.OBSERVED,
+        source="structural",
+    )
+    structural = RuntimeTransition(
+        live.observation,
+        RuntimeReceipt(live.receipt.canonical_record()),
+    )
+    with pytest.raises(ValueError, match="source-bound"):
+        ProgressCounterEvidence(structural, admission)
+
+    _, unrelated_admission = _counter_source(
+        governance_policy,
+        task,
+        governance,
+        "tests.failing",
+        1,
+        _id("structural-counter-basis"),
+        EpistemicClass.OBSERVED,
+        source="unrelated",
+    )
+    with pytest.raises(ValueError, match="does not match tool governance"):
+        ProgressCounterEvidence(live, unrelated_admission)
+
+
 def test_unknown_to_known_external_measure_is_new_information_not_progress():
-    _, _, task, governance, _, _, prior, current, _, _ = _state_and_progress()
+    _, governance_policy, task, governance, _, _, prior, current, _, _ = (
+        _state_and_progress()
+    )
     contract = ProgressMeasureContract(
         "external",
         1,
@@ -502,14 +707,15 @@ def test_unknown_to_known_external_measure_is_new_information_not_progress():
             ),
         ),
     )
-    evidence = ProgressCounterEvidence(
-        task.task_id,
-        governance.governance_id,
+    evidence = _counter_evidence(
+        governance_policy,
+        task,
+        governance,
         "review.findings",
         5,
         _id("review-basis"),
-        _id("review-receipt"),
         EpistemicClass.OBSERVED,
+        source="review-receipt",
     )
     record = evaluate_progress(
         task_id=task.task_id,
@@ -646,11 +852,10 @@ def test_skipped_lease_index_is_denied_by_governance_and_rust():
         progress=progress,
     )
     assert isinstance(valid.receipt, LeaseGrantReceipt)
-    with pytest.raises(ValueError, match="native lease grant seal"):
+    with pytest.raises(ValueError, match="governance capability"):
         replace(valid.receipt, lease_index=2)
-    unissued_grant = replace(
+    unissued_grant = _structural_grant(
         valid.receipt,
-        _native_seal=None,
         lease_index=2,
     )
     application = runtime.apply_lease_transition(unissued_grant)
@@ -670,9 +875,13 @@ def test_hash_consistent_but_unissued_grant_cannot_extend_native_limits():
         policy, policy_receipt, runtime, progress, state
     )
     assert isinstance(decision.receipt, LeaseGrantReceipt)
-    fabricated = replace(
+    structural_exact = _structural_grant(decision.receipt)
+    assert structural_exact.canonical_record() == decision.receipt.canonical_record()
+    assert not structural_exact.governance_bound
+    with pytest.raises(ValueError, match="not issued by governance evaluation"):
+        runtime._bind_evaluated_lease_grant(structural_exact)
+    fabricated = _structural_grant(
         decision.receipt,
-        _native_seal=None,
         continuation_request_id=_id("fabricated-request"),
         progress_id=_id("fabricated-progress"),
     )
@@ -686,11 +895,16 @@ def test_hash_consistent_but_unissued_grant_cannot_extend_native_limits():
         == "IBAE-RT-LEASE-REJECT-UNISSUED-GRANT"
     )
     assert runtime.snapshot.canonical_record() == before
+    with pytest.raises(ValueError, match="not issued by governance evaluation"):
+        runtime._bind_evaluated_lease_grant(fabricated)
 
     from ibae._runtime import NativeLeaseGrantSeal
+    from ibae.continuation import _GovernanceDecisionCapability
 
     with pytest.raises(TypeError):
         NativeLeaseGrantSeal()
+    with pytest.raises(TypeError):
+        _GovernanceDecisionCapability()
 
 
 def test_stale_grant_and_duplicate_application_are_state_neutral():
@@ -884,6 +1098,30 @@ def test_strategy_paraphrase_is_not_a_material_change():
     assert receipt.reason is StrategyChangeReason.SAME_STRATEGY_IDENTITY
 
 
+def test_strategy_change_receipt_claims_are_revalidated_from_bound_material():
+    _, _, task, governance, _, _, *_ = _state_and_progress()
+    state, prior, alternate = _strategy_state()
+    admitted = evaluate_strategy_change(
+        task_id=task.task_id,
+        governance_id=governance.governance_id,
+        orchestration_state=state,
+        prior_strategy=prior,
+        proposed_strategy=alternate,
+    )
+    assert admitted.status is StrategyChangeStatus.ADMITTED
+    with pytest.raises(ValueError, match="do not match bound material"):
+        replace(
+            admitted,
+            proposed_strategy_material_id=_id("fabricated-strategy-material"),
+        )
+    with pytest.raises(ValueError, match="do not match bound material"):
+        replace(
+            admitted,
+            reason=StrategyChangeReason.NOT_MATERIAL,
+            status=StrategyChangeStatus.REJECTED,
+        )
+
+
 def test_different_strategy_identity_also_requires_structured_difference():
     _, _, task, governance, _, _, *_ = _state_and_progress()
     state, prior, alternate = _strategy_state()
@@ -1026,7 +1264,6 @@ def test_real_period_one_two_three_cycles_are_canonical(sequence, period):
         runtime,
         progress,
         state,
-        cycle_evidence=evidence,
     )
     assert not decision.granted
     assert decision.receipt.denial_reason is LeaseDenialReason.TERMINAL_CYCLE
@@ -1123,7 +1360,6 @@ def test_cycle_equivalent_strategy_is_rejected_but_breaking_change_can_continue(
         no_progress,
         state,
         strategy_change=admitted_change,
-        cycle_evidence=cycle,
     )
     assert granted.granted
     assert granted.next_state.strategy_recoveries == 1
@@ -1343,6 +1579,12 @@ def test_denials_are_finitely_bounded_by_request_policy():
         state = decision.next_state
     assert state.lease_requests == policy.max_lease_requests
     assert state.leases_denied == policy.max_lease_requests
+    projection = state.compact_projection(policy)
+    assert projection["lease_requests_remaining"] == 0
+    assert projection["lease_schedule_slots_remaining"] == 1
+    assert projection["leases_remaining"] == 0
+    assert projection["legal_recovery_actions"] == []
+    assert projection["material_strategy_change_admissible"] is False
     request = ContinuationRequest.from_state(
         state,
         progress=progress,
@@ -1393,6 +1635,22 @@ def test_checkpoint_resume_validates_exact_live_in_process_lineage():
         runtime_snapshot=runtime.snapshot,
         progress=progress,
     ).checkpoint_id
+
+
+def test_checkpoint_status_must_equal_the_live_continuation_state():
+    policy, _, _, _, _, runtime, _, current, progress, state = (
+        _state_and_progress()
+    )
+    assert state.progress_state is ProgressState.STALLED
+    with pytest.raises(ValueError, match="status does not match"):
+        ContinuationCheckpoint(
+            state=state,
+            policy=policy,
+            orchestration_state=current,
+            runtime_snapshot=runtime.snapshot,
+            progress=progress,
+            checkpoint_status=ProgressState.COMPLETE,
+        )
 
 
 def test_stale_checkpoint_fails_closed_after_runtime_changes():
@@ -1874,6 +2132,8 @@ def test_watchdog_expiry_is_observational_partial_not_completion_or_lease_exhaus
     # Observed wall-clock magnitude is not correctness identity.
     later = replace(observation, elapsed_milliseconds=120_000)
     assert later.observation_id == observation.observation_id
+    exhausted = replace(observation, lease_exhausted=True)
+    assert exhausted.observation_id != observation.observation_id
 
 
 @pytest.mark.parametrize("field", ("orchestration_state_id", "runtime_state_id"))
@@ -1904,6 +2164,56 @@ def test_watchdog_observation_requires_the_exact_live_context(field):
             checkpoint=checkpoint,
             reason=ContinuationPartialReason.WATCHDOG_EXPIRED,
             watchdog_observation=stale,
+        )
+
+
+def test_partial_evidence_ids_are_derived_from_the_bound_checkpoint():
+    policy, _, _, _, _, runtime, _, current, progress, state = (
+        _state_and_progress()
+    )
+    compact_id = _id("checkpoint-compact-evidence")
+    execution_id = _id("checkpoint-execution")
+    checkpoint = ContinuationCheckpoint(
+        state=state,
+        policy=policy,
+        orchestration_state=current,
+        runtime_snapshot=runtime.snapshot,
+        progress=progress,
+        compact_evidence_receipt_id=compact_id,
+        relevant_receipt_id=execution_id,
+        partial_reason=ContinuationPartialReason.WATCHDOG_EXPIRED,
+    )
+    observation = WatchdogObservation(
+        state.task_id,
+        state.governance_id,
+        state.orchestration_state_id,
+        state.runtime_state_id,
+        state.continuation_state_id,
+        1,
+    )
+    partial = ContinuationPartialReceipt(
+        state=state,
+        checkpoint=checkpoint,
+        reason=ContinuationPartialReason.WATCHDOG_EXPIRED,
+        watchdog_observation=observation,
+    )
+    assert partial.compact_evidence_receipt_id == compact_id
+    assert partial.execution_receipt_id == execution_id
+    with pytest.raises(ValueError, match="does not match checkpoint"):
+        ContinuationPartialReceipt(
+            state=state,
+            checkpoint=checkpoint,
+            reason=ContinuationPartialReason.WATCHDOG_EXPIRED,
+            compact_evidence_receipt_id=_id("unrelated-compact-evidence"),
+            watchdog_observation=observation,
+        )
+    with pytest.raises(ValueError, match="does not match checkpoint"):
+        ContinuationPartialReceipt(
+            state=state,
+            checkpoint=checkpoint,
+            reason=ContinuationPartialReason.WATCHDOG_EXPIRED,
+            execution_receipt_id=_id("unrelated-execution"),
+            watchdog_observation=observation,
         )
 
 
@@ -1997,6 +2307,12 @@ def test_model_free_budget_benchmark_covers_required_scenarios():
         assert BudgetVector.from_record(result["base_budget_consumed"]).is_within(
             BudgetVector.from_record(result["base_budget"])
         )
+        base_deficit = BudgetVector.from_record(result["base_budget_deficit"])
+        if not base_deficit.is_zero:
+            assert result["task_outcome"] == "denied"
+            assert result["denial_reason"] == "base_budget_exhausted"
+            assert result["lease_count"] == 0
+            continue
         if result["scenario"] == "short_success":
             assert result["task_outcome"] == "complete"
             assert result["lease_count"] == 0

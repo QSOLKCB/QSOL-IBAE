@@ -94,29 +94,35 @@ continuation without changing those frozen v0.2-v0.4 records:
 
 - a versioned integer progress-measure contract over canonical obligation state
   or governed observed/derived counters, bound exactly into continuation
-  policy, state, and native context;
+  policy, state, and native context; classification/completion are derived from
+  exact bound sources, and external counters require a source-bound native
+  observation matched to its governed tool admission;
 - closed `measurable_progress`, `no_progress`, `regression`,
   `new_information`, and `incomparable` classifications, with completion
   computed separately and model confidence/activity excluded;
 - structured strategy materiality over admitted strategy identity, capability
   frontier, target obligations, dependency path, recovery mode, and cycle
-  breaking; descriptive paraphrases have no authority;
+  breaking; receipts revalidate their bound material, live cycles are derived
+  from native history, and descriptive paraphrases have no authority;
 - governance-owned continuation policies with exact initial budgets, ordered
   finite lease schedules, checked cumulative ceilings, request caps, and a
   finite strategy-recovery allowance;
 - one task/session continuation ledger with deterministic grant/deny receipts,
-  compact AI recovery state, and no self-extension by runtime, tools, or future
-  workers;
+  request-cap-aware compact AI recovery state, and no self-extension by
+  runtime, tools, or future workers;
 - an opt-in Rust `apply_lease` transition that independently validates a full
-  governance-issued grant plus its non-constructible in-process capability,
-  changes only exact limits plus one runtime logical tick, and rejects
-  unissued/replayed/forged/stale state without mutation;
+  governance-issued grant whose evaluator-only capability gates a separate
+  non-constructible native seal, changes only exact limits plus one runtime
+  logical tick, and rejects unissued/replayed/forged/stale state without
+  mutation;
 - in-process structural checkpoints, a separate fixed-shape continuation
-  evidence receipt, semantic continuation partial receipts, and watchdog
-  observations that cannot claim completion or lease exhaustion;
+  evidence receipt, checkpoint-evidence-bound semantic continuation partial
+  receipts, and watchdog observations whose exact lease-exhaustion flag is
+  identity-bearing but cannot claim completion;
 - exact experimental `tiny`, `standard`, `extended`, and `repository` profiles
   plus a deterministic model-free schedule benchmark with no correctness
-  authority or universal recommendation.
+  authority or universal recommendation; unmet base demand is reported rather
+  than clipped into completion.
 
 There are deliberately **no model calls yet**. OpenAI SDK integration comes only after the kernel invariants are independently testable.
 

@@ -150,8 +150,9 @@ Current enforcement: normal runtime and continuation boundedness derives only
 from exact precommitted budgets, lease/request ceilings, and logical
 transitions. `IBAE-WATCHDOG-OBSERVATION-V1` is explicitly non-authoritative,
 always reports `task_complete = false`, excludes elapsed magnitude from its
-correctness identity, and must match independently computed lease-exhaustion
-state before a watchdog partial can bind that flag.
+correctness identity, includes the correctness-relevant lease-exhaustion flag
+in that identity, and must match independently computed lease-exhaustion state
+before a watchdog partial can bind it.
 
 ## IBAE-CLK-004 — Cache hits still advance canonical activity
 
@@ -211,9 +212,10 @@ ceiling before changing limits.
 No model, local worker, tool backend, runtime, GPU kernel, or scheduler may grant itself additional execution budget.
 
 Current enforcement: only the closed OpenAI-supervisor principal can request;
-governance alone emits a grant plus a non-serialized, non-constructible native
-capability for the exact live session/state; Rust accepts only that
-source-bound, identity-checked governance grant. A reconstructed
+the complete governance evaluator alone attaches an exact non-constructible
+in-process decision capability, and the runtime facade requires it before Rust
+may emit the native seal for the exact live session/state. Rust accepts only
+that two-stage source-bound, identity-checked governance grant. A reconstructed
 hash-consistent grant is insufficient. Tool, runtime, orchestrator, and
 candidate-worker requesters deny deterministically. `request_lease` is not a
 Rust command, and a rejected or forged `apply_lease` transition is state-,
@@ -315,8 +317,10 @@ Progress is computed from declared task obligations/acceptance conditions or ano
 Current enforcement: `IBAE-OBJECTIVE-PROGRESS-V1` compares a finite declared
 integer measure contract over canonical obligation counts or governed external
 counters. It emits closed measurable/no-progress/regression/new-information/
-incomparable classes and computes completion independently. Tool activity and
-elapsed time are absent. Canonical obligation sources enforce their safe
+incomparable classes and computes completion independently. Both claims are
+rederived from exact bound prior/current orchestration states and governed
+counter evidence whenever a record is constructed or consumed. Tool activity
+and elapsed time are absent. Canonical obligation sources enforce their safe
 direction, and continuation policy/state/native context commit the exact
 admitted progress-contract identity. Only `measurable_progress` may
 independently authorize continuation.
@@ -328,9 +332,12 @@ independently authorize continuation.
 A model's self-reported confidence, percentage complete, or request for more time cannot by itself establish measurable progress or justify another execution lease.
 
 Current enforcement: only exact obligation measures or task/governance-bound
-`observed`/`derived` counter evidence can enter a progress record. The
-continuation evaluator validates and deliberately ignores bounded benchmark
-observations; it has no confidence, percentage, token, or wall-clock input.
+`observed`/`derived` counter evidence can enter a progress record. Every
+external counter is derived from an accepted native source-bound runtime
+observation and matched to its exact governed read-tool admission; a supplied
+fingerprint or structural receipt alone is insufficient. The continuation
+evaluator validates and deliberately ignores bounded benchmark observations;
+it has no confidence, percentage, token, or wall-clock input.
 
 ## IBAE-PROG-003 — Obligation state is canonical
 
@@ -358,8 +365,11 @@ policy-bound live progress endpoint, strategy, and cycle evidence. Context
 rebind requires the progress record's prior endpoint to equal the live
 pre-rebind orchestration state. It returns a domain-separated grant or a closed
 denial, advances a bounded continuation decision ledger, and cannot exceed the
-precommitted request/schedule/cumulative ceilings. Repeated inputs produce
-byte-identical fixtures across hash seeds.
+precommitted request/schedule/cumulative ceilings. Period-1/2/3 evidence is
+recomputed from live native history, so omitting caller evidence cannot bypass
+a terminal-cycle denial; the compact projection reports both remaining
+schedule slots and request decisions and suppresses impossible recoveries.
+Repeated inputs produce byte-identical fixtures across hash seeds.
 
 ## IBAE-PROG-005 — Strategy identity is explicit
 
@@ -373,7 +383,9 @@ ordered dependency path, recovery mode, and initial transition pattern.
 Description/paraphrase is excluded. Admission requires a different strategy
 identity, structured material difference, active schema, known targets and
 capabilities, at least one bound target, and a pattern that does not reproduce
-bound period-1/2/3 cycle evidence. A strategy receipt may authorize only the
+bound period-1/2/3 cycle evidence. Every receipt revalidates its exact bound
+orchestration state, prior/proposed material, status, reason, and cycle evidence
+before it can authorize recovery. A strategy receipt may authorize only the
 policy-bounded recovery count and is never classified as progress.
 
 ---
@@ -758,7 +770,10 @@ Elapsed seconds, throughput, model turns, tokens, worker/device observations, an
 
 Current enforcement: benchmark observations live only in a dedicated benchmark
 record with `correctness_authority: false`. Benchmark records are excluded from
-execution and final-acceptance constructors and identities.
+execution and final-acceptance constructors and identities. The v0.5
+model-free budget comparison reports any componentwise unmet base demand as an
+exact deficit and denies that scenario as base-budget exhausted instead of
+silently clipping demand and declaring completion.
 
 ## IBAE-ID-007 — Rejected/partial state is preserved as rejected/partial
 
@@ -768,8 +783,10 @@ A rejected or partial run may be persisted for audit, but cannot later be relabe
 
 Current enforcement: rejection, partial, and final acceptance are separate
 immutable record classes with fixed closed statuses and distinct receipt
-domains. A later accepted attempt creates a new final receipt rather than
-mutating earlier evidence.
+domains. v0.5 checkpoints require status to equal the live continuation state;
+semantic partial evidence IDs are derived from the cited checkpoint and cannot
+be replaced by unrelated fingerprints. A later accepted attempt creates a new
+final receipt rather than mutating earlier evidence.
 
 ---
 

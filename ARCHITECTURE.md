@@ -293,25 +293,37 @@ AND (measurable progress OR admitted non-cyclic strategy change)
 Lease count and total possible extension are finite before execution begins.
 
 The implemented v0.5 policy makes that rule exact: one versioned progress
-contract compares canonical prior/current measures; governance binds an exact
-initial budget, finite indexed resource schedule, request cap, strategy-
-recovery cap, and total ceiling; and Rust applies only a full identity-checked
-grant. Every grant/deny decision advances a separate continuation logical tick.
+contract compares canonical prior/current measures and derives classification
+and completion from their bound sources. Governed external counters require a
+source-bound native observation matched to its exact tool admission.
+Governance binds an exact initial budget, finite indexed resource schedule,
+request cap, strategy-recovery cap, and total ceiling; an evaluator-only
+capability gates native seal issuance, and Rust applies only the resulting full
+identity-checked grant. Every grant/deny decision advances a separate
+continuation logical tick.
 Accepted native application advances the runtime logical tick once while
 consuming no tool resource counter or execution history; rejected application
 is state-neutral.
 
+Period-1/2/3 cycle evidence is recomputed from the live native history rather
+than trusted as optional caller input. The compact projection exposes both
+remaining schedule slots and remaining request decisions, so exhausted request
+capacity cannot advertise an impossible recovery.
+
 The `tiny`, `standard`, `extended`, and `repository` profiles are exact
 version-1 experimental fixtures, not universal constants. Equal, front-loaded,
 geometric-candidate, and small-base/recovery schedules are compared only in a
-model-free benchmark. Geometric continuation remains a candidate, not an
-architectural law.
+model-free benchmark. Any base-budget deficit is retained and reported as
+exhaustion instead of being clipped away. Geometric continuation remains a
+candidate, not an architectural law.
 
 Checkpoint/resume support is intentionally structural and in-process. It
 revalidates exact live task, governance, orchestration, native runtime,
-progress, strategy, policy, and lease lineage. It does not authenticate a
-producer or reconstruct an opaque native runtime from serialized bytes in
-another process.
+progress, strategy, policy, status, checkpoint-bound evidence IDs, and lease
+lineage. Semantic partials derive their evidence IDs from that checkpoint, and
+watchdog identity includes its independently checked lease-exhaustion flag. A
+checkpoint does not authenticate a producer or reconstruct an opaque native
+runtime from serialized bytes in another process.
 
 ---
 
@@ -623,14 +635,18 @@ material strategy changes, period-1-to-3 cycle-bound recovery, finite
 precommitted continuation policies, a single task/session continuation ledger,
 governance grant/deny receipts, and opt-in exact Rust lease application. The
 policy, state, and native context bind one exact progress contract; progress
-rebinds preserve both prior and current orchestration endpoints. Rust requires
-a non-constructible in-process capability for the exact governance-issued
-grant, so a self-consistent reconstructed grant cannot extend limits. The
-candidate also implements endpoint-checked fixed-shape continuation evidence,
-compact AI recovery state, exact structural in-process checkpoint/resume,
-denial-bound semantic continuation partials, and an exact-context watchdog
-record that cannot become completion authority. The existing v0.4
-governance/evidence schema remains unchanged.
+rebinds preserve both prior and current orchestration endpoints, derive their
+claims from bound sources, and require source-bound governed provenance for
+external counters. Strategy receipts revalidate their exact material and live
+cycle evidence is recomputed internally. An evaluator-only capability gates
+Rust native-seal issuance for the exact governance grant, so a self-consistent
+reconstructed grant cannot extend limits. The candidate also implements
+endpoint-checked fixed-shape continuation evidence, request-cap-aware compact
+AI recovery state, exact structural in-process checkpoint/resume,
+checkpoint-evidence-bound semantic continuation partials, and an exact-context
+watchdog record whose lease-exhaustion flag is identity-bearing but cannot
+become completion authority. The existing v0.4 governance/evidence schema
+remains unchanged.
 
 Live OpenAI integration, mutation/effect execution, durable cross-process
 runtime reconstruction, authority authentication, GPU paths, distributed

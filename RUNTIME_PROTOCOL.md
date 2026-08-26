@@ -123,7 +123,10 @@ lineage, a schedule-bounded mutation-free vector, checked cumulative grant,
 and no duplicate/replayed grant ID.
 
 Rust does not decide whether progress justifies a lease and exposes no
-`request_lease` command. Governance grants; Rust applies.
+`request_lease` command. The Python runtime facade also refuses to ask native
+code to seal a structural grant unless the complete governance evaluator has
+already attached its exact non-constructible decision capability. Governance
+grants; Rust seals and applies only that decision.
 
 Unknown variants—including `request_lease` and `finalize`—reject without runtime mutation. Each canonical attempted command, command type, and valid admission ID remains bound into its distinct rejection receipt. Those command semantics are not reserved by implementation and require their later roadmap phase.
 
@@ -220,10 +223,12 @@ delta, status, and closed rejection evidence. It deliberately carries no
 v0.3 source seal; `IBAE-CONTINUATION-CHECKPOINT-V1` supports structural
 in-process lineage, not authentication or durable reconstruction.
 
-An accepted application additionally requires the non-serialized,
-non-constructible native capability attached to the exact grant by the live
-governance decision path. Canonical hash consistency alone cannot authorize a
-lease, and a missing or mismatched capability is state-neutral.
+An accepted application additionally requires two non-serialized in-process
+bindings: the evaluator-only governance decision capability that gates seal
+issuance, and the non-constructible native seal bound to the exact grant and
+live native state. Canonical hash consistency alone cannot authorize a lease;
+a structural caller cannot use the runtime facade to mint the missing seal, and
+a missing or mismatched binding is state-neutral.
 
 ## Rejection taxonomy
 

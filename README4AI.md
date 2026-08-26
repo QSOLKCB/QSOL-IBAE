@@ -44,20 +44,25 @@ read coverage alone.
 v0.5 adds `IBAE-OBJECTIVE-PROGRESS-V1` and
 `IBAE-CONTINUATION-LEASE-V1`. Progress is an exact comparison of declared
 obligation/evidence measures; activity, confidence, and wall time are not
-progress authority. Policy, state, and native context bind the exact admitted
-progress contract and its prior/current orchestration lineage. Structured strategy changes bind admitted strategy,
-capability frontier, targets, dependency path, recovery mode, and cycle
+progress authority. Classification and completion are derived from exact bound
+prior/current sources; external counters require a source-bound native
+observation matched to its governed tool admission. Policy, state, and native
+context bind the exact admitted progress contract and its orchestration
+lineage. Structured strategy changes revalidate admitted strategy, capability
+frontier, targets, dependency path, recovery mode, and runtime-derived cycle
 evidence; paraphrase is excluded from identity. Governance precommits an exact
 initial budget, finite indexed schedule, cumulative ceiling, request cap, and
 strategy-recovery cap. The supervisor requests, governance grants or denies,
 and an opt-in Rust session applies only a full validated governance-issued
-grant carrying a non-constructible in-process capability with an exact
-`apply_lease` transition. An accepted application changes exact limits plus one
-runtime logical tick while consuming no tool/runtime resource counter or
-history; rejection is state-neutral. Structural in-process checkpoints,
-fixed-shape continuation evidence, semantic partial receipts, and
-non-authoritative watchdog observations are implemented. Existing v0.2-v0.4
-schemas and fixture bytes remain unchanged.
+grant after an evaluator-only capability gates its separate non-constructible
+native seal, using an exact `apply_lease` transition. An accepted application
+changes exact limits plus one runtime logical tick while consuming no
+tool/runtime resource counter or history; rejection is state-neutral. The
+compact state exposes remaining request decisions. Structural in-process
+checkpoints require live status, semantic partial evidence derives from the
+checkpoint, and watchdog lease exhaustion is identity-bearing but
+non-authoritative. Existing v0.2-v0.4 schemas and fixture bytes remain
+unchanged.
 
 No OpenAI SDK integration, effect execution, durable cross-process runtime
 reconstruction, GPU execution, distributed runtime, or local-worker
@@ -219,7 +224,10 @@ Unknown is not false. A model proposal is not an observation and cannot satisfy 
 - caching a value before it passes canonical validation;
 - disabling finite budget checks;
 - allowing any component to self-grant unbounded continuation;
+- minting a native lease seal without the complete governance evaluator's
+  exact decision capability;
 - treating a lease request, strategy paraphrase, model confidence, or activity as progress authority;
+- accepting a self-asserted external counter or caller-omitted live cycle;
 - letting Rust enlarge, reorder, replay, or manufacture a governance grant;
 - treating watchdog expiry as normal completion or independent proof of lease exhaustion;
 - treating a structural checkpoint hash as producer authentication or cross-process runtime reconstruction;

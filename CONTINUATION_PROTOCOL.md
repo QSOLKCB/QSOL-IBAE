@@ -66,8 +66,11 @@ source, and an optional completion threshold. Implemented sources are:
 - a governed external counter.
 
 Governed external counters accept only `observed` or `derived` epistemic
-evidence bound to the task, governance identity, dimension, basis identity,
-and evidence identity. Model-proposed values cannot enter the progress
+evidence. A counter is derived from an accepted, non-constructibly
+source-bound native `execute_read` observation and must match the exact
+governed read-tool admission's task, governance, action, tool, arguments, and
+dependency identities. A caller-supplied fingerprint or reconstructed runtime
+receipt is not provenance. Model-proposed values cannot enter the progress
 measure.
 
 Canonical obligation sources have fixed safe directions: unsatisfied and
@@ -91,10 +94,12 @@ The closed progress classifications are:
 | `new_information` | Knownness or comparison basis changed. |
 | `incomparable` | The same comparison contains both improvement and regression. |
 
-Task completion is computed separately. It requires every current obligation
-to be satisfied and every declared completion threshold to hold. Activity
-count, tool-call count, token count, elapsed time, and model confidence do not
-participate.
+Progress classification and task completion are derived claims: a
+`ProgressRecord` revalidates them against its exact bound prior/current
+orchestration states and external evidence rather than trusting constructor
+fields. Completion requires every current obligation to be satisfied and every
+declared completion threshold to hold. Activity count, tool-call count, token
+count, elapsed time, and model confidence do not participate.
 
 The version-1 continuation profiles admit only `measurable_progress`. Missing,
 new, incomparable, regressed, or unchanged evidence cannot independently
@@ -126,11 +131,19 @@ A proposed strategy change is admitted only when all of the following hold:
 - when cycle evidence exists, its proposed transition pattern does not
   reproduce the detected period-1, period-2, or period-3 cycle.
 
+The strategy-change receipt retains and revalidates the exact bound
+orchestration state, prior/proposed materializations, derived status/reason,
+and cycle evidence whenever its identity is consumed. Fresh fingerprint
+strings cannot manufacture an admitted material change.
+
 Cycle evidence is recomputed from native bounded transition history. Cold
 execution and cache-hit paths use the same transition identity, so reuse cannot
-hide a periodic loop. A cycle blocks continuation unless the exact request
-binds an admitted cycle-breaking strategy receipt. Strategy recovery count is
-finite and precommitted by policy.
+hide a periodic loop. The evaluator derives the live period-1/2/3 result even
+when the caller omits optional evidence and rejects supplied evidence that does
+not equal that live result. A cycle blocks continuation unless the exact
+request binds an admitted cycle-breaking strategy receipt. Such a grant
+consumes the finite precommitted strategy-recovery allowance whether or not the
+caller redundantly supplied the cycle record.
 
 ## Finite continuation policy
 
@@ -184,8 +197,8 @@ cannot recalibrate a live policy.
 ## Deterministic grant/deny transition
 
 For one exact continuation state, request, policy receipt, progress record,
-strategy receipt, cycle evidence, and blocking-governance input, decision order
-is deterministic and fail closed. It checks, in order:
+strategy receipt, live runtime-derived cycle state, and blocking-governance
+input, decision order is deterministic and fail closed. It checks, in order:
 
 1. state, task, governance, policy, orchestration, runtime, and progress
    lineage, including the policy-bound contract and exact live progress-ledger
@@ -220,10 +233,13 @@ can be admitted while a grant remains pending.
 
 `apply_lease` is accepted only by an opt-in continuation-enabled native
 session. Rust independently parses the full canonical governance grant and
-recomputes both grant and receipt identities. Governance evaluation attaches a
-non-serialized, non-constructible native capability for that exact canonical
-grant, native session, and prior runtime state. Rust refuses a hash-consistent
-but unissued grant. It then validates:
+recomputes both grant and receipt identities. The complete Python governance
+evaluator first attaches a non-serialized, non-constructible decision
+capability bound to the exact canonical grant. The runtime facade cannot bind a
+structural grant without that capability. Only then may the native session
+mint its separate non-constructible seal for that grant, session, and prior
+runtime state. Rust refuses a hash-consistent but unissued grant. It then
+validates:
 
 - task, governance, governance receipt, policy, and policy receipt bindings;
 - native session and exact prior runtime state;
@@ -252,10 +268,11 @@ policy/governance/runtime state, wrong or replayed index, schedule/ceiling
 violation, unsupported resource, unissued grant, and arithmetic overflow.
 
 The Rust application receipt is a separate execution-authority record. The
-grant capability is consumed only as an in-process application prerequisite
-and is not serialized. The application receipt itself deliberately has no v0.3
-native source seal: the supported checkpoint scope is in-process structural
-lineage, not durable producer authentication or remote attestation.
+evaluator capability and native grant seal are in-process application
+prerequisites and are not serialized. The application receipt itself
+deliberately has no v0.3 native source seal: the supported checkpoint scope is
+in-process structural lineage, not durable producer authentication or remote
+attestation.
 
 Python may commit an accepted application into continuation lineage only after
 matching every task/governance/policy/session/grant/index/cumulative/ceiling
@@ -288,10 +305,12 @@ application, and continuation logical tick. Advancing orchestration state
 requires a progress record whose prior endpoint is the ledger's current state;
 lease requests must reuse the exact last committed progress identity.
 
-The compact AI projection exposes exact remaining leases and total continuation
-capacity, the last progress/decision/denial state, pending-application state,
-and legal deterministic recovery actions. It is an observation of authority
-state, not authority to alter that state.
+The compact AI projection exposes remaining request decisions, remaining lease
+schedule slots, their effective minimum, total continuation capacity, the last
+progress/decision/denial state, pending-application state, and legal
+deterministic recovery actions. Once request decisions are exhausted it
+suppresses progress/strategy actions that cannot result in another request. It
+is an observation of authority state, not authority to alter that state.
 
 ## Checkpoint and resume scope
 
@@ -300,7 +319,8 @@ orchestration and native session/state identities, policy, progress contract,
 and continuation state, the exact live progress endpoint and strategy
 identities, lease and strategy-recovery ledgers, optional compact
 evidence/relevant receipt IDs, all three logical ticks, status, and optional
-partial reason.
+partial reason. Checkpoint status is derived from or required to equal the live
+continuation state's status.
 
 Resume reconstructs the expected checkpoint from the exact live in-process
 objects and requires byte-equivalent canonical content and checkpoint identity.
@@ -352,17 +372,19 @@ from v0.4 structural missing-receipt/gate partial records. Closed reasons are:
 Reason, continuation status, exact last denial, and relevant exhausted
 lease/recovery counter must agree. Every partial binds its checkpoint,
 continuation state, decision aggregate, and optional execution/compact evidence
-receipts. It always has `status = partial` and `task_complete = false`; a
-complete continuation state cannot be relabelled partial, and a partial cannot
-be relabelled accepted.
+receipts. Those evidence IDs are derived from the cited checkpoint; unrelated
+supplied IDs fail closed. It always has `status = partial` and
+`task_complete = false`; a complete continuation state cannot be relabelled
+partial, and a partial cannot be relabelled accepted.
 
 A watchdog expiry requires a bound `WatchdogObservation`. Elapsed milliseconds
 are retained as an observation but excluded from watchdog correctness identity.
 The observation always has `correctness_authority = false` and
 `task_complete = false`. Its `lease_exhausted` flag must match independent
-continuation state, and its task, governance, orchestration, runtime, and
-continuation identities must match the exact partial state; elapsed time cannot
-manufacture lease exhaustion or normal completion.
+continuation state and is included in the observation identity. Its task,
+governance, orchestration, runtime, and continuation identities must match the
+exact partial state; elapsed time cannot manufacture lease exhaustion or
+normal completion.
 
 ## Benchmark-only policy experiment
 
@@ -372,9 +394,12 @@ schedules across short success, genuinely progressing work, activity without
 progress, periodic loops, material recovery, strategy paraphrase, cache-heavy,
 retry-heavy, and ceiling-exhaustion scenarios.
 
-The report records base/lease resources, unused capacity, progress and strategy
-events, cycle/no-progress denials, outcome, and partial reason. It explicitly
-sets `benchmark_only = true`, `correctness_authority = false`, and
+The report records base demand, base consumption, any exact unmet base deficit,
+lease resources, unused capacity, progress and strategy events,
+cycle/no-progress denials, outcome, and partial reason. A nonzero base deficit
+reports `base_budget_exhausted` and cannot be erased by componentwise clipping
+or later completion. The report explicitly sets `benchmark_only = true`,
+`correctness_authority = false`, and
 `wall_clock_in_correctness_identity = false`. It emits no winner or universal
 recommendation.
 

@@ -1556,18 +1556,21 @@ class RustRuntimeSession:
             _lease_grant_seal=grant._native_source_seal(),
         )
 
-    def _issue_governance_lease_grant(self, grant: Any) -> Any:
-        """Mint the native in-process capability for one exact live grant.
+    def _bind_evaluated_lease_grant(self, grant: Any) -> Any:
+        """Bind one evaluator-capability-bearing grant to the native session.
 
-        This is an internal governance-to-runtime bridge. The native session
-        independently verifies its current state, policy, schedule, ceiling,
-        and canonical grant before emitting a non-constructible seal.
+        A structural receipt cannot call this bridge successfully: the grant
+        must already carry the non-constructible capability created by the
+        complete governance evaluator. The native session then independently
+        verifies state, policy, schedule, ceiling, and canonical bytes.
         """
 
         from .continuation import LeaseGrantReceipt
 
         if type(grant) is not LeaseGrantReceipt:
             raise TypeError("grant must be an exact LeaseGrantReceipt")
+        if not grant.governance_bound:
+            raise ValueError("lease grant was not issued by governance evaluation")
         if grant.source_bound:
             raise ValueError("lease grant is already source-bound")
         return self.__native.issue_lease_grant(
