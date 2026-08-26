@@ -1532,7 +1532,7 @@ mod tests {
     #[test]
     fn maximum_observation_envelope_is_representable_before_commit() {
         let mut runtime = core(2, 2, 1, 2);
-        let text = "x".repeat(65_000);
+        let text = "x".repeat(65_500);
         let observation = canonical_value(&json!({
             "a": text,
             "b": text,

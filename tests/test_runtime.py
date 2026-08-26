@@ -230,7 +230,7 @@ def test_runtime_rejects_python_forms_json_cannot_round_trip_exactly(
 
 def test_maximum_admitted_observation_fits_complete_runtime_outcome() -> None:
     runtime = RustRuntimeSession("maximum-observation-envelope")
-    text = "x" * 65_000
+    text = "x" * 65_500
     observation = {key: text for key in ("a", "b", "c", "d")}
     assert len(canonical_json(observation).encode("utf-8")) < (
         MAX_CANONICAL_VALUE_BYTES
