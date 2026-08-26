@@ -1,13 +1,12 @@
-"""Minimal invariant-bounded read executor."""
+"""Python API backed by the exact v0.3 Rust execution authority."""
 
 from __future__ import annotations
 
 from collections.abc import Callable
 from typing import Any
 
-from .cache import ObservationCache
-from .canonical import canonical_fingerprint, canonical_tool_key
-from .invariants import BudgetLimits, budget_violations, detect_short_cycle
+from .invariants import BudgetLimits
+from .runtime import RuntimeLimits, RuntimeReceipt, RuntimeRejected, RustRuntimeSession
 from .state import ExecutionState
 
 
@@ -20,28 +19,30 @@ class CycleDetected(RuntimeError):
 
 
 class InvariantExecutor:
-    """Execute deterministic/read-like operations behind invariant checks.
-
-    The executor does not know about any model SDK. It is intentionally a
-    substrate that a future OpenAI supervisor adapter can call.
-    """
+    """Execute admitted deterministic reads through private Rust-owned state."""
 
     def __init__(self, limits: BudgetLimits | None = None) -> None:
         self.limits = limits or BudgetLimits()
-        self._cache = ObservationCache()
-        self.state = ExecutionState()
+        self._runtime = RustRuntimeSession(
+            "invariant-executor",
+            RuntimeLimits(
+                max_requests=self.limits.max_requests,
+                max_executions=self.limits.max_executions,
+                max_retries=self.limits.max_retries,
+                max_history=self.limits.max_history,
+            ),
+        )
+        self.last_receipt: RuntimeReceipt | None = None
 
-    def _commit_state(self, candidate: ExecutionState) -> None:
-        violations = budget_violations(candidate, self.limits)
-        if violations:
-            raise BudgetExceeded("; ".join(violations))
-        self.state = candidate
-
-    @staticmethod
-    def _transition_fingerprint(key: str, value: Any) -> str:
-        observation_fp = canonical_fingerprint(value)
-        return canonical_fingerprint(
-            {"observation": observation_fp, "tool_key": key}
+    @property
+    def state(self) -> ExecutionState:
+        snapshot = self._runtime.snapshot
+        return ExecutionState(
+            requests=snapshot.requests,
+            executions=snapshot.executions,
+            cache_hits=snapshot.cache_hits,
+            retries=snapshot.retries,
+            history=snapshot.history,
         )
 
     def execute_read(
@@ -51,41 +52,35 @@ class InvariantExecutor:
         dependency_fingerprint: str,
         operation: Callable[[], Any],
     ) -> Any:
-        key = canonical_tool_key(tool_name, arguments, dependency_fingerprint)
-
-        requested = self.state.with_counters(requests=1)
-        self._commit_state(requested)
-
-        hit, value = self._cache.get(key)
-        if hit:
-            transition_fp = self._transition_fingerprint(key, value)
-            candidate = self.state.with_counters(cache_hits=1)
-            candidate = candidate.append_history(
-                transition_fp, self.limits.max_history
-            )
-            self._commit_state(candidate)
-            return value
-
-        candidate = self.state.with_counters(executions=1)
-        self._commit_state(candidate)
-        value = operation()
-
-        # Validate and fingerprint the observation before it can enter cache.
-        # A failed canonicalization must never poison later equivalent reads.
-        transition_fp = self._transition_fingerprint(key, value)
-        self._cache.put(key, value)
-
-        candidate = self.state.append_history(
-            transition_fp, self.limits.max_history
+        transition = self._runtime.execute_read_transition(
+            tool_name,
+            arguments,
+            dependency_fingerprint,
+            operation,
         )
-        self._commit_state(candidate)
-        return value
+        self.last_receipt = transition.receipt
+        if transition.receipt.status == "rejected":
+            reason = transition.receipt.rejection_reason
+            if reason in {
+                "IBAE-RT-REJECT-REQUEST-BUDGET",
+                "IBAE-RT-REJECT-EXECUTION-BUDGET",
+            }:
+                raise BudgetExceeded(reason)
+            if reason == "IBAE-RT-REJECT-INVALID-OBSERVATION":
+                raise ValueError(reason)
+            raise RuntimeRejected(transition.receipt)
+        return transition.observation
 
     def record_retry(self) -> None:
-        self._commit_state(self.state.with_counters(retries=1))
+        transition = self._runtime.record_retry_transition()
+        self.last_receipt = transition.receipt
+        if transition.receipt.status == "rejected":
+            if transition.receipt.rejection_reason == "IBAE-RT-REJECT-RETRY-BUDGET":
+                raise BudgetExceeded(transition.receipt.rejection_reason)
+            raise RuntimeRejected(transition.receipt)
 
     def terminal_cycle_period(self) -> int | None:
-        return detect_short_cycle(self.state.history)
+        return self._runtime.terminal_cycle_period()
 
     def assert_no_terminal_cycle(self) -> None:
         period = self.terminal_cycle_period()

@@ -12,7 +12,7 @@ QSOL-IBAE explores whether strong execution invariants can reduce redundant tool
 
 The v0.x line starts intentionally small. The first objective is not to build another general agent framework. It is to prove a compact execution kernel with measurable behavior.
 
-## v0.2 scope
+## v0.3 scope
 
 The v0.1 kernel provides:
 
@@ -41,6 +41,17 @@ The v0.2 Python orchestration reference adds:
 - a compact AI-facing state projection with actionable obligation/blocker context;
 - a checked-in, byte-stable model-free conformance fixture.
 
+The v0.3 Rust deterministic runtime candidate adds:
+
+- an opaque, in-process PyO3 session behind `IBAE-RUNTIME-PROTOCOL-V1`;
+- Rust-owned exact request, actual-execution, retry, cache-hit, logical-tick, history, and cache state;
+- checked integer accounting and explicit hard bounds for every resident runtime container;
+- dependency-sensitive cache validation, mutation-isolated observations, and deterministic period-1-to-3 cycle detection;
+- domain-separated command, session, state, and runtime-receipt identities;
+- structured execution-layer rejection records with reason codes and relevant invariant IDs;
+- independent Python/Rust canonical-byte, SHA-256, execution-semantic, and receipt conformance fixtures;
+- a deliberately limited command family: `execute_read` and `record_retry` only.
+
 There are deliberately **no model calls yet**. OpenAI SDK integration comes only after the kernel invariants are independently testable.
 
 ## Architecture
@@ -60,7 +71,7 @@ Execution runtime
 Benchmark observations remain outside correctness authority.
 ```
 
-See [ARCHITECTURE.md](ARCHITECTURE.md) and [INVARIANTS.md](INVARIANTS.md).
+See [ARCHITECTURE.md](ARCHITECTURE.md), [INVARIANTS.md](INVARIANTS.md), and [RUNTIME_PROTOCOL.md](RUNTIME_PROTOCOL.md).
 
 ## Provider scope
 
@@ -81,18 +92,22 @@ The benchmark surface records at least:
 - completion/failure status;
 - deterministic output fingerprints.
 
-From a fresh checkout, install the package and run the current micro-benchmark with:
+From a fresh checkout with Python 3.11+ and Rust 1.74.1+, install the package and run the current deterministic evidence with:
 
 ```bash
 python -m pip install -e .
 python benchmarks/basic.py
 python tools/render_v0_2_fixture.py
+python tools/render_v0_3_fixture.py
 ```
 
-Run tests with:
+Run both language suites with:
 
 ```bash
 python -m pip install -e '.[dev]'
+cargo fmt --manifest-path rust/Cargo.toml --check
+cargo clippy --manifest-path rust/Cargo.toml --all-targets --locked -- -D warnings
+cargo test --manifest-path rust/Cargo.toml --locked
 pytest
 ```
 
@@ -106,4 +121,4 @@ External code contributions are not currently accepted without a separate writte
 
 ## Status
 
-Experimental v0.2 pre-release reference. The governance wrapper, Rust authority runtime, continuation leases, OpenAI adapter, accelerators, and local workers remain later gated phases. No production claims are made.
+Experimental v0.3 pre-release implementation candidate. The merged v0.2 Python orchestrator remains the semantic reference above the Rust execution runtime. Governance/task receipts, continuation leases, OpenAI integration, accelerators, distributed execution, and local workers remain later gated phases. No production or performance claims are made.

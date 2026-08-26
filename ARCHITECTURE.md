@@ -1,6 +1,6 @@
 # QSOL-IBAE Architecture
 
-Status: frozen architecture contract with v0.2 Python orchestration reference.
+Status: frozen architecture contract with accepted v0.2 Python orchestration reference and v0.3 Rust runtime implementation candidate.
 
 QSOL-IBAE is a small OpenAI-exclusive governed execution substrate, not a general-purpose proprietary multi-provider agent framework.
 
@@ -104,7 +104,7 @@ Future local open-weight models are workers, not peers. They return candidate re
 
 ## 3. Python logic core and Rust runtime
 
-The intended modular implementation split is:
+The v0.3 modular implementation split is:
 
 ### Python logic core
 
@@ -134,7 +134,7 @@ Rust owns exact authority-bearing runtime mechanics:
 - deterministic CPU reference execution;
 - future SIMD/CUDA-facing runtime adapters.
 
-The initial bridge should be in-process and narrow, likely PyO3 + maturin. RPC/daemon/distributed infrastructure is deferred.
+The bridge is in-process and narrow: PyO3 + maturin, with one opaque runtime session and one canonical command dispatcher. RPC, daemons, sockets, async runtimes, and distributed infrastructure are absent and deferred.
 
 Conceptually:
 
@@ -155,22 +155,25 @@ Python must not mutate authoritative Rust runtime state directly.
 
 The Rust runtime must not directly call OpenAI or another model provider.
 
+The exact v0.3 record schemas, accounting deltas, identity domains, and rejection taxonomy are defined in `RUNTIME_PROTOCOL.md`.
+
 ---
 
 ## 4. Versioned narrow protocol
 
 The Python/Rust and agent-facing surfaces should remain small enough to audit completely.
 
-Candidate runtime command family:
+Implemented runtime command family:
 
 ```text
-ADMIT
-EXECUTE
-RECORD_OBSERVATION
-RECORD_RETRY
-REQUEST_LEASE
-FINALIZE
+IBAE-RUNTIME-PROTOCOL-V1
+    execute_read
+    record_retry
 ```
+
+`execute_read` is restricted to Python/orchestrator-classified cacheable reads. The callback crosses the bridge only as a controlled canonical observation envelope. Rust admits request/execution activity before invocation, validates the canonical observation before cache insertion, and emits a canonical receipt. `record_retry` performs exact bounded retry accounting. Unsupported command variants fail closed without mutating runtime state.
+
+`REQUEST_LEASE`, finalization, governance admission, generic mutation/effect execution, RPC, and worker commands are deliberately absent; they belong to later phases.
 
 Candidate agent-facing protocol:
 
@@ -185,7 +188,7 @@ LEASE
 FINALIZATION
 ```
 
-These names are architecture candidates until frozen, but the principle is normative: arbitrary implementation internals must not leak into the authority surface.
+The agent-facing names remain architecture candidates until their later phases, but the principle is normative: arbitrary implementation internals must not leak into the authority surface.
 
 ---
 
@@ -464,6 +467,8 @@ The v0.2 Python reference implements deterministic orchestration semantics for:
 - canonical rejection codes (including strategy/argument policy drift), recovery actions, compact state projection, and logical orchestration ticks;
 - byte-stable, model-free conformance fixtures.
 
-v0.2 remains a Python semantic reference. It does not execute admitted actions, grant continuation leases, own governance receipts, call models, or provide a Rust authority boundary.
+v0.2 remains the Python orchestration semantic reference. It constructs/admit actions but does not grant continuation leases, own governance receipts, or call models.
 
-The governance wrapper, logical lease system, Rust runtime, OpenAI adapter, GPU path, and local workers described elsewhere are **later architecture targets, not current implementation claims**. The v0.3 Rust phase must not begin until the v0.2 conformance gate is accepted.
+The v0.3 candidate moves the already admitted v0.1 cacheable-read execution semantics below Python. Rust owns exact counters, logical execution ticks, canonical cache/history, cycle detection, and runtime receipts. Python can request only versioned transitions and receives mutation-isolated observation/snapshot copies. The Rust crate has no network or model-provider dependency. The retained Python executor is conformance evidence, not an alternate production authority.
+
+The governance wrapper, logical lease system, OpenAI adapter, GPU path, distributed execution, and local workers described elsewhere are **later architecture targets, not current implementation claims**. They remain blocked on the v0.3 exact-head conformance/review gate.

@@ -3,7 +3,7 @@
 Machine-facing repository rules.
 
 1. Read `INVARIANTS.md`, `ARCHITECTURE.md`, and `ROADMAP.md` before changing architecture or runtime behavior.
-2. The architecture-contract exit gate was accepted by merged PR #2. The current implementation boundary is the v0.2 deterministic Python orchestration reference. Do not begin v0.3 Rust authority work or any OpenAI/GPU/local-worker phase until the v0.2 conformance gate is accepted.
+2. The architecture-contract exit gate was accepted by merged PR #2, and the v0.2 deterministic Python orchestration gate was accepted by merged PR #3. The current implementation boundary is the v0.3 Rust deterministic runtime. Do not begin v0.4 governance receipts, v0.5 leases, OpenAI integration, GPU work, distributed/local-worker work, or another later phase until the v0.3 conformance gate is accepted.
 3. Identify every invariant affected by a change and preserve each invariant's status (`ENFORCED MUST`, `ARCHITECTURE MUST`, `ARCHITECTURE SHOULD`, `CANDIDATE`). Do not present an architecture-only invariant as implemented.
 4. Preserve the authority separation `governance != orchestration != execution != benchmark`.
 5. Lower layers must not promote themselves upward: runtime cannot rewrite orchestration/governance policy; workers cannot become supervisors; benchmark speed cannot become correctness evidence.
@@ -14,7 +14,7 @@ Machine-facing repository rules.
 10. Cached observations must be validated before insertion, mutation-isolated, and invalidated when declared dependencies change. Reuse must preserve canonical cycle/history semantics.
 11. Normal execution boundedness must not depend solely on elapsed wall-clock time. Wall-clock watchdogs are catastrophic-hang failsafes/benchmark observations, not normal completion authority.
 12. Deterministic bookkeeping belongs in software, not model prose. Agent-facing state must structurally expose relevant budgets, obligation readiness, rejection reasons, and observed/derived/proposed/unknown distinctions.
-13. Python is the planned logic/orchestration/OpenAI-facing layer; Rust is the planned exact authority-bearing runtime/accounting layer. Do not let Python mutate authoritative Rust state directly when that runtime exists.
+13. Python is the logic/orchestration/future-OpenAI-facing layer; Rust is the exact authority-bearing runtime/accounting layer. Do not let Python mutate authoritative Rust state directly.
 14. The Rust runtime must not call remote model endpoints directly.
 15. GPU/SIMD/geometry work is deferred until reference semantics and Rust conformance exist. A faster accelerator result is not a more correct result.
 16. `C5 x K2 x C3`, CRT, GLUBALL sampling, and 30/32-lane layouts are optional donor patterns, not IBAE ontology. Execution adjacency does not imply orchestration meaning.

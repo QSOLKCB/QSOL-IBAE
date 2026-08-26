@@ -1,6 +1,6 @@
 # QSOL-IBAE Invariant Registry
 
-Status: frozen architecture contract with v0.2 enforcement annotations.
+Status: frozen architecture contract with v0.3 enforcement annotations.
 
 Violation of an **ENFORCED MUST** invariant is a system defect in the current implementation.
 Violation of an **ARCHITECTURE MUST** invariant is a design defect in any future implementation.
@@ -74,7 +74,7 @@ Memory adjacency, GPU-lane adjacency, CRT/toroidal neighbours, chunk membership,
 
 For any supported value `x`, repeated canonical serialization of `x` produces identical UTF-8 bytes.
 
-Current enforcement: sorted-key canonical JSON, fixed separators, UTF-8-safe text, rejection of NaN/Infinity, and rejection of non-string mapping keys.
+Current enforcement: sorted-key canonical JSON, fixed separators, UTF-8-safe text, rejection of NaN/Infinity, and rejection of non-string mapping keys. The v0.3 admitted runtime domain independently parses, bounds, renders, and byte-compares canonical JSON in Rust; Python/Rust bytes and SHA-256 values are fixture-tested for nested, Unicode, float, and 256-bit integer boundary cases.
 
 ## IBAE-DET-002 — Canonical tool identity
 
@@ -84,13 +84,15 @@ A read-tool request identity is derived only from its tool name, canonical argum
 
 Python `hash()`, `id()`, memory address, wall-clock timestamp, and implicit process state must not participate.
 
+Current enforcement: Python and Rust derive the same v0.1 tool key from tool name, canonical arguments, and the declared dependency fingerprint. Dependency changes force a cold execution in both implementations.
+
 ## IBAE-DET-003 — Deterministic admitted transition
 
 **ENFORCED MUST**
 
 Within a declared deterministic profile, identical admitted prior state + identical canonical command + identical dependency state must produce the same canonical transition result/receipt.
 
-Current enforcement: the pure v0.2 `admit_batch` transition and checked-in model-free conformance fixture produce byte-identical decisions, event history, state identity, and admission receipt.
+Current enforcement: the pure v0.2 `admit_batch` transition and checked-in model-free conformance fixture produce byte-identical decisions, event history, state identity, and admission receipt. The v0.3 Rust dispatcher additionally binds each command to its canonical prior-state identity and emits domain-separated canonical command, resulting-state, transition, and runtime-receipt identities; Python/Rust semantic projections and receipts are checked across hash seeds.
 
 ## IBAE-DET-004 — Deterministic orchestration ordering
 
@@ -102,11 +104,11 @@ Current enforcement: obligations are ordered by canonical obligation ID; explici
 
 ## IBAE-DET-005 — Domain-separated identities
 
-**ARCHITECTURE MUST**
+**ENFORCED MUST**
 
 Task, governance, orchestration, execution, execution-plan, observation, and receipt hashes must be domain-separated so equal raw payloads from different identity classes cannot alias semantically.
 
-Current v0.2 partial implementation domain-separates obligation, epistemic, capability, strategy, proposal, batch, action, orchestration-state, event, and admission-receipt identities. Task, governance, execution-plan, and final receipt identities remain architecture-only for later phases.
+Current implementation domain-separates obligation, epistemic, capability, strategy, proposal, batch, action, orchestration-state, event, admission-receipt, runtime-session, runtime-command, runtime-state, and runtime-receipt identities. v0.3 preserves the frozen v0.1 plain SHA-256 tool/observation/transition identities for cross-language equivalence. Task, governance, execution-plan, and final receipt identities remain architecture-only for later phases.
 
 ---
 
@@ -114,11 +116,11 @@ Current v0.2 partial implementation domain-separates obligation, epistemic, capa
 
 ## IBAE-CLK-001 — Logical clock is transition-derived
 
-**ARCHITECTURE MUST**
+**ENFORCED MUST**
 
 Primary execution progression is counted from canonical admitted transitions, not elapsed seconds.
 
-Current v0.2 reference implementation: `IBAE-LOGICAL-CLOCK-V1` consumes one exact logical tick per canonical proposal decision and one tick for a canonical batch-level rejection such as an over-size batch or unadmitted strategy schema. Integration with v0.1 execution/cache transitions remains a v0.3 conformance obligation.
+Current enforcement: `IBAE-LOGICAL-CLOCK-V1` consumes one exact logical tick per canonical orchestration proposal decision and one tick for a canonical batch-level rejection. `IBAE-RUNTIME-PROTOCOL-V1` advances a checked Rust `u64` tick only from committed request, execution, cache/history, observation/history, or retry transitions. No wall-clock input participates.
 
 ## IBAE-CLK-002 — Wall clock is non-correctness observation
 
@@ -136,9 +138,11 @@ An absolute time watchdog may exist to terminate catastrophic hangs or infrastru
 
 ## IBAE-CLK-004 — Cache hits still advance canonical activity
 
-**ARCHITECTURE MUST**
+**ENFORCED MUST**
 
 A cache hit may consume zero actual-execution quanta, but it remains a canonical request/transition event for request bounds, history, and loop detection.
+
+Current enforcement: a Rust cache hit increments request and cache-hit counters, advances logical activity, appends the same transition identity used by its cold path, and consumes zero actual-execution quanta. Request-budget exhaustion rejects before reuse.
 
 ---
 
@@ -168,6 +172,8 @@ Retry accounting is bounded by an explicit finite limit.
 
 Canonical transition history is truncated to a configured finite maximum length.
 
+Current v0.3 enforcement for `IBAE-BND-001` through `IBAE-BND-004`: Rust owns the counters and bounded history, uses checked `u64` arithmetic, enforces the declared boundary before the corresponding transition, and never invokes an operation after actual-execution admission fails. Cache hits remain request-bounded.
+
 ## IBAE-BND-005 — Finite continuation leases
 
 **ARCHITECTURE MUST**
@@ -186,13 +192,15 @@ No model, local worker, tool backend, runtime, GPU kernel, or scheduler may gran
 
 Requests, executions, retries, mutations, logical ticks, lease counters, execution addresses, and authority flags use exact integer/enumerated representations. Floating point cannot be the sole authority for these values.
 
+Current v0.3 partial enforcement: all implemented runtime counters, limits, logical ticks, statuses, and command/rejection classes use checked exact integer or closed enumerated representations. Inputs are type-checked, booleans are not accepted as integers, and hard caps prevent unbounded resident runtime state. Mutation, lease, and execution-address counters do not exist yet and remain obligations for the phases that introduce them; therefore this invariant remains architecture-only rather than fully enforced.
+
 ## IBAE-BND-008 — Bounded batches and queues
 
 **ENFORCED MUST**
 
 Batch proposal size, ready queue size, worker count, and other resident execution structures must have explicit finite bounds or deterministic streaming rules.
 
-Current enforcement: v0.2 gives every model-facing collection boundary an explicit protocol/configuration cap, including obligation and epistemic registries/dependencies, capability semantic-argument keys and state keys, proposal targets/batches, admitted strategy schemas/parameters, persistent occurrence ownership, and retained history. Canonical model values additionally have explicit byte, depth, total-node, per-collection, string, and integer-size bounds enforced while copying the input before serialization. Free-text record fields have a 4,096-byte UTF-8 cap, identity-bearing integers have a 256-bit cap, and oversized strings are measured incrementally without allocating a full encoded copy. Bounded consumers stop at cap + 1 instead of fully materializing over-size/infinite iterables. No worker queue exists yet; any later worker phase inherits this invariant.
+Current enforcement: v0.2 gives every model-facing collection boundary an explicit protocol/configuration cap, including obligation and epistemic registries/dependencies, capability semantic-argument keys and state keys, proposal targets/batches, admitted strategy schemas/parameters, persistent occurrence ownership, and retained history. Canonical model values additionally have explicit byte, depth, total-node, per-collection, string, and integer-size bounds enforced while copying the input before serialization. Free-text record fields have a 4,096-byte UTF-8 cap, identity-bearing integers have a 256-bit cap, and oversized strings are measured incrementally without allocating a full encoded copy. Bounded consumers stop at cap + 1 instead of fully materializing over-size/infinite iterables. v0.3 adds explicit hard caps for Rust requests, executions/cache entries, retries, history, canonical bytes/depth/nodes/items/strings, and tool/session text. No worker queue exists yet; any later worker phase inherits this invariant.
 
 ---
 
@@ -230,7 +238,7 @@ Mutable cache insertion is not exposed as a public executor authority surface. A
 
 ## IBAE-REUSE-006 — Reuse provenance is visible
 
-**ARCHITECTURE MUST**
+**ENFORCED MUST**
 
 An agent-visible reused observation must expose enough provenance to determine that it is cached, where it originated, and which unchanged dependency condition keeps it valid.
 
@@ -414,39 +422,51 @@ Current enforcement: occurrence-sensitive capabilities require a unique occurren
 
 ## IBAE-RT-001 — Python owns logic semantics; Rust owns exact runtime state
 
-**ARCHITECTURE MUST**
+**ENFORCED MUST**
 
 Python is the initial governance/orchestration/OpenAI-facing logic core. Rust is the authoritative execution/accounting/reference-runtime layer once v0.3 is implemented.
 
+Current enforcement: the supported Python `InvariantExecutor` delegates all implemented execution accounting, cache/history mutation, cycle state, logical ticks, and runtime receipts to an opaque Rust session. The retained Python implementation is named and documented as a conformance-only oracle.
+
 ## IBAE-RT-002 — Narrow versioned protocol
 
-**ARCHITECTURE MUST**
+**ENFORCED MUST**
 
 Python and Rust communicate through a small versioned command/receipt protocol. Arbitrary internal Rust mutation surfaces must not be exposed to Python.
 
+Current enforcement: `IBAE-RUNTIME-PROTOCOL-V1` admits exactly `execute_read` and `record_retry`. Commands and observations cross as bounded canonical records; unsupported variants reject structurally. Future lease/finalization/effect commands are absent.
+
 ## IBAE-RT-003 — No direct Python mutation of authoritative Rust state
 
-**ARCHITECTURE MUST**
+**ENFORCED MUST**
 
 Authority-bearing Rust runtime state changes only through admitted commands/transitions.
 
+Current enforcement: the non-subclassable PyO3 session exposes dispatch, copied snapshot, and cycle query only. Counters, cache, history, tick, and limits have no Python setter or cache-insertion method; returned observations and snapshots are caller-owned copies.
+
 ## IBAE-RT-004 — Runtime is model-provider agnostic internally
 
-**ARCHITECTURE MUST**
+**ENFORCED MUST**
 
 The Rust runtime does not directly call OpenAI or any remote model endpoint. Provider/model integration belongs above the runtime boundary.
 
+Current enforcement: the Rust crate dependency graph contains only PyO3, JSON/canonical formatting, and SHA-256 support. It has no HTTP, socket, async runtime, SDK, provider, or model integration.
+
 ## IBAE-RT-005 — Cross-language conformance
 
-**ARCHITECTURE MUST**
+**ENFORCED MUST**
 
 Every authority-bearing Rust transition must have reference fixtures sufficient to demonstrate conformance with the frozen semantic contract.
 
+Current enforcement: Rust unit tests and Python integration tests cover canonical bytes/hashes, repeated reads, dependency invalidation, invalid observations, caller mutation isolation, each budget boundary, bounded history, cycle equivalence, unsupported commands, and wall-clock neutrality. The v0.3 checked-in fixture compares the merged Python reference and Rust semantic projections and receipts under multiple `PYTHONHASHSEED` values.
+
 ## IBAE-RT-006 — Performance implementation is not semantic authority
 
-**ARCHITECTURE MUST**
+**ENFORCED MUST**
 
 Rust/CUDA/SIMD implementation speed cannot redefine the Python/reference semantic contract without a versioned architecture change and new conformance gate.
+
+Current enforcement: runtime correctness records contain no elapsed time, throughput, worker, chunk, device, build, or scheduling-plan field. v0.3 makes no speedup claim and introduces no accelerator or parallel execution path.
 
 ---
 

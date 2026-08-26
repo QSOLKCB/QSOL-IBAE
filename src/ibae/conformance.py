@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from .canonical import domain_fingerprint
+from ._records import CanonicalValue
+from .canonical import canonical_fingerprint, domain_fingerprint
 from .epistemic import (
     EpistemicClass,
     EpistemicRecord,
@@ -22,6 +23,13 @@ from .orchestration import (
     StrategySchema,
     StrategyValueKind,
     admit_batch,
+)
+from .reference_executor import PythonReferenceExecutor
+from .runtime import (
+    RUNTIME_PROTOCOL_VERSION,
+    RuntimeRejected,
+    RustRuntimeSession,
+    rust_canonical_json,
 )
 
 
@@ -211,4 +219,192 @@ def v0_2_reference_fixture() -> dict[str, object]:
         ],
         "receipt": transition.receipt.canonical_record(),
         "receipt_id": transition.receipt.receipt_id,
+    }
+
+
+def _execution_projection(executor: object) -> dict[str, object]:
+    if isinstance(executor, PythonReferenceExecutor):
+        return {
+            "history": list(executor.state.history),
+            "metrics": executor.metrics(),
+            "terminal_cycle_period": executor.terminal_cycle_period(),
+        }
+    if isinstance(executor, RustRuntimeSession):
+        snapshot = executor.snapshot
+        return {
+            "history": list(snapshot.history),
+            "metrics": {
+                "cache_hits": snapshot.cache_hits,
+                "executions": snapshot.executions,
+                "requests": snapshot.requests,
+                "retries": snapshot.retries,
+            },
+            "terminal_cycle_period": executor.terminal_cycle_period(),
+        }
+    raise TypeError("unsupported conformance executor")
+
+
+def v0_3_reference_fixture() -> dict[str, object]:
+    """Build the byte-stable, model-free Python/Rust v0.3 fixture."""
+
+    dependency_x = domain_fingerprint("ibae.fixture-dependency.v1", {"ref": "x"})
+    dependency_y = domain_fingerprint("ibae.fixture-dependency.v1", {"ref": "y"})
+    canonical_corpus = (
+        ("empty-mapping", {}),
+        ("empty-sequence", []),
+        ("mapping-order", {"z": 0, "a": {"y": 2, "x": 1}}),
+        ("nested", {"a": [None, True, {"b": [1, 2, 3]}]}),
+        ("integer-positive-boundary", (1 << 256) - 1),
+        ("integer-negative-boundary", -((1 << 256) - 1)),
+        ("unicode", {"text": "λ雪🚀"}),
+        ("float-fixed-boundary", 0.0001),
+        ("float-exponent-boundary", 1e-5),
+        (
+            "dependency-fingerprints",
+            {"current": dependency_x, "next": dependency_y},
+        ),
+    )
+    canonical_records = []
+    for name, value in canonical_corpus:
+        python_bytes = CanonicalValue.from_value(value).text
+        rust_bytes = rust_canonical_json(python_bytes)
+        canonical_records.append(
+            {
+                "equivalent": python_bytes == rust_bytes,
+                "name": name,
+                "python_bytes": python_bytes,
+                "python_sha256": canonical_fingerprint(value),
+                "rust_bytes": rust_bytes,
+                "rust_sha256": canonical_fingerprint(CanonicalValue(rust_bytes).to_value()),
+            }
+        )
+
+    python_repeated = PythonReferenceExecutor()
+    rust_repeated = RustRuntimeSession("fixture-repeated")
+    python_calls = 0
+    rust_calls = 0
+    python_results = []
+    rust_results = []
+    rust_receipts = []
+
+    def python_repeated_operation() -> dict[str, int]:
+        nonlocal python_calls
+        python_calls += 1
+        return {"value": 42}
+
+    def rust_repeated_operation() -> dict[str, int]:
+        nonlocal rust_calls
+        rust_calls += 1
+        return {"value": 42}
+
+    for _ in range(3):
+        python_results.append(
+            python_repeated.execute_read(
+                "read", {"path": "a"}, dependency_x, python_repeated_operation
+            )
+        )
+        transition = rust_repeated.execute_read_transition(
+            "read", {"path": "a"}, dependency_x, rust_repeated_operation
+        )
+        rust_results.append(transition.observation)
+        rust_receipts.append(transition.receipt.canonical_record())
+
+    python_dependency = PythonReferenceExecutor()
+    rust_dependency = RustRuntimeSession("fixture-dependency")
+    python_dependency_calls = 0
+    rust_dependency_calls = 0
+
+    def python_dependency_operation() -> dict[str, int]:
+        nonlocal python_dependency_calls
+        python_dependency_calls += 1
+        return {"call": python_dependency_calls}
+
+    def rust_dependency_operation() -> dict[str, int]:
+        nonlocal rust_dependency_calls
+        rust_dependency_calls += 1
+        return {"call": rust_dependency_calls}
+
+    python_dependency_results = [
+        python_dependency.execute_read(
+            "read", {"path": "a"}, dependency, python_dependency_operation
+        )
+        for dependency in (dependency_x, dependency_y)
+    ]
+    rust_dependency_results = [
+        rust_dependency.execute_read(
+            "read", {"path": "a"}, dependency, rust_dependency_operation
+        )
+        for dependency in (dependency_x, dependency_y)
+    ]
+
+    python_cycle = PythonReferenceExecutor()
+    rust_cycle = RustRuntimeSession("fixture-cycle")
+    for path in ("a", "b", "a", "b"):
+        python_cycle.execute_read(
+            "read", {"path": path}, dependency_x, lambda path=path: {"value": path}
+        )
+        rust_cycle.execute_read(
+            "read", {"path": path}, dependency_x, lambda path=path: {"value": path}
+        )
+
+    invalid_runtime = RustRuntimeSession("fixture-invalid")
+    invalid_rejection = None
+    try:
+        invalid_runtime.execute_read(
+            "read", {"path": "invalid"}, dependency_x, lambda: float("nan")
+        )
+    except RuntimeRejected as exc:
+        invalid_rejection = exc.receipt.canonical_record()
+    valid_after_rejection = invalid_runtime.execute_read(
+        "read", {"path": "invalid"}, dependency_x, lambda: {"valid": True}
+    )
+
+    repeated_python_projection = _execution_projection(python_repeated)
+    repeated_rust_projection = _execution_projection(rust_repeated)
+    dependency_python_projection = _execution_projection(python_dependency)
+    dependency_rust_projection = _execution_projection(rust_dependency)
+    cycle_python_projection = _execution_projection(python_cycle)
+    cycle_rust_projection = _execution_projection(rust_cycle)
+    return {
+        "canonicalization": canonical_records,
+        "identity_domains": {
+            "receipt_empty": domain_fingerprint("ibae.runtime-receipt-id.v1", {}),
+            "state_empty": domain_fingerprint("ibae.runtime-state-id.v1", {}),
+        },
+        "protocol_version": RUNTIME_PROTOCOL_VERSION,
+        "scenarios": {
+            "cycle_equivalence": {
+                "equivalent": cycle_python_projection == cycle_rust_projection,
+                "python": cycle_python_projection,
+                "rust": cycle_rust_projection,
+            },
+            "dependency_invalidation": {
+                "equivalent": (
+                    python_dependency_results == rust_dependency_results
+                    and python_dependency_calls == rust_dependency_calls == 2
+                    and dependency_python_projection == dependency_rust_projection
+                ),
+                "operation_calls": rust_dependency_calls,
+                "python": dependency_python_projection,
+                "results": rust_dependency_results,
+                "rust": dependency_rust_projection,
+            },
+            "invalid_observation": {
+                "cache_entries_after_recovery": len(invalid_runtime.snapshot.cache),
+                "rejection": invalid_rejection,
+                "result_after_rejection": valid_after_rejection,
+            },
+            "repeated_immutable_read": {
+                "equivalent": (
+                    python_results == rust_results
+                    and python_calls == rust_calls == 1
+                    and repeated_python_projection == repeated_rust_projection
+                ),
+                "operation_calls": rust_calls,
+                "python": repeated_python_projection,
+                "receipts": rust_receipts,
+                "results": rust_results,
+                "rust": repeated_rust_projection,
+            },
+        },
     }
