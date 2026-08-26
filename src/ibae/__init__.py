@@ -52,6 +52,16 @@ from .orchestration import (
     admit_batch,
 )
 from .policy import PolicyViolation, require_openai_remote_provider
+from .runtime import (
+    RUNTIME_PROTOCOL_VERSION,
+    RuntimeLimits,
+    RuntimeReceipt,
+    RuntimeRejected,
+    RuntimeSnapshot,
+    RuntimeTransition,
+    RustRuntimeSession,
+    rust_canonical_json,
+)
 
 __all__ = [
     "AGENT_PROTOCOL",
@@ -90,6 +100,13 @@ __all__ = [
     "RecoveryAction",
     "RejectionReason",
     "ReplaySafety",
+    "RUNTIME_PROTOCOL_VERSION",
+    "RuntimeLimits",
+    "RuntimeReceipt",
+    "RuntimeRejected",
+    "RuntimeSnapshot",
+    "RuntimeTransition",
+    "RustRuntimeSession",
     "Strategy",
     "StrategyParameterSpec",
     "StrategySchema",
@@ -102,4 +119,5 @@ __all__ = [
     "detect_short_cycle",
     "domain_fingerprint",
     "require_openai_remote_provider",
+    "rust_canonical_json",
 ]

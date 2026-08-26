@@ -1,6 +1,6 @@
 # QSOL-IBAE Roadmap
 
-Status: v0.2 deterministic Python orchestration reference implemented for review.
+Status: v0.2 accepted and merged; v0.3 Rust deterministic runtime implemented as the next gate candidate.
 
 QSOL-IBAE is intentionally developed **invariant-first**. The architecture-contract exit gate was accepted by merged PR #2. Each later phase remains blocked on the preceding phase gate.
 
@@ -318,25 +318,27 @@ Goal: prove orchestration semantics before moving authority into Rust.
 
 Identical canonical task state + identical proposal set with the same explicit ordering contract + identical policy must yield identical admitted orchestration decisions. Canonically independent read batches are order-normalized; effectful batches preserve their identity-bearing declared sequence.
 
-Gate evidence: unit/regression coverage includes cache-path- and unadmitted-proposal-neutral correctness identity, admitted typed strategy allowlist schemas with structured policy-drift rejection, capability-owned semantic argument allowlists with observational-metadata neutrality, cap+1 consumption checks at every model-facing collection boundary, bounded record text/identity integers, and incrementally measured canonical payload byte/depth/node bounds, plus `fixtures/v0.2/orchestration-reference.json`, regenerated under multiple `PYTHONHASHSEED` values and byte-compared in CI. v0.3 remains blocked until this PR is reviewed and the v0.2 gate is accepted.
+Gate accepted in merged PR #3. Evidence includes cache-path- and unadmitted-proposal-neutral correctness identity, admitted typed strategy allowlist schemas with structured policy-drift rejection, capability-owned semantic argument allowlists with observational-metadata neutrality, cap+1 consumption checks at every model-facing collection boundary, bounded record text/identity integers, and incrementally measured canonical payload byte/depth/node bounds, plus `fixtures/v0.2/orchestration-reference.json`, regenerated under multiple `PYTHONHASHSEED` values and byte-compared in CI.
 
 ## v0.3 — Rust Deterministic Runtime
 
 Goal: move exact authority-bearing execution machinery below Python.
 
-- [ ] Rust crate for runtime state, budgets, canonical identities, cache, cycle detection, logical clock, and receipts.
-- [ ] Exact integer control-plane fields.
-- [ ] PyO3/maturin bridge.
-- [ ] Versioned narrow command/receipt protocol.
-- [ ] Rust-owned authoritative runtime state.
-- [ ] Python reference versus Rust implementation conformance suite.
-- [ ] Reproduce v0.1 safe-reuse and budget behavior.
-- [ ] Byte-stable fixture receipts where platform contract permits.
-- [ ] No OpenAI/network calls from the Rust runtime.
+- [x] Rust crate for runtime state, budgets, canonical identities, cache, cycle detection, logical clock, and receipts.
+- [x] Exact integer control-plane fields with checked arithmetic and explicit hard limits.
+- [x] In-process PyO3/maturin bridge.
+- [x] Versioned narrow `execute_read` / `record_retry` command and receipt protocol.
+- [x] Rust-owned authoritative runtime state with no Python setters/cache insertion.
+- [x] Python reference versus Rust implementation conformance suite.
+- [x] Reproduce v0.1 safe-reuse, invalidation, mutation-isolation, cycle, and budget behavior.
+- [x] Byte-stable Python/Rust canonicalization and runtime receipt fixture.
+- [x] No OpenAI/network calls or model-provider dependency in the Rust runtime.
 
 ### v0.3 gate
 
 No accepted Rust transition may disagree with the admitted reference semantics without a versioned contract change.
+
+Candidate evidence: Rust unit tests, Python adversarial boundary tests, the checked-in `fixtures/v0.3/runtime-reference.json`, multi-`PYTHONHASHSEED` byte comparisons, preservation of the exact v0.2 fixture, and a fresh wheel build/install. Gate acceptance still requires green CI and Determinism plus review of the exact current PR head.
 
 ## v0.4 — Governance Wrapper and Identity Receipts
 

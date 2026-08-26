@@ -16,11 +16,46 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - name: Install pinned Rust toolchain
+        run: |
+          rustup toolchain install 1.74.1 --profile minimal --component clippy,rustfmt
+          rustup default 1.74.1
       - run: python -m pip install --upgrade pip
       - run: python -m pip install -e '.[dev]'
-      - run: pytest
+      - name: Rust format
+        run: cargo fmt --manifest-path rust/Cargo.toml --check
+      - name: Rust check
+        run: cargo check --manifest-path rust/Cargo.toml --locked
+      - name: Rust Clippy
+        run: cargo clippy --manifest-path rust/Cargo.toml --all-targets --locked -- -D warnings
+      - name: Rust tests
+        run: cargo test --manifest-path rust/Cargo.toml --locked
+      - name: Python tests
+        run: pytest
       - name: Verify v0.2 orchestration conformance fixture
         run: |
           python tools/render_v0_2_fixture.py > /tmp/v0.2-orchestration.json
           cmp fixtures/v0.2/orchestration-reference.json /tmp/v0.2-orchestration.json
+      - name: Verify v0.3 Python/Rust conformance fixture
+        run: |
+          python tools/render_v0_3_fixture.py > /tmp/v0.3-runtime.json
+          cmp fixtures/v0.3/runtime-reference.json /tmp/v0.3-runtime.json
       - run: python benchmarks/basic.py
+      - name: Build wheel from fresh source
+        run: python -m pip wheel . --no-deps --wheel-dir /tmp/qsol-wheel
+      - name: Verify fresh wheel install
+        run: |
+          python -m venv /tmp/qsol-install
+          /tmp/qsol-install/bin/python -m pip install /tmp/qsol-wheel/*.whl
+          cd /tmp
+          /tmp/qsol-install/bin/python -c "import ibae; assert ibae.RUNTIME_PROTOCOL_VERSION == 'IBAE-RUNTIME-PROTOCOL-V1'"
+      - name: Preserve generated lock and conformance evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v0.3-build-evidence
+          if-no-files-found: warn
+          path: |
+            rust/Cargo.lock
+            /tmp/v0.3-runtime.json
+            /tmp/qsol-wheel/*.whl

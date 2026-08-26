@@ -6,6 +6,13 @@ All notable changes to QSOL-IBAE will be documented here.
 
 ### Added
 
+- v0.3 Rust deterministic execution runtime with an opaque PyO3 session and maturin build path.
+- `IBAE-RUNTIME-PROTOCOL-V1` with only `execute_read` and `record_retry` commands; future lease/finalization commands remain unimplemented.
+- Rust-owned checked integer budgets, transition-derived logical ticks, bounded history/cache, dependency-sensitive reuse, cycle detection, and canonical runtime receipts.
+- domain-separated runtime session, command, state, and receipt identities while preserving the v0.1 canonical tool/observation/transition identities.
+- structured runtime rejection taxonomy with execution authority, relevant invariant IDs, and blocking state.
+- Python/Rust canonicalization and v0.1 execution conformance tests plus a byte-stable v0.3 fixture and fresh-wheel CI gate.
+- transaction-safe runtime output construction with a separately bounded receipt/snapshot envelope, exact-JSON observation forms, capability-contract rebinding, and command-bound unsupported-command rejections.
 - v0.2 deterministic Python orchestration reference.
 - canonical obligation registry, dependency DAG, ready-set calculation, and stable obligation IDs.
 - immutable bounded batch proposals, orchestrator-owned replay classification, safe replay-only deduplication, explicit effect sequencing, and persistent bounded occurrence ownership.

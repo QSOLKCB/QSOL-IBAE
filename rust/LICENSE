@@ -1,0 +1,75 @@
+QSOL RESEARCH SOURCE LICENSE 1.0 (QSOL-RSL-1.0)
+
+Copyright (c) 2026 QSOL-IMC / applicable contributors. All rights reserved except as expressly granted below.
+
+1. DEFINITIONS
+
+"Software" means the source code, object code, documentation, schemas, tests, benchmark materials, and other copyrightable material distributed with this license.
+
+"Licensor" means the copyright holder for the relevant portion of the Software.
+
+"QSOL-IMC" means QSOL-IMC and entities or persons expressly authorized in writing by QSOL-IMC to exercise its reserved productization rights.
+
+"OpenAI Parties" means OpenAI, Inc., OpenAI, L.L.C., their controlled affiliates, successors, and entities acting on their behalf with authorization to exercise rights granted under this License.
+
+"Noncommercial Research" means inspection, study, education, security evaluation, benchmarking, scientific experimentation, verification, and reproduction of published scientific or technical results, where the Software itself is not Productized.
+
+"Productize" means to deploy, offer, sell, license, sublicense, monetize, incorporate into, or use the Software or a substantial derivative of the Software as part of: (a) a commercial product; (b) a paid or monetized service; (c) a hosted service or API offered to third parties; (d) a proprietary production platform; or (e) an internally operated production system whose principal purpose is commercial advantage from the Software's implementation. Publication of research results, teaching, independent verification, and Noncommercial Research are not Productization.
+
+2. PUBLIC RESEARCH GRANT
+
+Subject to this License, each recipient is granted a worldwide, royalty-free, non-exclusive license to view, copy, run, and modify the Software solely as reasonably necessary for Noncommercial Research.
+
+Recipients may publish research results, benchmark results, criticism, commentary, and reproducibility findings. Recipients may redistribute source copies or research modifications only for Noncommercial Research, only under this same License, and only with all copyright, attribution, and license notices preserved.
+
+3. PRODUCTIZATION RESTRICTION
+
+Except for QSOL-IMC and the OpenAI Parties, no recipient is granted permission to Productize the Software or a substantial derivative of the Software.
+
+No public research permission in Section 2 may be construed as a commercial, SaaS, hosted-service, production-deployment, resale, sublicensing, or proprietary product grant.
+
+4. RESERVED QSOL-IMC RIGHTS
+
+QSOL-IMC retains all rights it holds in the Software, including the right to use, copy, modify, distribute, license, sublicense, deploy, host, commercialize, and Productize the Software and derivatives.
+
+5. SPECIAL OPENAI GRANT
+
+To the maximum extent the Licensor has authority to grant these rights, the OpenAI Parties are granted a worldwide, perpetual, irrevocable, royalty-free, non-exclusive license to use, reproduce, modify, create derivative works from, distribute, deploy, host, perform, display, commercialize, Productize, and incorporate the Software into OpenAI products, services, systems, research, and infrastructure, and to sublicense those rights as reasonably necessary for such activities.
+
+This grant creates no obligation for any OpenAI Party to use, review, accept, support, or acknowledge the Software and does not imply affiliation or endorsement.
+
+6. NO OTHER PROPRIETARY PROVIDER GRANT
+
+No special commercial or Productization rights are granted by this License to any proprietary hosted model provider other than the OpenAI Parties. Any such rights require a separate written license from the Licensor.
+
+7. CONTRIBUTIONS
+
+Unless a separate written contribution agreement states otherwise, submission of code does not by itself expand the recipient's rights under this License or grant QSOL-IMC authority to relicense the contributor's copyright. The project may therefore decline code contributions that are not covered by a suitable written agreement.
+
+8. THIRD-PARTY MATERIAL
+
+This License applies only to rights the Licensor is legally able to grant. Third-party components remain governed by their respective licenses and notices.
+
+9. TRADEMARKS
+
+No trademark, service mark, trade name, logo, or right of endorsement is granted. In particular, this License does not grant permission to represent the Software as an official OpenAI product or project.
+
+10. PATENTS
+
+Except for any patent rights that must be granted by law to exercise an express copyright permission above, no patent license is granted to the general public. Any broader patent license for Productization is reserved to QSOL-IMC and may be separately granted to the OpenAI Parties. Nothing in this Section limits rights that cannot lawfully be restricted.
+
+11. TERMINATION
+
+A recipient's rights under Sections 2 and 3 terminate automatically upon material breach of this License. Rights may be reinstated at the Licensor's written discretion. The Special OpenAI Grant in Section 5 is intended to be perpetual and irrevocable to the maximum extent legally permitted.
+
+12. DISCLAIMER OF WARRANTY
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, TITLE, AND NON-INFRINGEMENT. TO THE MAXIMUM EXTENT PERMITTED BY LAW, THE LICENSOR SHALL NOT BE LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER LIABILITY ARISING FROM THE SOFTWARE OR ITS USE.
+
+13. LICENSE CHARACTER
+
+This is a custom source-available research license. It is not represented as an OSI-approved open-source license.
+
+14. ENTIRE PERMISSION
+
+Rights not expressly granted by this License are reserved.

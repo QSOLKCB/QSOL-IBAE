@@ -7,6 +7,11 @@ from typing import Sequence
 
 from .state import ExecutionState
 
+MAX_RUNTIME_REQUESTS = 1_000_000
+MAX_RUNTIME_EXECUTIONS = 4_096
+MAX_RUNTIME_RETRIES = 1_000_000
+MAX_RUNTIME_HISTORY = 4_096
+
 
 @dataclass(frozen=True, slots=True)
 class BudgetLimits:
@@ -16,14 +21,16 @@ class BudgetLimits:
     max_history: int = 32
 
     def __post_init__(self) -> None:
-        for name, value in (
-            ("max_requests", self.max_requests),
-            ("max_executions", self.max_executions),
-            ("max_retries", self.max_retries),
-            ("max_history", self.max_history),
+        for name, value, hard_limit in (
+            ("max_requests", self.max_requests, MAX_RUNTIME_REQUESTS),
+            ("max_executions", self.max_executions, MAX_RUNTIME_EXECUTIONS),
+            ("max_retries", self.max_retries, MAX_RUNTIME_RETRIES),
+            ("max_history", self.max_history, MAX_RUNTIME_HISTORY),
         ):
-            if value <= 0:
-                raise ValueError(f"{name} must be positive")
+            if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+                raise ValueError(f"{name} must be an exact positive integer")
+            if value > hard_limit:
+                raise ValueError(f"{name} exceeds the hard limit of {hard_limit}")
 
 
 def budget_violations(state: ExecutionState, limits: BudgetLimits) -> tuple[str, ...]:

@@ -6,11 +6,11 @@ QSOL-IBAE is an invariant-bounded execution substrate intended to sit beneath an
 
 ## CURRENT PHASE
 
-Merged v0.1 deterministic kernel and architecture contract, plus the **v0.2 deterministic Python orchestration reference**.
+Merged v0.1 deterministic kernel and architecture contract, the accepted **v0.2 deterministic Python orchestration reference**, and the **v0.3 Rust deterministic runtime implementation candidate**.
 
 v0.2 implements canonical obligations/DAG readiness, proposal/admission separation, replay-safe-only batch deduplication, persistent bounded effect occurrence ownership, explicit independent-versus-declared batch ordering, explicit epistemic state classes with reuse-path- and unadmitted-proposal-neutral correctness identity, admitted typed strategy-specific parameter allowlists, capability-owned semantic argument allowlists with non-correctness observational metadata, bounded model-facing collections/text/integers and canonical payload traversal, canonical state/receipt identities, structured rejection/recovery records, and `IBAE-LOGICAL-CLOCK-V1` reference semantics.
 
-The v0.2 gate requires byte-identical admission decisions for identical canonical state, proposal set, and policy. No OpenAI SDK integration, Rust authority runtime, GPU execution, continuation lease implementation, governance receipt layer, or local-worker integration is claimed. v0.3 Rust work remains blocked until v0.2 is reviewed and accepted.
+PR #3 was merged after its exact reviewed head passed the v0.2 gate. The v0.3 candidate keeps orchestration semantics in Python and moves the implemented v0.1 read-execution mechanics into a private Rust session reached through PyO3/maturin and `IBAE-RUNTIME-PROTOCOL-V1`. The only admitted runtime commands are `execute_read` and `record_retry`; future lease/finalization commands are not implemented. No OpenAI SDK integration, GPU execution, continuation lease implementation, governance receipt layer, or local-worker integration is claimed.
 
 ## ARCHITECTURAL AUTHORITY
 
@@ -40,7 +40,7 @@ Normative boundary:
 governance != orchestration != execution != benchmark
 ```
 
-## PLANNED IMPLEMENTATION SPLIT
+## IMPLEMENTATION SPLIT
 
 ```text
 Python logic core
@@ -68,6 +68,8 @@ Rust runtime
 Python decides what should be attempted. Rust proves what was admitted and executed.
 
 The Rust runtime must not directly call remote model providers.
+
+The v0.3 runtime owns exact counters, cache/history, logical runtime ticks, command/state/transition identities, and execution receipts. Python receives copies of observations and snapshots and has no supported setter or cache-insertion surface. The retained Python v0.1 executor exists only as an independent conformance oracle.
 
 ## MUST PRESERVE
 
