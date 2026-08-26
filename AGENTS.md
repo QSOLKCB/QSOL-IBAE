@@ -3,7 +3,7 @@
 Machine-facing repository rules.
 
 1. Read `INVARIANTS.md`, `ARCHITECTURE.md`, and `ROADMAP.md` before changing architecture or runtime behavior.
-2. The current next step is architecture-contract review, not feature implementation. Do not begin the Python/Rust/OpenAI/GPU/local-worker implementation phases until the architecture-contract exit gate in `ROADMAP.md` is accepted.
+2. The architecture-contract exit gate was accepted by merged PR #2. The current implementation boundary is the v0.2 deterministic Python orchestration reference. Do not begin v0.3 Rust authority work or any OpenAI/GPU/local-worker phase until the v0.2 conformance gate is accepted.
 3. Identify every invariant affected by a change and preserve each invariant's status (`ENFORCED MUST`, `ARCHITECTURE MUST`, `ARCHITECTURE SHOULD`, `CANDIDATE`). Do not present an architecture-only invariant as implemented.
 4. Preserve the authority separation `governance != orchestration != execution != benchmark`.
 5. Lower layers must not promote themselves upward: runtime cannot rewrite orchestration/governance policy; workers cannot become supervisors; benchmark speed cannot become correctness evidence.

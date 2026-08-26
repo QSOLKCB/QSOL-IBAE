@@ -1,6 +1,6 @@
 # QSOL-IBAE Architecture
 
-Status: architecture-contract planning after merged v0.1 kernel.
+Status: frozen architecture contract with v0.2 Python orchestration reference.
 
 QSOL-IBAE is a small OpenAI-exclusive governed execution substrate, not a general-purpose proprietary multi-provider agent framework.
 
@@ -446,8 +446,24 @@ Optional features such as GPU scheduling geometry, local workers, alternative or
 
 ## 13. Current implementation boundary
 
-The merged v0.1 Python kernel currently implements only the deterministic execution foundation: canonicalization, observation reuse, finite request/execution/retry/history bounds, short-cycle detection, and provider policy.
+The merged v0.1 Python kernel implements the deterministic execution foundation: canonicalization, observation reuse, finite request/execution/retry/history bounds, short-cycle detection, and provider policy.
 
-The governance wrapper, deterministic orchestration layer, logical lease system, Rust runtime, OpenAI adapter, GPU path, and local workers described here are **architecture targets, not current implementation claims**.
+The v0.2 Python reference implements deterministic orchestration semantics for:
 
-No implementation PR for those targets should begin until the architecture-contract gate in `ROADMAP.md` is accepted.
+- stable obligation identities and validated dependency DAGs;
+- canonical ready sets, canonical ordering for independent reads, and preserved declared sequencing for effectful batches;
+- model proposal versus admitted-action separation;
+- orchestrator-owned replay classification;
+- within-batch deduplication only for replay-safe actions;
+- distinct bounded occurrence identity/ownership for mutations and non-idempotent effects, persisted across batches;
+- explicit epistemic state classes and dependency-bound state identity;
+- semantic epistemic identity that excludes fresh-versus-cache delivery metadata and unadmitted model-proposed values while preserving both in the AI projection;
+- strategy-specific, typed, finite parameter allowlists stored in admitted orchestration state and bound into strategy identity, with schema drift returned as a structured batch rejection;
+- capability-owned finite semantic argument-key allowlists, with observational proposal metadata retained for the agent but excluded from correctness identity and replay-safe deduplication;
+- bounded proposal/state/history/occurrence containers, with bounded consumption at every model-facing iterable boundary, incrementally measured free text, bounded identity integers, and bounded canonical-value traversal before serialization;
+- canonical rejection codes (including strategy/argument policy drift), recovery actions, compact state projection, and logical orchestration ticks;
+- byte-stable, model-free conformance fixtures.
+
+v0.2 remains a Python semantic reference. It does not execute admitted actions, grant continuation leases, own governance receipts, call models, or provide a Rust authority boundary.
+
+The governance wrapper, logical lease system, Rust runtime, OpenAI adapter, GPU path, and local workers described elsewhere are **later architecture targets, not current implementation claims**. The v0.3 Rust phase must not begin until the v0.2 conformance gate is accepted.

@@ -1,6 +1,6 @@
 # QSOL-IBAE Invariant Registry
 
-Status: architecture-contract draft after merged v0.1 kernel.
+Status: frozen architecture contract with v0.2 enforcement annotations.
 
 Violation of an **ENFORCED MUST** invariant is a system defect in the current implementation.
 Violation of an **ARCHITECTURE MUST** invariant is a design defect in any future implementation.
@@ -86,21 +86,27 @@ Python `hash()`, `id()`, memory address, wall-clock timestamp, and implicit proc
 
 ## IBAE-DET-003 — Deterministic admitted transition
 
-**ARCHITECTURE MUST**
+**ENFORCED MUST**
 
 Within a declared deterministic profile, identical admitted prior state + identical canonical command + identical dependency state must produce the same canonical transition result/receipt.
 
+Current enforcement: the pure v0.2 `admit_batch` transition and checked-in model-free conformance fixture produce byte-identical decisions, event history, state identity, and admission receipt.
+
 ## IBAE-DET-004 — Deterministic orchestration ordering
 
-**ARCHITECTURE MUST**
+**ENFORCED MUST**
 
 When multiple actions are equally ready under the same policy and dependency state, the deterministic orchestrator must use a canonical ordering/admission rule rather than process/hash iteration accidents.
+
+Current enforcement: obligations are ordered by canonical obligation ID; explicitly independent/read-only proposal batches are ordered by canonical proposal ID; effectful batches require an identity-bearing declared sequence and preserve it. The determinism workflow repeats the fixture under distinct `PYTHONHASHSEED` values.
 
 ## IBAE-DET-005 — Domain-separated identities
 
 **ARCHITECTURE MUST**
 
 Task, governance, orchestration, execution, execution-plan, observation, and receipt hashes must be domain-separated so equal raw payloads from different identity classes cannot alias semantically.
+
+Current v0.2 partial implementation domain-separates obligation, epistemic, capability, strategy, proposal, batch, action, orchestration-state, event, and admission-receipt identities. Task, governance, execution-plan, and final receipt identities remain architecture-only for later phases.
 
 ---
 
@@ -112,11 +118,15 @@ Task, governance, orchestration, execution, execution-plan, observation, and rec
 
 Primary execution progression is counted from canonical admitted transitions, not elapsed seconds.
 
+Current v0.2 reference implementation: `IBAE-LOGICAL-CLOCK-V1` consumes one exact logical tick per canonical proposal decision and one tick for a canonical batch-level rejection such as an over-size batch or unadmitted strategy schema. Integration with v0.1 execution/cache transitions remains a v0.3 conformance obligation.
+
 ## IBAE-CLK-002 — Wall clock is non-correctness observation
 
-**ARCHITECTURE MUST**
+**ENFORCED MUST**
 
 Elapsed time, throughput, queue delay, and tool latency are benchmark/environment observations and cannot enter correctness identity unless a separately reviewed protocol explicitly makes timing itself the subject of the task.
+
+Current enforcement: the v0.2 canonical orchestration state, events, admitted action identities, and receipts expose no wall-clock field. Strategy identity uses `IBAE-STRATEGY-PARAMETERS-V1` plus a strategy-specific typed allowlist schema stored in admitted orchestration state; a mismatch returns a structured batch rejection and admits no proposal. Capability contracts use `IBAE-CAPABILITY-ARGUMENTS-V1` to allowlist semantic argument keys before action identity is computed. Proposal `observational_metadata` remains agent-visible but is excluded from proposal, batch, action, event, state, and receipt identity; placing an unlisted observation in semantic arguments returns a structured rejection.
 
 ## IBAE-CLK-003 — Wall-clock watchdog is failsafe only
 
@@ -178,9 +188,11 @@ Requests, executions, retries, mutations, logical ticks, lease counters, executi
 
 ## IBAE-BND-008 — Bounded batches and queues
 
-**ARCHITECTURE MUST**
+**ENFORCED MUST**
 
 Batch proposal size, ready queue size, worker count, and other resident execution structures must have explicit finite bounds or deterministic streaming rules.
+
+Current enforcement: v0.2 gives every model-facing collection boundary an explicit protocol/configuration cap, including obligation and epistemic registries/dependencies, capability semantic-argument keys and state keys, proposal targets/batches, admitted strategy schemas/parameters, persistent occurrence ownership, and retained history. Canonical model values additionally have explicit byte, depth, total-node, per-collection, string, and integer-size bounds enforced while copying the input before serialization. Free-text record fields have a 4,096-byte UTF-8 cap, identity-bearing integers have a 256-bit cap, and oversized strings are measured incrementally without allocating a full encoded copy. Bounded consumers stop at cap + 1 instead of fully materializing over-size/infinite iterables. No worker queue exists yet; any later worker phase inherits this invariant.
 
 ---
 
@@ -222,6 +234,8 @@ Mutable cache insertion is not exposed as a public executor authority surface. A
 
 An agent-visible reused observation must expose enough provenance to determine that it is cached, where it originated, and which unchanged dependency condition keeps it valid.
 
+Current v0.2 partial implementation: compact epistemic projection retains the explicit `reused` delivery-path flag, while epistemic record, dependency, action, and orchestration-state correctness identities exclude that flag. Wiring the v0.1 cache to emit these records remains a later runtime-boundary obligation.
+
 ---
 
 # 6. Cycle detection, progress, and continuation
@@ -258,9 +272,11 @@ A model's self-reported confidence, percentage complete, or request for more tim
 
 ## IBAE-PROG-003 — Obligation state is canonical
 
-**ARCHITECTURE MUST**
+**ENFORCED MUST**
 
 Obligations have stable IDs, explicit satisfied/unsatisfied/blocked state, and declared dependencies. The orchestrator must not require the supervisor to remember obligation completion only from transcript prose.
+
+Current enforcement: v0.2 provides immutable obligation records, key-derived canonical IDs, explicit status/block reason fields, validated dependency references, cycle rejection, and deterministic ready/blocking projections.
 
 ## IBAE-PROG-004 — Continuation admission is deterministic
 
@@ -279,6 +295,8 @@ A continuation lease may be granted only when:
 **ARCHITECTURE MUST**
 
 A strategy change used to justify continuation must have a canonical identity distinct from superficial rewording of the same action sequence.
+
+Current v0.2 partial implementation provides a domain-separated identity over structured strategy key, normalized parameters, and an admitted typed parameter-schema identity. Each schema has a finite parameter-key allowlist and bounded value contract; schemas live in canonical orchestration state, and a non-matching proposal schema produces a canonical batch rejection before any proposal is admitted. Determining whether a proposed strategy is materially non-cyclic remains deferred to the v0.5 continuation gate.
 
 ---
 
@@ -338,19 +356,25 @@ No final execution may be labelled accepted without the required governance/orch
 
 OpenAI supplies intelligence and proposed actions. The deterministic orchestrator canonicalizes, classifies action authority/replay safety, deduplicates only where replay-safe equivalence is proven, dependency-checks, budget-checks, and admits/rejects those actions.
 
+Current v0.2 partial implementation covers immutable proposal records, orchestrator-owned capability/replay and semantic-argument classification, observation-versus-correctness metadata separation, obligation and epistemic dependency checks, bounded batches, and structured admission/rejection. Governance authority and execution-budget admission remain later phases.
+
 ## IBAE-ORCH-002 — Ready-set calculation is deterministic
 
-**ARCHITECTURE MUST**
+**ENFORCED MUST**
 
 For identical obligation/DAG state, policy, and admitted observations, the ready set is identical.
 
+Current enforcement: the validated v0.2 obligation DAG computes readiness solely from canonical obligation status and dependency state.
+
 ## IBAE-ORCH-003 — Duplicate elimination is replay-safe only
 
-**ARCHITECTURE MUST**
+**ENFORCED MUST**
 
 Canonical equivalence and unchanged dependency state are sufficient for deduplication only for actions whose authority class is cacheable/read-only or is otherwise explicitly proven replay-safe under the active contract.
 
 Mutations, non-idempotent external effects, and any action with occurrence-sensitive semantics must preserve each admitted occurrence even when canonical arguments are identical. Repeated proposal does not by itself authorize suppressing a required effect.
+
+Current enforcement: replay classification and semantic argument-key allowlists are read from the orchestrator-owned versioned capability record, capability-owned dependencies cannot be omitted by a proposal, observational metadata is excluded from action identity, non-read replay safety requires an explicit evidence identity, and only cacheable-read/proven-replay-safe equal action identities are coalesced within a batch.
 
 ## IBAE-ORCH-004 — Batch admission preserves semantics
 
@@ -358,23 +382,31 @@ Mutations, non-idempotent external effects, and any action with occurrence-sensi
 
 Batching/parallelizing independent actions may alter execution-plan identity and performance, but cannot alter correctness identity or result semantics for an admitted deterministic case.
 
+Current v0.2 enforcement proves admission equivalence across input order only for batches that explicitly declare canonical independence. Batches containing effectful capabilities require an identity-bearing declared sequence, which admission preserves. Physical parallel execution and execution-plan receipts remain later-phase contracts.
+
 ## IBAE-ORCH-005 — Dependency barriers are explicit
 
-**ARCHITECTURE MUST**
+**ENFORCED MUST**
 
 An action that depends on an unsatisfied obligation/observation cannot be made ready merely by scheduling preference or model request.
 
+Current enforcement: unknown, satisfied, explicitly blocked, dependency-blocked, epistemically unknown, and unadmitted model-proposed inputs produce canonical rejections and recovery actions. Only observed or valid derived epistemic records satisfy action dependencies.
+
 ## IBAE-ORCH-006 — Orchestration state is bounded
 
-**ARCHITECTURE MUST**
+**ENFORCED MUST**
 
 Obligation graphs, ready sets, pending proposals, and retained orchestration history require explicit bounds or deterministic streaming/compaction policies.
 
+Current enforcement: `OrchestrationLimits` cannot exceed protocol hard caps; all exposed iterable inputs, free-text records, identity integers, and canonical model payloads are validated through explicit structural/byte bounds before retention/serialization; over-size proposal construction/admission fails closed; admitted strategy schemas have a finite registry; retained history uses deterministic bounded truncation; and persistent occurrence ownership rejects new effects when its exact registry reaches capacity.
+
 ## IBAE-ORCH-007 — Occurrence identity is preserved for effectful actions
 
-**ARCHITECTURE MUST**
+**ENFORCED MUST**
 
 Each admitted mutation or non-idempotent action has occurrence identity distinct from content equivalence. An orchestrator may reorder an effectful action only when its dependency/ordering contract permits it, and may never merge two required occurrences into one execution merely because their payloads match.
+
+Current enforcement: occurrence-sensitive capabilities require a unique occurrence key, bind it into action identity, never enter the replay-safe deduplication index, and persist bounded occurrence ownership across batches so reuse is rejected rather than treated as a cache hit. Effectful batches also require and preserve an explicit declared sequence.
 
 ---
 
@@ -432,15 +464,19 @@ If runtime state can be computed exactly by software, the supervisor must receiv
 
 Every governed rejection exposes a stable machine-readable reason code and relevant invariant/authority class.
 
+Current v0.2 partial implementation: every orchestration-admission rejection is represented by the closed `RejectionReason` enum and carries authority layer, relevant invariant IDs, and structured blocking/unresolved state where applicable. This includes strategy-policy drift and capability semantic-argument mismatch as well as batch, dependency, ordering, and occurrence failures. Converting all v0.1 runtime exceptions and future governance/execution rejections remains a later-phase obligation.
+
 ## IBAE-AI-003 — Safe recovery actions are exposed when known
 
 **ARCHITECTURE SHOULD**
 
 If deterministic governance knows legal next moves after a rejection, the agent-facing response should expose them directly.
 
+Current v0.2 implementation includes a closed `RecoveryAction` enum and returns deterministic recovery actions with each supported rejection.
+
 ## IBAE-AI-004 — Epistemic state classes remain distinct
 
-**ARCHITECTURE MUST**
+**ENFORCED MUST**
 
 Agent-visible state distinguishes at least:
 
@@ -452,6 +488,8 @@ unknown
 ```
 
 A proposal cannot silently become an observation. Unknown/unqueried cannot silently become false.
+
+Current enforcement: v0.2 uses distinct immutable record classes, forbids values on `unknown`, requires provenance on `observed`, marks every proposal `model_proposed`, prevents model-proposed values from satisfying admitted dependencies or changing authoritative orchestration-state identity, and still exposes them in a separate compact-projection collection.
 
 ## IBAE-AI-005 — Runtime bookkeeping belongs to runtime
 
@@ -465,17 +503,23 @@ Remaining budgets, logical ticks, cache-hit counts, obligation readiness, and ot
 
 The supervisor receives a deterministic compact state digest sufficient for safe next-action reasoning instead of an ever-growing replay of the full execution transcript.
 
+Current v0.2 implementation exposes a bounded compact projection containing canonical state identity, logical tick, ready/blocked/satisfied obligations with descriptions and explicit block reasons, epistemic classes, capability state, occurrence ownership, and remaining resident-state capacity. Delivery to a live supervisor is deferred to v0.6.
+
 ## IBAE-AI-007 — Cached observation validity is explicit
 
 **ARCHITECTURE MUST**
 
 The model can determine whether an observation is fresh or reused and which dependency identity makes reuse valid.
 
+Current v0.2 partial implementation: observed epistemic records require provenance containing source identity, dependency identity, and an explicit `reused` flag; compact projection preserves those fields, while correctness identity excludes only the fresh-versus-reused delivery path. Wiring the v0.1 cache to emit these records remains a later runtime-boundary obligation.
+
 ## IBAE-AI-008 — Capability state is explicit
 
 **ARCHITECTURE SHOULD**
 
 Available tool/work capability is surfaced structurally so the supervisor need not repeatedly attempt unavailable actions to discover capability state.
+
+Current v0.2 implementation includes versioned capability identity, replay class, required state dependencies, availability, and description in the compact projection. It also exposes the admitted typed strategy-schema registry and its remaining bounded capacity.
 
 ## IBAE-AI-009 — Local workers receive least authority/context
 
@@ -488,6 +532,8 @@ Subordinate workers receive only the minimum task packet, input evidence, constr
 **ARCHITECTURE SHOULD**
 
 The supervisor may propose multiple actions in one structured batch so deterministic orchestration can deduplicate only replay-safe equivalent work, reuse valid observations, dependency-order actions, preserve occurrence-sensitive mutations, and parallelize independent work without requiring one model round-trip per low-level tool request.
+
+Current v0.2 implementation provides immutable canonical batch proposals and deterministic admission/deduplication decisions. Execution parallelism and live supervisor integration remain later phases.
 
 ---
 
