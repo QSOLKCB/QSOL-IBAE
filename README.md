@@ -12,7 +12,7 @@ QSOL-IBAE explores whether strong execution invariants can reduce redundant tool
 
 The v0.x line starts intentionally small. The first objective is not to build another general agent framework. It is to prove a compact execution kernel with measurable behavior.
 
-## v0.3 scope
+## v0.4 scope
 
 The v0.1 kernel provides:
 
@@ -41,7 +41,7 @@ The v0.2 Python orchestration reference adds:
 - a compact AI-facing state projection with actionable obligation/blocker context;
 - a checked-in, byte-stable model-free conformance fixture.
 
-The v0.3 Rust deterministic runtime candidate adds:
+The accepted v0.3 Rust deterministic runtime adds:
 
 - an opaque, in-process PyO3 session behind `IBAE-RUNTIME-PROTOCOL-V1`;
 - Rust-owned exact request, actual-execution, retry, cache-hit, logical-tick, history, and cache state;
@@ -52,6 +52,41 @@ The v0.3 Rust deterministic runtime candidate adds:
 - transaction-safe full-envelope construction, exact-JSON observation semantics, and capability-ID rebinding before an admitted read can enter the cache path;
 - independent Python/Rust canonical-byte, SHA-256, execution-semantic, and receipt conformance fixtures;
 - a deliberately limited command family: `execute_read` and `record_retry` only.
+
+The v0.4 implementation candidate adds deterministic governance and compact
+evidence machinery above and below those accepted semantics:
+
+- an OpenAI-only, versioned governance policy with explicit supervisor,
+  orchestrator, runtime, and future candidate-worker authority classes;
+- explicit `PURE_READ`, `SNAPSHOT_READ`, `VOLATILE_READ`,
+  `IDEMPOTENT_MUTATION`, and `NON_IDEMPOTENT_MUTATION` tool authority;
+- exact bounded binding from governed tool admissions to typed v0.2
+  decisions/proposals/capabilities and onward to matching sealed v0.3 read
+  receipts, including exact cache-reuse policy; current orchestration admits at
+  most 64 actions per batch and the evidence protocol has a 256-authorization
+  hard ceiling;
+- separate domain-separated task, governance, orchestration, execution,
+  execution-plan, benchmark, final, rejection, and partial receipt identities;
+- fail-closed finalization that requires the admitted receipt chain, the exact
+  closed three-gate registry with receipt-ID bindings, and native-sealed compact
+  evidence;
+- a Rust-owned streaming evidence accumulator with exact checked counters and
+  no retained per-case success list;
+- non-constructible native runtime/summary/receipt seals, ordered admission and
+  case aggregates, and continuous first-to-last runtime session/state binding;
+- a compact evidence receipt capped at 2,048 canonical UTF-8 bytes independent
+  of admitted case cardinality for the declared v1 profile;
+- bounded, parent-bound failure expansion and a separately labelled
+  non-cryptographic regression fold that has no correctness authority;
+- independent structural receipt validation and explicit limits on what the
+  compact profile can establish.
+
+The v0.4 finalizable execution profile remains deliberately narrow: governed
+`PURE_READ` and `SNAPSHOT_READ` actions may cross the accepted v0.3
+`execute_read` path. Sealed `record_retry` transitions may contribute exact
+known-admission accounting and continuity, but cannot cover an authorized read
+on their own. Volatile reads and mutations are classified and fail closed by
+governance, but no effect-execution command is invented in this phase.
 
 There are deliberately **no model calls yet**. OpenAI SDK integration comes only after the kernel invariants are independently testable.
 
@@ -68,11 +103,17 @@ Deterministic orchestration
         |
         v
 Execution runtime
+        |
+        v
+Compact evidence plane
 
 Benchmark observations remain outside correctness authority.
 ```
 
-See [ARCHITECTURE.md](ARCHITECTURE.md), [INVARIANTS.md](INVARIANTS.md), and [RUNTIME_PROTOCOL.md](RUNTIME_PROTOCOL.md).
+See [ARCHITECTURE.md](ARCHITECTURE.md), [INVARIANTS.md](INVARIANTS.md),
+[RUNTIME_PROTOCOL.md](RUNTIME_PROTOCOL.md),
+[GOVERNANCE_PROTOCOL.md](GOVERNANCE_PROTOCOL.md), and
+[EVIDENCE_PROTOCOL.md](EVIDENCE_PROTOCOL.md).
 
 ## Provider scope
 
@@ -100,6 +141,8 @@ python -m pip install -e .
 python benchmarks/basic.py
 python tools/render_v0_2_fixture.py
 python tools/render_v0_3_fixture.py
+python tools/render_v0_4_fixture.py
+python tools/stress_compact_evidence.py
 ```
 
 Run both language suites with:
@@ -122,4 +165,10 @@ External code contributions are not currently accepted without a separate writte
 
 ## Status
 
-Experimental v0.3 pre-release implementation candidate. The merged v0.2 Python orchestrator remains the semantic reference above the Rust execution runtime. Governance/task receipts, continuation leases, OpenAI integration, accelerators, distributed execution, and local workers remain later gated phases. No production or performance claims are made.
+Experimental v0.4 pre-release implementation candidate. PR #4 merged the exact
+reviewed v0.3 Rust-runtime head, so v0.3 is accepted rather than pending review.
+The merged v0.2 Python orchestrator remains the semantic reference above that
+runtime. v0.4 adds deterministic governance/receipt contracts and bounded
+evidence transport; continuation leases, live OpenAI integration, accelerators,
+distributed execution, and local workers remain later gated phases. No
+production, authentication, or performance claim is made.

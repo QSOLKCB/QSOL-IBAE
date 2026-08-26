@@ -76,7 +76,7 @@ checksum = "95505c38b4572b2d910cecb0281560f54b440a19336cbbcb27bf6ce6adc6f5a8"
 
 [[package]]
 name = "ibae-runtime"
-version = "0.3.0-alpha.0"
+version = "0.4.0-alpha.0"
 dependencies = [
  "pyo3",
  "ryu",

@@ -3,7 +3,7 @@
 Machine-facing repository rules.
 
 1. Read `INVARIANTS.md`, `ARCHITECTURE.md`, and `ROADMAP.md` before changing architecture or runtime behavior.
-2. The architecture-contract exit gate was accepted by merged PR #2, and the v0.2 deterministic Python orchestration gate was accepted by merged PR #3. The current implementation boundary is the v0.3 Rust deterministic runtime. Do not begin v0.4 governance receipts, v0.5 leases, OpenAI integration, GPU work, distributed/local-worker work, or another later phase until the v0.3 conformance gate is accepted.
+2. The architecture-contract gate and the v0.1-v0.3 implementation gates are accepted. PR #4 merged the exact reviewed v0.3 Rust-runtime head at merge commit `de5239b8c7980f8211da109b42bdbc3449be83ba`. The current implementation boundary is v0.4 governance and compact evidence. Do not begin v0.5 leases, OpenAI integration, GPU work, distributed/local-worker work, or another later phase until the v0.4 gate is accepted.
 3. Identify every invariant affected by a change and preserve each invariant's status (`ENFORCED MUST`, `ARCHITECTURE MUST`, `ARCHITECTURE SHOULD`, `CANDIDATE`). Do not present an architecture-only invariant as implemented.
 4. Preserve the authority separation `governance != orchestration != execution != benchmark`.
 5. Lower layers must not promote themselves upward: runtime cannot rewrite orchestration/governance policy; workers cannot become supervisors; benchmark speed cannot become correctness evidence.
@@ -22,3 +22,11 @@ Machine-facing repository rules.
 18. Avoid new dependencies unless they materially strengthen the kernel or the narrow Python/Rust boundary.
 19. External code contributions require a separate written contribution agreement.
 20. Every implementation PR must list: affected invariant IDs, identity-bearing changes, benchmark-only changes, tests/conformance evidence, and any remaining architecture-only contracts.
+21. Preserve `execution state != evidence transport`. Routine successful evidence must remain fixed-shape or explicitly bounded independently of admitted workload cardinality for its declared profile.
+22. A fast fold/checksum is non-cryptographic regression evidence only. It cannot replace a canonical domain-separated SHA-256 receipt or establish governance acceptance.
+23. Detailed evidence expansion is exceptional, explicitly requested, parent-bound, and bounded. Do not make successful per-case traces the normal model/host-visible path.
+24. A canonically self-consistent receipt proves record integrity, not producer authenticity or external truth. Accepted finalization requires the declared source-bound receipt chain in addition to structural validation.
+25. Hierarchical evidence may change evidence-transport identity, but it must preserve its separately bound execution correctness identity. Do not claim arbitrary chunk-plan-neutral evidence roots until a versioned composition proof enforces that property.
+26. A v0.4 finalizable runtime receipt must match the exact bounded governed authorization manifest (typed v0.2 admission, tool, arguments, dependency, command class, governed receipt, and cache policy) before evidence-state mutation. Governed orchestration currently admits at most 64 actions per batch; the reducer independently enforces a 256-authorization hard ceiling. Each action needs cold provenance before its hits are admitted; a retry cannot establish coverage. Tool classification alone is not an execution authorization bypass.
+27. Serialized SHA-256 consistency cannot substitute for the non-constructible native runtime/summary/receipt seals required by the in-process v0.4 finalization path. Those seals are not producer authentication or remote attestation.
+28. The accepted runtime command surface remains read-only in v0.4. Governance may classify volatile reads and mutations, but must not fabricate effect execution through `execute_read`.
