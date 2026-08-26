@@ -25,6 +25,13 @@ MAX_CANONICAL_INTEGER_BITS = 256
 MAX_IDENTITY_INTEGER_BITS = 256
 MAX_RECORD_TEXT_BYTES = 4_096
 
+# Runtime envelopes contain one admitted canonical observation plus a receipt,
+# while snapshots may contain every bounded cache identity and history entry.
+# These limits are deliberately separate from the arbitrary input-value profile.
+MAX_RUNTIME_RECORD_BYTES = 2_097_152
+MAX_RUNTIME_RECORD_NODES = 32_768
+MAX_RUNTIME_COLLECTION_ITEMS = 4_096
+
 
 def bounded_utf8_length(name: str, value: str, *, limit: int) -> int:
     """Count UTF-8 bytes without allocating an encoded copy of ``value``."""
@@ -174,6 +181,9 @@ def _normalize_bounded_json(
     depth: int = 0,
     node_count: list[int] | None = None,
     byte_count: list[int] | None = None,
+    max_bytes: int = MAX_CANONICAL_VALUE_BYTES,
+    max_nodes: int = MAX_CANONICAL_VALUE_NODES,
+    max_collection_items: int = MAX_CANONICAL_COLLECTION_ITEMS,
 ) -> Any:
     """Copy a JSON value while enforcing finite shape before serialization."""
 
@@ -184,17 +194,17 @@ def _normalize_bounded_json(
     active_count = [0] if node_count is None else node_count
     active_bytes = [0] if byte_count is None else byte_count
     active_count[0] += 1
-    if active_count[0] > MAX_CANONICAL_VALUE_NODES:
+    if active_count[0] > max_nodes:
         raise ValueError(
-            f"canonical value exceeds maximum node count {MAX_CANONICAL_VALUE_NODES}"
+            f"canonical value exceeds maximum node count {max_nodes}"
         )
 
     def consume_bytes(amount: int) -> None:
         active_bytes[0] += amount
-        if active_bytes[0] > MAX_CANONICAL_VALUE_BYTES:
+        if active_bytes[0] > max_bytes:
             raise ValueError(
                 "canonical value exceeds maximum UTF-8 bytes "
-                f"{MAX_CANONICAL_VALUE_BYTES}"
+                f"{max_bytes}"
             )
 
     if value is None or isinstance(value, bool):
@@ -220,7 +230,7 @@ def _normalize_bounded_json(
         items = materialize_bounded_iterable(
             "canonical mapping items",
             value.items(),
-            limit=MAX_CANONICAL_COLLECTION_ITEMS,
+            limit=max_collection_items,
         )
         normalized: dict[str, Any] = {}
         consume_bytes(2 + max(0, len(items) - 1))
@@ -240,13 +250,16 @@ def _normalize_bounded_json(
                 depth=depth + 1,
                 node_count=active_count,
                 byte_count=active_bytes,
+                max_bytes=max_bytes,
+                max_nodes=max_nodes,
+                max_collection_items=max_collection_items,
             )
         return normalized
     if isinstance(value, (list, tuple)):
         items = materialize_bounded_iterable(
             "canonical sequence items",
             value,
-            limit=MAX_CANONICAL_COLLECTION_ITEMS,
+            limit=max_collection_items,
         )
         consume_bytes(2 + max(0, len(items) - 1))
         return [
@@ -255,6 +268,9 @@ def _normalize_bounded_json(
                 depth=depth + 1,
                 node_count=active_count,
                 byte_count=active_bytes,
+                max_bytes=max_bytes,
+                max_nodes=max_nodes,
+                max_collection_items=max_collection_items,
             )
             for item in items
         ]
@@ -292,4 +308,49 @@ class CanonicalValue:
     def to_value(self) -> Any:
         """Return a fresh caller-owned value."""
 
+        return json.loads(self.text)
+
+
+@dataclass(frozen=True, slots=True)
+class CanonicalRuntimeRecord:
+    """Canonical text emitted by the bounded Rust runtime.
+
+    Runtime output has a larger envelope than one arbitrary admitted value: an
+    outcome carries that value plus its receipt, and a snapshot carries every
+    bounded cache/history identity. The larger profile is output-only and does
+    not weaken the canonical input-value restrictions.
+    """
+
+    text: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.text, str):
+            raise TypeError("canonical runtime record text must be a string")
+        bounded_utf8_length(
+            "canonical runtime record", self.text, limit=MAX_RUNTIME_RECORD_BYTES
+        )
+        try:
+            decoded = json.loads(self.text)
+        except (json.JSONDecodeError, RecursionError) as exc:
+            raise ValueError("canonical runtime record must be valid JSON") from exc
+        normalized = _normalize_bounded_json(
+            decoded,
+            max_bytes=MAX_RUNTIME_RECORD_BYTES,
+            max_nodes=MAX_RUNTIME_RECORD_NODES,
+            max_collection_items=MAX_RUNTIME_COLLECTION_ITEMS,
+        )
+        if canonical_json(normalized) != self.text:
+            raise ValueError("canonical runtime record is not in canonical form")
+
+    @classmethod
+    def from_value(cls, value: Any) -> CanonicalRuntimeRecord:
+        normalized = _normalize_bounded_json(
+            value,
+            max_bytes=MAX_RUNTIME_RECORD_BYTES,
+            max_nodes=MAX_RUNTIME_RECORD_NODES,
+            max_collection_items=MAX_RUNTIME_COLLECTION_ITEMS,
+        )
+        return cls(canonical_json(normalized))
+
+    def to_value(self) -> Any:
         return json.loads(self.text)

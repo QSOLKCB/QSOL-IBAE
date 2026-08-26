@@ -10,6 +10,7 @@ use pyo3::types::{PyAny, PyBool, PyModule};
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, VecDeque};
+use std::sync::Arc;
 
 const PROTOCOL_VERSION: &str = "IBAE-RUNTIME-PROTOCOL-V1";
 const COMMAND_DOMAIN: &str = "ibae.runtime-command-id.v1";
@@ -22,6 +23,9 @@ const MAX_CANONICAL_VALUE_DEPTH: usize = 32;
 const MAX_CANONICAL_VALUE_NODES: usize = 4_096;
 const MAX_CANONICAL_COLLECTION_ITEMS: usize = 1_024;
 const MAX_CANONICAL_STRING_BYTES: usize = 65_536;
+const MAX_RUNTIME_RECORD_BYTES: usize = 2_097_152;
+const MAX_RUNTIME_RECORD_NODES: usize = 32_768;
+const MAX_RUNTIME_COLLECTION_ITEMS: usize = 4_096;
 const MAX_RECORD_TEXT_BYTES: usize = 4_096;
 const MAX_INTEGER_DECIMAL: &str =
     "115792089237316195423570985008687907853269984665640564039457584007913129639935";
@@ -69,7 +73,7 @@ impl Reason {
             Self::ExecutionBudgetExhausted => &["IBAE-BND-002", "IBAE-DET-003"],
             Self::RetryBudgetExhausted => &["IBAE-BND-003"],
             Self::ArithmeticOverflow => &["IBAE-BND-007", "IBAE-CLK-001"],
-            Self::InvalidObservation => &["IBAE-CCH-004", "IBAE-RT-005"],
+            Self::InvalidObservation => &["IBAE-REUSE-004", "IBAE-RT-005"],
             Self::OperationFailed => &["IBAE-DET-003", "IBAE-RT-001"],
         }
     }
@@ -229,12 +233,14 @@ fn render_canonical(
     value: &Value,
     depth: usize,
     stats: &mut CanonicalStats,
+    max_nodes: usize,
+    max_collection_items: usize,
 ) -> Result<String, CanonicalError> {
     if depth > MAX_CANONICAL_VALUE_DEPTH {
         return Err(CanonicalError);
     }
     stats.nodes = stats.nodes.checked_add(1).ok_or(CanonicalError)?;
-    if stats.nodes > MAX_CANONICAL_VALUE_NODES {
+    if stats.nodes > max_nodes {
         return Err(CanonicalError);
     }
 
@@ -249,7 +255,7 @@ fn render_canonical(
             serde_json::to_string(text).map_err(|_| CanonicalError)
         }
         Value::Array(items) => {
-            if items.len() > MAX_CANONICAL_COLLECTION_ITEMS {
+            if items.len() > max_collection_items {
                 return Err(CanonicalError);
             }
             let mut output = String::from("[");
@@ -257,13 +263,19 @@ fn render_canonical(
                 if index > 0 {
                     output.push(',');
                 }
-                output.push_str(&render_canonical(item, depth + 1, stats)?);
+                output.push_str(&render_canonical(
+                    item,
+                    depth + 1,
+                    stats,
+                    max_nodes,
+                    max_collection_items,
+                )?);
             }
             output.push(']');
             Ok(output)
         }
         Value::Object(mapping) => {
-            if mapping.len() > MAX_CANONICAL_COLLECTION_ITEMS {
+            if mapping.len() > max_collection_items {
                 return Err(CanonicalError);
             }
             let mut entries: Vec<_> = mapping.iter().collect();
@@ -278,7 +290,13 @@ fn render_canonical(
                 }
                 output.push_str(&serde_json::to_string(key).map_err(|_| CanonicalError)?);
                 output.push(':');
-                output.push_str(&render_canonical(nested, depth + 1, stats)?);
+                output.push_str(&render_canonical(
+                    nested,
+                    depth + 1,
+                    stats,
+                    max_nodes,
+                    max_collection_items,
+                )?);
             }
             output.push('}');
             Ok(output)
@@ -286,13 +304,42 @@ fn render_canonical(
     }
 }
 
-fn canonical_value(value: &Value) -> Result<String, CanonicalError> {
+fn canonical_value_with_limits(
+    value: &Value,
+    max_bytes: usize,
+    max_nodes: usize,
+    max_collection_items: usize,
+) -> Result<String, CanonicalError> {
     let mut stats = CanonicalStats::default();
-    let output = render_canonical(value, 0, &mut stats)?;
-    if output.len() > MAX_CANONICAL_VALUE_BYTES {
+    let output = render_canonical(
+        value,
+        0,
+        &mut stats,
+        max_nodes,
+        max_collection_items,
+    )?;
+    if output.len() > max_bytes {
         return Err(CanonicalError);
     }
     Ok(output)
+}
+
+fn canonical_value(value: &Value) -> Result<String, CanonicalError> {
+    canonical_value_with_limits(
+        value,
+        MAX_CANONICAL_VALUE_BYTES,
+        MAX_CANONICAL_VALUE_NODES,
+        MAX_CANONICAL_COLLECTION_ITEMS,
+    )
+}
+
+fn canonical_runtime_value(value: &Value) -> Result<String, CanonicalError> {
+    canonical_value_with_limits(
+        value,
+        MAX_RUNTIME_RECORD_BYTES,
+        MAX_RUNTIME_RECORD_NODES,
+        MAX_RUNTIME_COLLECTION_ITEMS,
+    )
 }
 
 fn parse_canonical(input: &str) -> Result<Value, CanonicalError> {
@@ -301,6 +348,17 @@ fn parse_canonical(input: &str) -> Result<Value, CanonicalError> {
     }
     let value: Value = serde_json::from_str(input).map_err(|_| CanonicalError)?;
     if canonical_value(&value)? != input {
+        return Err(CanonicalError);
+    }
+    Ok(value)
+}
+
+fn parse_runtime_canonical(input: &str) -> Result<Value, CanonicalError> {
+    if input.len() > MAX_RUNTIME_RECORD_BYTES {
+        return Err(CanonicalError);
+    }
+    let value: Value = serde_json::from_str(input).map_err(|_| CanonicalError)?;
+    if canonical_runtime_value(&value)? != input {
         return Err(CanonicalError);
     }
     Ok(value)
@@ -365,7 +423,7 @@ impl Limits {
 
 #[derive(Clone)]
 struct CachedObservation {
-    canonical: String,
+    canonical: Arc<str>,
     observation_id: String,
 }
 
@@ -415,8 +473,7 @@ enum Command {
     RecordRetry(RecordRetry),
 }
 
-fn parse_command(command_json: &str) -> Result<(Command, Value), Reason> {
-    let value = parse_canonical(command_json).map_err(|_| Reason::InvalidCanonicalCommand)?;
+fn parse_command_value(value: &Value) -> Result<Command, Reason> {
     let mapping = value.as_object().ok_or(Reason::InvalidCommand)?;
     let version = mapping
         .get("protocol_version")
@@ -469,15 +526,12 @@ fn parse_command(command_json: &str) -> Result<(Command, Value), Reason> {
                 .filter(|item| !item.is_empty() && item.len() <= MAX_RECORD_TEXT_BYTES)
                 .ok_or(Reason::InvalidCommand)?
                 .to_owned();
-            Ok((
-                Command::ExecuteRead(ExecuteRead {
+            Ok(Command::ExecuteRead(ExecuteRead {
                     admission_id,
                     arguments_canonical,
                     dependency_fingerprint,
                     tool_name,
-                }),
-                value,
-            ))
+                }))
         }
         "record_retry" => {
             if !object_has_exact_keys(
@@ -492,9 +546,18 @@ fn parse_command(command_json: &str) -> Result<(Command, Value), Reason> {
                 .filter(|item| is_fingerprint(item))
                 .ok_or(Reason::InvalidCommand)?
                 .to_owned();
-            Ok((Command::RecordRetry(RecordRetry { admission_id }), value))
+            Ok(Command::RecordRetry(RecordRetry { admission_id }))
         }
         _ => Err(Reason::UnsupportedCommand),
+    }
+}
+
+fn parse_command(command_json: &str) -> Result<(Command, Value), (Reason, Option<Value>)> {
+    let value = parse_canonical(command_json)
+        .map_err(|_| (Reason::InvalidCanonicalCommand, None))?;
+    match parse_command_value(&value) {
+        Ok(command) => Ok((command, value)),
+        Err(reason) => Err((reason, Some(value))),
     }
 }
 
@@ -505,7 +568,7 @@ enum Invocation {
 }
 
 fn parse_invocation_envelope(envelope: &str) -> Invocation {
-    let Ok(value) = parse_canonical(envelope) else {
+    let Ok(value) = parse_runtime_canonical(envelope) else {
         return Invocation::InvalidObservation;
     };
     let Some(mapping) = value.as_object() else {
@@ -532,6 +595,7 @@ fn parse_invocation_envelope(envelope: &str) -> Invocation {
     }
 }
 
+#[derive(Clone)]
 struct RuntimeCore {
     limits: Limits,
     session_id: String,
@@ -583,24 +647,22 @@ impl RuntimeCore {
         })
     }
 
-    fn state_id(&self) -> String {
-        let canonical = canonical_value(&self.state_record())
-            .expect("the internally constructed state record is canonicalizable");
-        domain_fingerprint(STATE_DOMAIN, &canonical)
+    fn state_id(&self) -> Result<String, CanonicalError> {
+        let canonical = canonical_runtime_value(&self.state_record())?;
+        Ok(domain_fingerprint(STATE_DOMAIN, &canonical))
     }
 
-    fn snapshot_value(&self) -> Value {
+    fn snapshot_value(&self) -> Result<Value, CanonicalError> {
         let mut value = self.state_record();
         value
             .as_object_mut()
             .expect("state record is an object")
-            .insert("state_id".to_owned(), Value::String(self.state_id()));
-        value
+            .insert("state_id".to_owned(), Value::String(self.state_id()?));
+        Ok(value)
     }
 
-    fn snapshot_json(&self) -> String {
-        canonical_value(&self.snapshot_value())
-            .expect("the internally constructed snapshot is canonicalizable")
+    fn snapshot_json(&self) -> Result<String, CanonicalError> {
+        canonical_runtime_value(&self.snapshot_value()?)
     }
 
     fn increment_request(&mut self) -> Result<(), Reason> {
@@ -740,15 +802,18 @@ impl RuntimeCore {
         sha256_hex(record.as_bytes())
     }
 
-    fn command_id(&self, command: &Value, prior_state_id: &str) -> String {
+    fn command_id(
+        &self,
+        command: &Value,
+        prior_state_id: &str,
+    ) -> Result<String, CanonicalError> {
         let record = json!({
             "command": command,
             "prior_state_id": prior_state_id,
             "session_id": self.session_id,
         });
-        let canonical = canonical_value(&record)
-            .expect("a validated command identity record is canonicalizable");
-        domain_fingerprint(COMMAND_DOMAIN, &canonical)
+        let canonical = canonical_runtime_value(&record)?;
+        Ok(domain_fingerprint(COMMAND_DOMAIN, &canonical))
     }
 
     fn budget_delta(before: Counters, after: Counters) -> Value {
@@ -777,8 +842,8 @@ impl RuntimeCore {
         transition_id: Option<&str>,
         cache_status: Option<&str>,
         rejection: Option<Reason>,
-    ) -> String {
-        let resulting_state_id = self.state_id();
+    ) -> Result<String, CanonicalError> {
+        let resulting_state_id = self.state_id()?;
         let rejection_value = rejection.map(|reason| {
             json!({
                 "authority_layer": "execution",
@@ -814,8 +879,7 @@ impl RuntimeCore {
             "tool_name": tool_name,
             "transition_id": transition_id,
         });
-        let receipt_canonical = canonical_value(&receipt_without_id)
-            .expect("the internally constructed receipt is canonicalizable");
+        let receipt_canonical = canonical_runtime_value(&receipt_without_id)?;
         let receipt_id = domain_fingerprint(RECEIPT_DOMAIN, &receipt_canonical);
         let mut receipt = receipt_without_id;
         receipt
@@ -826,11 +890,10 @@ impl RuntimeCore {
         let observation_value = observation
             .and_then(|canonical| parse_canonical(canonical).ok())
             .unwrap_or(Value::Null);
-        canonical_value(&json!({
+        canonical_runtime_value(&json!({
             "observation": observation_value,
             "receipt": receipt,
         }))
-        .expect("the internally constructed outcome is canonicalizable")
     }
 
     fn rejected_unparsed(
@@ -838,7 +901,7 @@ impl RuntimeCore {
         before: Counters,
         prior_state_id: String,
         reason: Reason,
-    ) -> String {
+    ) -> Result<String, CanonicalError> {
         self.outcome(
             before,
             prior_state_id,
@@ -857,17 +920,77 @@ impl RuntimeCore {
         )
     }
 
-    fn dispatch<F>(&mut self, command_json: &str, invoke: F) -> String
+    fn rejected_parsed(
+        &self,
+        before: Counters,
+        prior_state_id: String,
+        command_value: &Value,
+        reason: Reason,
+    ) -> Result<String, CanonicalError> {
+        let command_id = self.command_id(command_value, &prior_state_id)?;
+        let mapping = command_value.as_object();
+        let command_type = mapping
+            .and_then(|item| item.get("command_type"))
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        let admission_id = mapping
+            .and_then(|item| item.get("admission_id"))
+            .and_then(Value::as_str)
+            .filter(|item| is_fingerprint(item))
+            .map(str::to_owned);
+        self.outcome(
+            before,
+            prior_state_id,
+            Some(command_id),
+            command_type.as_deref(),
+            admission_id.as_deref(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(reason),
+        )
+    }
+
+    fn dispatch<F>(&mut self, command_json: &str, invoke: F) -> Result<String, CanonicalError>
+    where
+        F: FnOnce() -> Invocation,
+    {
+        let mut candidate = self.clone();
+        let outcome = candidate.dispatch_in_place(command_json, invoke)?;
+        *self = candidate;
+        Ok(outcome)
+    }
+
+    fn dispatch_in_place<F>(
+        &mut self,
+        command_json: &str,
+        invoke: F,
+    ) -> Result<String, CanonicalError>
     where
         F: FnOnce() -> Invocation,
     {
         let before = self.counters;
-        let prior_state_id = self.state_id();
+        let prior_state_id = self.state_id()?;
         let (command, command_value) = match parse_command(command_json) {
             Ok(parsed) => parsed,
-            Err(reason) => return self.rejected_unparsed(before, prior_state_id, reason),
+            Err((reason, None)) => {
+                return self.rejected_unparsed(before, prior_state_id, reason)
+            }
+            Err((reason, Some(command_value))) => {
+                return self.rejected_parsed(
+                    before,
+                    prior_state_id,
+                    &command_value,
+                    reason,
+                )
+            }
         };
-        let command_id = self.command_id(&command_value, &prior_state_id);
+        let command_id = self.command_id(&command_value, &prior_state_id)?;
 
         match command {
             Command::RecordRetry(command) => {
@@ -925,7 +1048,7 @@ impl RuntimeCore {
                         Some(&command.dependency_fingerprint),
                         Some(&tool_key),
                         if rejection.is_none() {
-                            Some(&cached.canonical)
+                            Some(cached.canonical.as_ref())
                         } else {
                             None
                         },
@@ -1009,7 +1132,7 @@ impl RuntimeCore {
                 let observation_id = sha256_hex(observation.as_bytes());
                 let transition_id = Self::transition_id(&tool_key, &observation_id);
                 let cached = CachedObservation {
-                    canonical: observation.clone(),
+                    canonical: Arc::from(observation.as_str()),
                     observation_id: observation_id.clone(),
                 };
                 let rejection = self
@@ -1107,7 +1230,7 @@ impl NativeRuntimeSession {
         py: Python<'_>,
         command_json: &str,
         operation: Option<Py<PyAny>>,
-    ) -> String {
+    ) -> PyResult<String> {
         self.core.dispatch(command_json, || {
             let Some(callback) = operation else {
                 return Invocation::OperationFailed;
@@ -1122,10 +1245,19 @@ impl NativeRuntimeSession {
             };
             parse_invocation_envelope(&envelope)
         })
+        .map_err(|_| {
+            PyValueError::new_err(
+                "runtime record exceeds the declared deterministic envelope",
+            )
+        })
     }
 
-    fn snapshot(&self) -> String {
-        self.core.snapshot_json()
+    fn snapshot(&self) -> PyResult<String> {
+        self.core.snapshot_json().map_err(|_| {
+            PyValueError::new_err(
+                "runtime snapshot exceeds the declared deterministic envelope",
+            )
+        })
     }
 
     fn terminal_cycle_period(&self) -> Option<u8> {
@@ -1183,7 +1315,14 @@ mod tests {
     }
 
     fn outcome_receipt(outcome: &str) -> Value {
-        parse_canonical(outcome).unwrap()["receipt"].clone()
+        parse_runtime_canonical(outcome).unwrap()["receipt"].clone()
+    }
+
+    fn run<F>(runtime: &mut RuntimeCore, command: &str, invoke: F) -> String
+    where
+        F: FnOnce() -> Invocation,
+    {
+        runtime.dispatch(command, invoke).unwrap()
     }
 
     #[test]
@@ -1236,7 +1375,7 @@ mod tests {
         let command = read_command("x", "commit-a");
         let mut calls = 0;
         for _ in 0..3 {
-            let outcome = runtime.dispatch(&command, || {
+            let outcome = run(&mut runtime, &command, || {
                 calls += 1;
                 Invocation::Observation("{\"value\":42}".to_owned())
             });
@@ -1253,7 +1392,7 @@ mod tests {
         let mut runtime = core(3, 3, 1, 8);
         let mut calls = 0;
         for dependency in ["commit-a", "commit-b"] {
-            runtime.dispatch(&read_command("x", dependency), || {
+            run(&mut runtime, &read_command("x", dependency), || {
                 calls += 1;
                 Invocation::Observation(format!("{{\"call\":{calls}}}"))
             });
@@ -1266,12 +1405,16 @@ mod tests {
     fn invalid_observation_is_not_cached() {
         let mut runtime = core(3, 3, 1, 8);
         let command = read_command("x", "c");
-        let first = runtime.dispatch(&command, || Invocation::InvalidObservation);
+        let first = run(&mut runtime, &command, || Invocation::InvalidObservation);
         assert_eq!(
             outcome_receipt(&first)["rejection"]["reason_code"],
             Reason::InvalidObservation.code()
         );
-        let second = runtime.dispatch(&command, || {
+        assert_eq!(
+            outcome_receipt(&first)["rejection"]["invariant_ids"],
+            json!(["IBAE-REUSE-004", "IBAE-RT-005"])
+        );
+        let second = run(&mut runtime, &command, || {
             Invocation::Observation("{\"valid\":true}".to_owned())
         });
         assert_eq!(outcome_receipt(&second)["cache_status"], "cold_execution");
@@ -1282,9 +1425,9 @@ mod tests {
     fn request_limit_includes_cache_hits() {
         let mut runtime = core(2, 2, 1, 8);
         let command = read_command("x", "c");
-        runtime.dispatch(&command, || Invocation::Observation("1".to_owned()));
-        runtime.dispatch(&command, || panic!("cache hit must not invoke"));
-        let rejected = runtime.dispatch(&command, || panic!("budget must reject first"));
+        run(&mut runtime, &command, || Invocation::Observation("1".to_owned()));
+        run(&mut runtime, &command, || panic!("cache hit must not invoke"));
+        let rejected = run(&mut runtime, &command, || panic!("budget must reject first"));
         assert_eq!(
             outcome_receipt(&rejected)["rejection"]["reason_code"],
             Reason::RequestBudgetExhausted.code()
@@ -1294,10 +1437,10 @@ mod tests {
     #[test]
     fn execution_limit_fails_before_invocation_but_consumes_request() {
         let mut runtime = core(3, 1, 1, 8);
-        runtime.dispatch(&read_command("a", "c"), || {
+        run(&mut runtime, &read_command("a", "c"), || {
             Invocation::Observation("1".to_owned())
         });
-        let rejected = runtime.dispatch(&read_command("b", "c"), || {
+        let rejected = run(&mut runtime, &read_command("b", "c"), || {
             panic!("execution budget must reject first")
         });
         assert_eq!(runtime.counters.requests, 2);
@@ -1318,10 +1461,10 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(
-            outcome_receipt(&runtime.dispatch(&command, || Invocation::OperationFailed))["status"],
+            outcome_receipt(&run(&mut runtime, &command, || Invocation::OperationFailed))["status"],
             "accepted"
         );
-        let rejected = runtime.dispatch(&command, || Invocation::OperationFailed);
+        let rejected = run(&mut runtime, &command, || Invocation::OperationFailed);
         assert_eq!(
             outcome_receipt(&rejected)["rejection"]["reason_code"],
             Reason::RetryBudgetExhausted.code()
@@ -1331,13 +1474,13 @@ mod tests {
     #[test]
     fn history_is_bounded_and_cache_cold_paths_share_transition_identity() {
         let mut runtime = core(8, 4, 1, 2);
-        let first = runtime.dispatch(&read_command("a", "c"), || {
+        let first = run(&mut runtime, &read_command("a", "c"), || {
             Invocation::Observation("{\"v\":\"a\"}".to_owned())
         });
-        runtime.dispatch(&read_command("b", "c"), || {
+        run(&mut runtime, &read_command("b", "c"), || {
             Invocation::Observation("{\"v\":\"b\"}".to_owned())
         });
-        let cached = runtime.dispatch(&read_command("a", "c"), || {
+        let cached = run(&mut runtime, &read_command("a", "c"), || {
             panic!("cache hit must not invoke")
         });
         assert_eq!(runtime.history.len(), 2);
@@ -1351,7 +1494,7 @@ mod tests {
     fn detects_period_two_cycle() {
         let mut runtime = core(8, 4, 1, 8);
         for path in ["a", "b", "a", "b"] {
-            runtime.dispatch(&read_command(path, "c"), || {
+            run(&mut runtime, &read_command(path, "c"), || {
                 Invocation::Observation(format!("\"{path}\""))
             });
         }
@@ -1361,15 +1504,15 @@ mod tests {
     #[test]
     fn unsupported_commands_do_not_mutate_authority_state() {
         let mut runtime = core(2, 2, 1, 2);
-        let prior = runtime.state_id();
+        let prior = runtime.state_id().unwrap();
         let command = canonical_value(&json!({
             "admission_id": ADMISSION,
             "command_type": "request_lease",
             "protocol_version": PROTOCOL_VERSION,
         }))
         .unwrap();
-        let rejected = runtime.dispatch(&command, || Invocation::OperationFailed);
-        assert_eq!(prior, runtime.state_id());
+        let rejected = run(&mut runtime, &command, || Invocation::OperationFailed);
+        assert_eq!(prior, runtime.state_id().unwrap());
         assert_eq!(
             outcome_receipt(&rejected)["rejection"]["reason_code"],
             Reason::UnsupportedCommand.code()
@@ -1377,10 +1520,99 @@ mod tests {
     }
 
     #[test]
+    fn unsupported_canonical_commands_have_distinct_bound_receipts() {
+        let mut runtime = core(2, 2, 1, 2);
+        let prior = runtime.state_id().unwrap();
+        let mut receipts = Vec::new();
+        for command_type in ["request_lease", "finalize"] {
+            let command = canonical_value(&json!({
+                "admission_id": ADMISSION,
+                "command_type": command_type,
+                "protocol_version": PROTOCOL_VERSION,
+            }))
+            .unwrap();
+            let outcome = run(&mut runtime, &command, || Invocation::OperationFailed);
+            let receipt = outcome_receipt(&outcome);
+            assert_eq!(receipt["command_type"], command_type);
+            assert_eq!(receipt["admission_id"], ADMISSION);
+            assert!(receipt["command_id"].as_str().is_some_and(is_fingerprint));
+            receipts.push(receipt);
+        }
+        assert_ne!(receipts[0]["command_id"], receipts[1]["command_id"]);
+        assert_ne!(receipts[0]["receipt_id"], receipts[1]["receipt_id"]);
+        assert_eq!(prior, runtime.state_id().unwrap());
+    }
+
+    #[test]
+    fn maximum_observation_envelope_is_representable_before_commit() {
+        let mut runtime = core(2, 2, 1, 2);
+        let text = "x".repeat(65_000);
+        let observation = canonical_value(&json!({
+            "a": text,
+            "b": text,
+            "c": text,
+            "d": text,
+        }))
+        .unwrap();
+        assert!(observation.len() < MAX_CANONICAL_VALUE_BYTES);
+        let outcome = run(&mut runtime, &read_command("large", "c"), || {
+            Invocation::Observation(observation)
+        });
+        assert!(outcome.len() > MAX_CANONICAL_VALUE_BYTES);
+        assert!(outcome.len() < MAX_RUNTIME_RECORD_BYTES);
+        assert_eq!(outcome_receipt(&outcome)["status"], "accepted");
+        assert_eq!(runtime.counters.requests, 1);
+        assert_eq!(runtime.counters.executions, 1);
+        assert_eq!(runtime.cache.len(), 1);
+    }
+
+    #[test]
+    fn maximum_declared_history_is_representable_on_cache_hit() {
+        let mut runtime = core(2, 1, 1, MAX_HISTORY);
+        let command = read_command("history", "c");
+        let cold = run(&mut runtime, &command, || {
+            Invocation::Observation("1".to_owned())
+        });
+        let transition_id = outcome_receipt(&cold)["transition_id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        runtime.history = VecDeque::from(vec![transition_id; MAX_HISTORY as usize]);
+        let cached = run(&mut runtime, &command, || panic!("must use cache"));
+        assert_eq!(outcome_receipt(&cached)["status"], "accepted");
+        assert_eq!(runtime.history.len(), MAX_HISTORY as usize);
+        let snapshot = runtime.snapshot_json().unwrap();
+        assert!(snapshot.len() > MAX_CANONICAL_VALUE_BYTES);
+        assert!(parse_runtime_canonical(&snapshot).is_ok());
+    }
+
+    #[test]
+    fn maximum_declared_cache_is_representable_in_state_identity() {
+        let mut runtime = core(MAX_EXECUTIONS, MAX_EXECUTIONS, 1, 1);
+        for index in 0..MAX_EXECUTIONS {
+            let identity = format!("{index:064x}");
+            runtime.cache.insert(
+                identity.clone(),
+                CachedObservation {
+                    canonical: Arc::from("null"),
+                    observation_id: identity,
+                },
+            );
+        }
+        runtime.counters.requests = MAX_EXECUTIONS;
+        runtime.counters.executions = MAX_EXECUTIONS;
+        let snapshot = runtime.snapshot_json().unwrap();
+        assert!(snapshot.len() > MAX_CANONICAL_VALUE_BYTES);
+        assert!(snapshot.len() < MAX_RUNTIME_RECORD_BYTES);
+        assert!(parse_runtime_canonical(&snapshot).is_ok());
+        assert!(is_fingerprint(&runtime.state_id().unwrap()));
+    }
+
+    #[test]
     fn state_identity_has_no_wall_clock_input() {
         let left = core(2, 2, 1, 2);
         let right = core(2, 2, 1, 2);
-        assert_eq!(left.state_id(), right.state_id());
-        assert!(!left.snapshot_json().contains("timestamp"));
+        assert_eq!(left.state_id().unwrap(), right.state_id().unwrap());
+        assert!(!left.snapshot_json().unwrap().contains("timestamp"));
     }
 }

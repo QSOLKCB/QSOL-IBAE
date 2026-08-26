@@ -3,6 +3,7 @@ from __future__ import annotations
 import dataclasses
 import time
 import tomllib
+from collections import OrderedDict
 from pathlib import Path
 
 import pytest
@@ -25,7 +26,12 @@ from ibae import (
     domain_fingerprint,
     rust_canonical_json,
 )
-from ibae._records import CanonicalValue, MAX_CANONICAL_VALUE_BYTES
+from ibae._records import (
+    CanonicalRuntimeRecord,
+    CanonicalValue,
+    MAX_CANONICAL_VALUE_BYTES,
+    MAX_RUNTIME_RECORD_BYTES,
+)
 from ibae.reference_executor import PythonReferenceExecutor
 from ibae.runtime import RUNTIME_PROTOCOL_VERSION
 
@@ -190,12 +196,60 @@ def test_invalid_observation_is_rejected_before_cache_insertion() -> None:
     assert rejected.value.receipt.rejection_reason == (
         "IBAE-RT-REJECT-INVALID-OBSERVATION"
     )
+    assert rejected.value.receipt.canonical_record()["rejection"][
+        "invariant_ids"
+    ] == ["IBAE-REUSE-004", "IBAE-RT-005"]
     assert runtime.snapshot.cache == ()
     assert runtime.execute_read(
         "read", {"path": "x"}, DEP_A, invalid_then_valid
     ) == {"valid": True}
     assert calls == 2
     assert runtime.snapshot.cache_hits == 0
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        (1, 2),
+        {"z": 1, "a": 2},
+        OrderedDict((("a", 1),)),
+    ],
+    ids=("tuple", "noncanonical-dict-order", "mapping-subclass"),
+)
+def test_runtime_rejects_python_forms_json_cannot_round_trip_exactly(
+    value: object,
+) -> None:
+    runtime = RustRuntimeSession("exact-json-observation")
+    with pytest.raises(RuntimeRejected) as rejected:
+        runtime.execute_read("read", {}, DEP_A, lambda: value)
+    assert rejected.value.receipt.rejection_reason == (
+        "IBAE-RT-REJECT-INVALID-OBSERVATION"
+    )
+    assert runtime.snapshot.cache == ()
+
+
+def test_maximum_admitted_observation_fits_complete_runtime_outcome() -> None:
+    runtime = RustRuntimeSession("maximum-observation-envelope")
+    text = "x" * 65_000
+    observation = {key: text for key in ("a", "b", "c", "d")}
+    assert len(canonical_json(observation).encode("utf-8")) < (
+        MAX_CANONICAL_VALUE_BYTES
+    )
+    transition = runtime.execute_read_transition(
+        "read", {"path": "large"}, DEP_A, lambda: observation
+    )
+    assert transition.receipt.status == "accepted"
+    assert transition.observation == observation
+    assert runtime.snapshot.executions == 1
+
+
+def test_runtime_output_profile_represents_full_declared_history_shape() -> None:
+    record = CanonicalRuntimeRecord.from_value(
+        {"history": ["a" * 64] * 4_096}
+    )
+    assert len(record.text.encode("utf-8")) > MAX_CANONICAL_VALUE_BYTES
+    assert len(record.text.encode("utf-8")) < MAX_RUNTIME_RECORD_BYTES
+    assert len(record.to_value()["history"]) == 4_096
 
 
 def test_operation_failure_is_structured_and_not_identity_bearing_text() -> None:
@@ -324,6 +378,28 @@ def test_unsupported_future_command_is_structured_and_state_neutral() -> None:
     assert runtime.snapshot == prior
 
 
+def test_distinct_unsupported_commands_have_distinct_bound_receipts() -> None:
+    runtime = RustRuntimeSession("unsupported-distinct")
+    prior = runtime.snapshot
+    records = []
+    for command_type in ("request_lease", "finalize"):
+        transition = runtime.dispatch_protocol(
+            {
+                "admission_id": ADMISSION,
+                "command_type": command_type,
+                "protocol_version": RUNTIME_PROTOCOL_VERSION,
+            }
+        )
+        record = transition.receipt.canonical_record()
+        assert record["command_type"] == command_type
+        assert record["admission_id"] == ADMISSION
+        assert record["command_id"] is not None
+        records.append(record)
+    assert records[0]["command_id"] != records[1]["command_id"]
+    assert records[0]["receipt_id"] != records[1]["receipt_id"]
+    assert runtime.snapshot == prior
+
+
 def test_wrong_protocol_and_noncanonical_command_are_state_neutral() -> None:
     runtime = RustRuntimeSession("bad-protocol")
     prior = runtime.snapshot
@@ -395,6 +471,92 @@ def test_effectful_occurrence_cannot_enter_read_cache_path() -> None:
             decision, proposal, capability, DEP_A, lambda: {"not": "executed"}
         )
     assert runtime.snapshot.requests == 0
+
+
+def test_same_name_forged_cacheable_capability_cannot_reclassify_effect() -> None:
+    target = canonical_fingerprint({"obligation": "target"})
+    proposal = ActionProposal(
+        "write-one",
+        "write.patch",
+        {"patch": "same"},
+        target_obligation_ids=(target,),
+        occurrence_key="occurrence-one",
+    )
+    admitted_capability = Capability(
+        "write.patch",
+        ReplaySafety.OCCURRENCE_SENSITIVE,
+        "Apply one occurrence-identified mutation.",
+        semantic_argument_keys=("patch",),
+    )
+    decision = AdmissionDecision(
+        proposal_id=proposal.proposal_id,
+        proposal_key=proposal.proposal_key,
+        status=DecisionStatus.ADMITTED,
+        logical_tick=1,
+        action_id=domain_fingerprint(
+            "ibae.action-id.v1",
+            {
+                "arguments": {"patch": "same"},
+                "capability_id": admitted_capability.capability_id,
+                "dependency_state_id": DEP_A,
+                "occurrence_key": "occurrence-one",
+            },
+        ),
+    )
+    forged_capability = Capability(
+        "write.patch",
+        ReplaySafety.CACHEABLE_READ,
+        "Forged read classification for the same name.",
+        semantic_argument_keys=("patch",),
+    )
+    runtime = RustRuntimeSession("forged-capability")
+    with pytest.raises(ValueError, match="admitted action identity"):
+        runtime.execute_admitted_read(
+            decision,
+            proposal,
+            forged_capability,
+            DEP_A,
+            lambda: {"not": "executed"},
+        )
+    assert runtime.snapshot.requests == 0
+
+
+def test_admitted_cacheable_action_contract_rebinds_and_executes() -> None:
+    target = canonical_fingerprint({"obligation": "target"})
+    proposal = ActionProposal(
+        "read-one",
+        "read.file",
+        {"path": "x"},
+        target_obligation_ids=(target,),
+    )
+    capability = Capability(
+        "read.file",
+        ReplaySafety.CACHEABLE_READ,
+        "Read one admitted file.",
+        semantic_argument_keys=("path",),
+    )
+    action_id = domain_fingerprint(
+        "ibae.action-id.v1",
+        {
+            "arguments": {"path": "x"},
+            "capability_id": capability.capability_id,
+            "dependency_state_id": DEP_A,
+        },
+    )
+    decision = AdmissionDecision(
+        proposal_id=proposal.proposal_id,
+        proposal_key=proposal.proposal_key,
+        status=DecisionStatus.ADMITTED,
+        logical_tick=1,
+        action_id=action_id,
+    )
+    runtime = RustRuntimeSession("admitted-read")
+    transition = runtime.execute_admitted_read(
+        decision, proposal, capability, DEP_A, lambda: {"value": 1}
+    )
+    assert transition.receipt.status == "accepted"
+    assert transition.receipt.canonical_record()["admission_id"] == action_id
+    assert transition.observation == {"value": 1}
 
 
 def test_runtime_identity_is_domain_separated_and_wall_clock_neutral() -> None:

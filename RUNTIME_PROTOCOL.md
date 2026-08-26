@@ -32,7 +32,9 @@ The admitted domain is bounded by:
 | Integer magnitude | 256 bits |
 | Session/tool/dependency text | 4,096 UTF-8 bytes |
 
-Mappings require unique string keys. NaN, infinities, non-canonical number spellings, duplicate keys, non-canonical mapping order/spacing, over-size values, and unsupported Python object forms are rejected.
+Runtime-emitted outcomes and snapshots use a distinct bounded envelope of 2,097,152 UTF-8 bytes, 32,768 nodes, and 4,096 items in one mapping/sequence. This output allowance reserves space for one fully admitted observation plus its receipt and for every identity in the declared 4,096-entry cache/history bounds; it does not enlarge the arbitrary command, argument, or observation domain.
+
+Mappings require unique string keys. NaN, infinities, non-canonical number spellings, duplicate keys, non-canonical mapping order/spacing, over-size values, and unsupported Python object forms are rejected. Runtime observations additionally require exact JSON Python forms (`None`, exact booleans/integers/floats/strings, exact lists, and exact dictionaries already in canonical key order). Tuples, mapping/scalar subclasses, and non-canonical insertion order reject before cache insertion because JSON cannot preserve their frozen Python reference semantics.
 
 ## Commands
 
@@ -51,7 +53,7 @@ Only two closed command variants exist.
 }
 ```
 
-The Python orchestration adapter admits only `ReplaySafety.CACHEABLE_READ` actions to this path and binds the v0.2 action ID as `admission_id`. Occurrence-sensitive or effectful actions are rejected by the adapter rather than reclassified. The compatibility executor derives a deterministic admission ID for standalone v0.1 calls.
+The Python orchestration adapter admits only `ReplaySafety.CACHEABLE_READ` actions to this path, recomputes the supplied capability contract plus dependency identity against the v0.2 action ID, and binds that verified action ID as `admission_id`. Occurrence-sensitive or effectful actions—and same-name capabilities whose contract identity differs—are rejected by the adapter rather than reclassified. The compatibility executor derives a deterministic admission ID for standalone v0.1 calls.
 
 For a cold read, Rust commits request admission, then actual-execution admission, before invoking the callback. The callback returns one canonical envelope:
 
@@ -83,7 +85,7 @@ Exception messages, Python object representations, and addresses never enter cor
 
 This command performs one checked retry-counter transition. It does not request or grant more budget.
 
-Unknown variants—including `request_lease` and `finalize`—reject without runtime mutation. Those semantics are not reserved by implementation and require their later roadmap phase.
+Unknown variants—including `request_lease` and `finalize`—reject without runtime mutation. Each canonical attempted command, command type, and valid admission ID remains bound into its distinct rejection receipt. Those command semantics are not reserved by implementation and require their later roadmap phase.
 
 ## Transition accounting
 
@@ -100,7 +102,7 @@ The logical runtime tick is a checked exact integer derived only from committed 
 | Retry-budget rejection | 0 | 0 | 0 | 0 |
 | Malformed/unsupported command | 0 | 0 | 0 | 0 |
 
-Cold observation commit and cache-hit history commit each append the same canonical transition identity. Retained history truncates deterministically at its configured bound.
+Cold observation commit and cache-hit history commit each append the same canonical transition identity. Retained history truncates deterministically at its configured bound. Rust constructs and bounds the complete prospective outcome on an isolated candidate state before replacing authoritative state, so an output-serialization failure cannot leave a committed transition without a receipt.
 
 ## Identities
 

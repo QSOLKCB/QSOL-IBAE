@@ -6,7 +6,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from ._records import CanonicalValue, require_fingerprint
+from ._records import CanonicalRuntimeRecord, CanonicalValue, require_fingerprint
 from .canonical import canonical_json, domain_fingerprint
 
 RUNTIME_PROTOCOL_VERSION = "IBAE-RUNTIME-PROTOCOL-V1"
@@ -282,7 +282,7 @@ class RustRuntimeSession:
 
     @property
     def snapshot(self) -> RuntimeSnapshot:
-        canonical = CanonicalValue(self.__native.snapshot())
+        canonical = CanonicalRuntimeRecord(self.__native.snapshot())
         return RuntimeSnapshot.from_record(canonical.to_value())
 
     def terminal_cycle_period(self) -> int | None:
@@ -290,6 +290,30 @@ class RustRuntimeSession:
 
     @staticmethod
     def _invocation(operation: Callable[[], Any]) -> Callable[[], str]:
+        def require_exact_json_form(value: Any) -> None:
+            """Reject values whose Python semantics a JSON cache cannot preserve."""
+
+            if value is None or type(value) in {bool, int, float, str}:
+                return
+            if type(value) is list:
+                for nested in value:
+                    require_exact_json_form(nested)
+                return
+            if type(value) is dict:
+                keys = list(value)
+                if any(type(key) is not str for key in keys):
+                    raise TypeError("runtime observation keys must be exact strings")
+                if keys != sorted(keys):
+                    raise ValueError(
+                        "runtime observation mappings must use canonical key order"
+                    )
+                for nested in value.values():
+                    require_exact_json_form(nested)
+                return
+            raise TypeError(
+                "runtime observations support only exact JSON Python forms"
+            )
+
         def invoke() -> str:
             try:
                 value = operation()
@@ -298,6 +322,7 @@ class RustRuntimeSession:
                     {"reason_code": "operation_failed", "status": "rejected"}
                 )
             try:
+                require_exact_json_form(value)
                 observation = CanonicalValue.from_value(value)
             except (TypeError, ValueError, OverflowError, RecursionError):
                 return canonical_json(
@@ -319,7 +344,7 @@ class RustRuntimeSession:
             raise TypeError("command_json must be canonical text")
         callback = None if operation is None else self._invocation(operation)
         outcome_text = self.__native.dispatch(command_json, callback)
-        outcome = CanonicalValue(outcome_text).to_value()
+        outcome = CanonicalRuntimeRecord(outcome_text).to_value()
         receipt = RuntimeReceipt(outcome["receipt"])
         return RuntimeTransition(outcome["observation"], receipt)
 
@@ -419,9 +444,22 @@ class RustRuntimeSession:
         if capability.replay_safety is not ReplaySafety.CACHEABLE_READ:
             raise ValueError("only cacheable reads enter the v0.3 runtime cache path")
         assert decision.action_id is not None
+        semantic_arguments = capability.normalize_arguments(proposal.arguments)
+        expected_action_id = domain_fingerprint(
+            "ibae.action-id.v1",
+            {
+                "arguments": semantic_arguments,
+                "capability_id": capability.capability_id,
+                "dependency_state_id": dependency_fingerprint,
+            },
+        )
+        if decision.action_id != expected_action_id:
+            raise ValueError(
+                "admitted action identity does not match the supplied capability contract"
+            )
         return self.execute_read_transition(
             capability.name,
-            proposal.arguments,
+            semantic_arguments,
             dependency_fingerprint,
             operation,
             admission_id=decision.action_id,

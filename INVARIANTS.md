@@ -104,11 +104,11 @@ Current enforcement: obligations are ordered by canonical obligation ID; explici
 
 ## IBAE-DET-005 — Domain-separated identities
 
-**ENFORCED MUST**
+**ARCHITECTURE MUST**
 
 Task, governance, orchestration, execution, execution-plan, observation, and receipt hashes must be domain-separated so equal raw payloads from different identity classes cannot alias semantically.
 
-Current implementation domain-separates obligation, epistemic, capability, strategy, proposal, batch, action, orchestration-state, event, admission-receipt, runtime-session, runtime-command, runtime-state, and runtime-receipt identities. v0.3 preserves the frozen v0.1 plain SHA-256 tool/observation/transition identities for cross-language equivalence. Task, governance, execution-plan, and final receipt identities remain architecture-only for later phases.
+Current partial implementation domain-separates obligation, epistemic, capability, strategy, proposal, batch, action, orchestration-state, event, admission-receipt, runtime-session, runtime-command, runtime-state, and runtime-receipt identities. v0.3 preserves the frozen v0.1 plain SHA-256 tool/observation/transition identities for cross-language equivalence. The invariant remains architecture-only until task, governance, execution-plan, final-receipt, and frozen compatibility identity classes are covered by a complete versioned taxonomy.
 
 ---
 
@@ -238,7 +238,7 @@ Mutable cache insertion is not exposed as a public executor authority surface. A
 
 ## IBAE-REUSE-006 — Reuse provenance is visible
 
-**ENFORCED MUST**
+**ARCHITECTURE MUST**
 
 An agent-visible reused observation must expose enough provenance to determine that it is cached, where it originated, and which unchanged dependency condition keeps it valid.
 

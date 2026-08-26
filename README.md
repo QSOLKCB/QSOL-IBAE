@@ -49,6 +49,7 @@ The v0.3 Rust deterministic runtime candidate adds:
 - dependency-sensitive cache validation, mutation-isolated observations, and deterministic period-1-to-3 cycle detection;
 - domain-separated command, session, state, and runtime-receipt identities;
 - structured execution-layer rejection records with reason codes and relevant invariant IDs;
+- transaction-safe full-envelope construction, exact-JSON observation semantics, and capability-ID rebinding before an admitted read can enter the cache path;
 - independent Python/Rust canonical-byte, SHA-256, execution-semantic, and receipt conformance fixtures;
 - a deliberately limited command family: `execute_read` and `record_retry` only.
 
