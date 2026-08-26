@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import json
+import math
 import re
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any, TypeVar
 
@@ -14,6 +15,13 @@ _SYMBOL_PATTERN = re.compile(r"^[a-z][a-z0-9._:/-]{0,127}$")
 _FINGERPRINT_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 _INVARIANT_PATTERN = re.compile(r"^IBAE-[A-Z]+-[0-9]{3}$")
 _T = TypeVar("_T")
+
+MAX_CANONICAL_VALUE_BYTES = 262_144
+MAX_CANONICAL_VALUE_DEPTH = 32
+MAX_CANONICAL_VALUE_NODES = 4_096
+MAX_CANONICAL_COLLECTION_ITEMS = 1_024
+MAX_CANONICAL_STRING_BYTES = 65_536
+MAX_CANONICAL_INTEGER_BITS = 256
 
 
 def materialize_bounded_iterable(
@@ -84,6 +92,111 @@ def require_text(name: str, value: str) -> str:
     return value
 
 
+def _normalize_bounded_json(
+    value: Any,
+    *,
+    depth: int = 0,
+    node_count: list[int] | None = None,
+    byte_count: list[int] | None = None,
+) -> Any:
+    """Copy a JSON value while enforcing finite shape before serialization."""
+
+    if depth > MAX_CANONICAL_VALUE_DEPTH:
+        raise ValueError(
+            f"canonical value exceeds maximum depth {MAX_CANONICAL_VALUE_DEPTH}"
+        )
+    active_count = [0] if node_count is None else node_count
+    active_bytes = [0] if byte_count is None else byte_count
+    active_count[0] += 1
+    if active_count[0] > MAX_CANONICAL_VALUE_NODES:
+        raise ValueError(
+            f"canonical value exceeds maximum node count {MAX_CANONICAL_VALUE_NODES}"
+        )
+
+    def consume_bytes(amount: int) -> None:
+        active_bytes[0] += amount
+        if active_bytes[0] > MAX_CANONICAL_VALUE_BYTES:
+            raise ValueError(
+                "canonical value exceeds maximum UTF-8 bytes "
+                f"{MAX_CANONICAL_VALUE_BYTES}"
+            )
+
+    if value is None or isinstance(value, bool):
+        consume_bytes(len(json.dumps(value).encode("utf-8")))
+        return value
+    if isinstance(value, int):
+        if value.bit_length() > MAX_CANONICAL_INTEGER_BITS:
+            raise ValueError(
+                "canonical integer exceeds maximum bit length "
+                f"{MAX_CANONICAL_INTEGER_BITS}"
+            )
+        consume_bytes(len(str(value).encode("ascii")))
+        return value
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ValueError("canonical floats must be finite")
+        consume_bytes(len(json.dumps(value, allow_nan=False).encode("ascii")))
+        return value
+    if isinstance(value, str):
+        if len(value.encode("utf-8")) > MAX_CANONICAL_STRING_BYTES:
+            raise ValueError(
+                "canonical string exceeds maximum UTF-8 bytes "
+                f"{MAX_CANONICAL_STRING_BYTES}"
+            )
+        consume_bytes(
+            len(json.dumps(value, ensure_ascii=False).encode("utf-8"))
+        )
+        return value
+    if isinstance(value, Mapping):
+        items = materialize_bounded_iterable(
+            "canonical mapping items",
+            value.items(),
+            limit=MAX_CANONICAL_COLLECTION_ITEMS,
+        )
+        normalized: dict[str, Any] = {}
+        consume_bytes(2 + max(0, len(items) - 1))
+        for item in items:
+            if not isinstance(item, tuple) or len(item) != 2:
+                raise TypeError("canonical mapping items must be key/value pairs")
+            key, nested = item
+            if not isinstance(key, str):
+                raise TypeError("canonical JSON mapping keys must be strings")
+            if len(key.encode("utf-8")) > MAX_CANONICAL_STRING_BYTES:
+                raise ValueError("canonical mapping key exceeds maximum UTF-8 bytes")
+            if key in normalized:
+                raise ValueError("canonical mapping keys must be unique")
+            consume_bytes(
+                len(json.dumps(key, ensure_ascii=False).encode("utf-8")) + 1
+            )
+            normalized[key] = _normalize_bounded_json(
+                nested,
+                depth=depth + 1,
+                node_count=active_count,
+                byte_count=active_bytes,
+            )
+        return normalized
+    if isinstance(value, (list, tuple)):
+        items = materialize_bounded_iterable(
+            "canonical sequence items",
+            value,
+            limit=MAX_CANONICAL_COLLECTION_ITEMS,
+        )
+        consume_bytes(2 + max(0, len(items) - 1))
+        return [
+            _normalize_bounded_json(
+                item,
+                depth=depth + 1,
+                node_count=active_count,
+                byte_count=active_bytes,
+            )
+            for item in items
+        ]
+    raise TypeError(
+        "canonical values support only JSON null, booleans, finite numbers, "
+        "strings, mappings, and lists"
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class CanonicalValue:
     """Mutation-isolated JSON value stored as canonical text."""
@@ -93,16 +206,23 @@ class CanonicalValue:
     def __post_init__(self) -> None:
         if not isinstance(self.text, str):
             raise TypeError("canonical value text must be a string")
+        if len(self.text.encode("utf-8")) > MAX_CANONICAL_VALUE_BYTES:
+            raise ValueError(
+                "canonical value exceeds maximum UTF-8 bytes "
+                f"{MAX_CANONICAL_VALUE_BYTES}"
+            )
         try:
             decoded = json.loads(self.text)
-        except json.JSONDecodeError as exc:
+        except (json.JSONDecodeError, RecursionError) as exc:
             raise ValueError("canonical value text must be valid JSON") from exc
-        if canonical_json(decoded) != self.text:
+        normalized = _normalize_bounded_json(decoded)
+        if canonical_json(normalized) != self.text:
             raise ValueError("canonical value text is not in canonical form")
 
     @classmethod
     def from_value(cls, value: Any) -> CanonicalValue:
-        return cls(canonical_json(value))
+        normalized = _normalize_bounded_json(value)
+        return cls(canonical_json(normalized))
 
     def to_value(self) -> Any:
         """Return a fresh caller-owned value."""

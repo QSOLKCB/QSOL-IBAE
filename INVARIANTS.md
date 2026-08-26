@@ -126,7 +126,7 @@ Current v0.2 reference implementation: `IBAE-LOGICAL-CLOCK-V1` consumes one exac
 
 Elapsed time, throughput, queue delay, and tool latency are benchmark/environment observations and cannot enter correctness identity unless a separately reviewed protocol explicitly makes timing itself the subject of the task.
 
-Current enforcement: the v0.2 canonical orchestration state, events, action identities, and receipts expose no wall-clock field. Strategy identity uses `IBAE-STRATEGY-PARAMETERS-V1` plus an orchestrator-owned, strategy-specific typed allowlist schema; unlisted keys and out-of-contract values are rejected before identity construction.
+Current enforcement: the v0.2 canonical orchestration state, events, action identities, and receipts expose no wall-clock field. Strategy identity uses `IBAE-STRATEGY-PARAMETERS-V1` plus a strategy-specific typed allowlist schema stored in admitted orchestration state. `admit_batch` verifies the exact schema identity before reading any batch/strategy identity; unlisted keys, out-of-contract values, and caller-forged schemas therefore cannot enter correctness identity.
 
 ## IBAE-CLK-003 — Wall-clock watchdog is failsafe only
 
@@ -192,7 +192,7 @@ Requests, executions, retries, mutations, logical ticks, lease counters, executi
 
 Batch proposal size, ready queue size, worker count, and other resident execution structures must have explicit finite bounds or deterministic streaming rules.
 
-Current enforcement: v0.2 gives every model-facing collection boundary an explicit protocol/configuration cap, including obligation and epistemic registries/dependencies, capability and proposal state keys, proposal targets/batches, strategy schemas/parameters, persistent occurrence ownership, and retained history. Bounded consumers stop at cap + 1 instead of fully materializing over-size/infinite iterables. No worker queue exists yet; any later worker phase inherits this invariant.
+Current enforcement: v0.2 gives every model-facing collection boundary an explicit protocol/configuration cap, including obligation and epistemic registries/dependencies, capability and proposal state keys, proposal targets/batches, admitted strategy schemas/parameters, persistent occurrence ownership, and retained history. Canonical model values additionally have explicit byte, depth, total-node, per-collection, string, and integer-size bounds enforced while copying the input before serialization. Bounded consumers stop at cap + 1 instead of fully materializing over-size/infinite iterables. No worker queue exists yet; any later worker phase inherits this invariant.
 
 ---
 
@@ -296,7 +296,7 @@ A continuation lease may be granted only when:
 
 A strategy change used to justify continuation must have a canonical identity distinct from superficial rewording of the same action sequence.
 
-Current v0.2 partial implementation provides a domain-separated identity over structured strategy key, normalized parameters, and an orchestrator-owned typed parameter-schema identity. Each schema has a finite parameter-key allowlist and bounded value contract, so arbitrary observational metadata cannot enter strategy identity. Determining whether a proposed strategy is materially non-cyclic remains deferred to the v0.5 continuation gate.
+Current v0.2 partial implementation provides a domain-separated identity over structured strategy key, normalized parameters, and an admitted typed parameter-schema identity. Each schema has a finite parameter-key allowlist and bounded value contract; schemas live in canonical orchestration state, and admission rejects a non-matching proposal schema before computing proposal-derived correctness identities. Determining whether a proposed strategy is materially non-cyclic remains deferred to the v0.5 continuation gate.
 
 ---
 
@@ -398,7 +398,7 @@ Current enforcement: unknown, satisfied, explicitly blocked, dependency-blocked,
 
 Obligation graphs, ready sets, pending proposals, and retained orchestration history require explicit bounds or deterministic streaming/compaction policies.
 
-Current enforcement: `OrchestrationLimits` cannot exceed protocol hard caps; all exposed iterable inputs are consumed through explicit bounds; over-size proposal construction/admission fails closed; retained history uses deterministic bounded truncation; and persistent occurrence ownership rejects new effects when its exact registry reaches capacity.
+Current enforcement: `OrchestrationLimits` cannot exceed protocol hard caps; all exposed iterable inputs and canonical model payloads are validated through explicit structural/byte bounds; over-size proposal construction/admission fails closed; admitted strategy schemas have a finite registry; retained history uses deterministic bounded truncation; and persistent occurrence ownership rejects new effects when its exact registry reaches capacity.
 
 ## IBAE-ORCH-007 — Occurrence identity is preserved for effectful actions
 
@@ -519,7 +519,7 @@ Current v0.2 partial implementation: observed epistemic records require provenan
 
 Available tool/work capability is surfaced structurally so the supervisor need not repeatedly attempt unavailable actions to discover capability state.
 
-Current v0.2 implementation includes versioned capability identity, replay class, required state dependencies, availability, and description in the compact projection.
+Current v0.2 implementation includes versioned capability identity, replay class, required state dependencies, availability, and description in the compact projection. It also exposes the admitted typed strategy-schema registry and its remaining bounded capacity.
 
 ## IBAE-AI-009 — Local workers receive least authority/context
 

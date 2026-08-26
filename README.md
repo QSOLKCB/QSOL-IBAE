@@ -33,8 +33,8 @@ The v0.2 Python orchestration reference adds:
 - orchestrator-owned replay classification and safe batch deduplication;
 - persistent bounded occurrence ownership for mutations and other non-replay-safe effects;
 - explicit `observed`, `derived`, `model_proposed`, and `unknown` state, with cache-delivery metadata excluded from correctness identity;
-- versioned capability, typed strategy-schema, action, state, event, and receipt identities;
-- hard-bounded consumption for every model-facing collection;
+- versioned capability, admitted typed strategy-schema, action, state, event, and receipt identities;
+- hard-bounded consumption for every model-facing collection and byte/depth/node-bounded canonical payloads;
 - `IBAE-LOGICAL-CLOCK-V1` transition accounting;
 - stable rejection reason codes and deterministic recovery actions;
 - a compact AI-facing state projection with actionable obligation/blocker context;

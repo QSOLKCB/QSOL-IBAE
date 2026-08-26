@@ -8,7 +8,7 @@ QSOL-IBAE is an invariant-bounded execution substrate intended to sit beneath an
 
 Merged v0.1 deterministic kernel and architecture contract, plus the **v0.2 deterministic Python orchestration reference**.
 
-v0.2 implements canonical obligations/DAG readiness, proposal/admission separation, replay-safe-only batch deduplication, persistent bounded effect occurrence ownership, explicit independent-versus-declared batch ordering, explicit epistemic state classes with reuse-path-neutral correctness identity, typed strategy-specific parameter allowlists, bounded model-facing collections, canonical state/receipt identities, structured rejection/recovery records, and `IBAE-LOGICAL-CLOCK-V1` reference semantics.
+v0.2 implements canonical obligations/DAG readiness, proposal/admission separation, replay-safe-only batch deduplication, persistent bounded effect occurrence ownership, explicit independent-versus-declared batch ordering, explicit epistemic state classes with reuse-path-neutral correctness identity, admitted typed strategy-specific parameter allowlists, bounded model-facing collections and canonical payload traversal, canonical state/receipt identities, structured rejection/recovery records, and `IBAE-LOGICAL-CLOCK-V1` reference semantics.
 
 The v0.2 gate requires byte-identical admission decisions for identical canonical state, proposal set, and policy. No OpenAI SDK integration, Rust authority runtime, GPU execution, continuation lease implementation, governance receipt layer, or local-worker integration is claimed. v0.3 Rust work remains blocked until v0.2 is reviewed and accepted.
 

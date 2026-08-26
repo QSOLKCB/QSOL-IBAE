@@ -36,6 +36,7 @@ MAX_HISTORY_EVENTS = 256
 MAX_OCCURRENCE_OWNERS = 256
 MAX_STATE_KEYS_PER_DECLARATION = MAX_EPISTEMIC_RECORDS // 2
 MAX_STRATEGY_PARAMETERS = 32
+MAX_STRATEGY_SCHEMAS = 32
 MAX_STRATEGY_SYMBOL_LIST_ITEMS = 64
 MAX_INVARIANT_IDS_PER_REJECTION = 64
 
@@ -424,6 +425,7 @@ class OrchestrationLimits:
     max_batch_proposals: int = MAX_PROPOSALS_PER_BATCH
     max_history: int = MAX_HISTORY_EVENTS
     max_occurrence_owners: int = MAX_OCCURRENCE_OWNERS
+    max_strategy_schemas: int = MAX_STRATEGY_SCHEMAS
 
     def __post_init__(self) -> None:
         for name, value, hard_limit in (
@@ -445,6 +447,11 @@ class OrchestrationLimits:
                 self.max_occurrence_owners,
                 MAX_OCCURRENCE_OWNERS,
             ),
+            (
+                "max_strategy_schemas",
+                self.max_strategy_schemas,
+                MAX_STRATEGY_SCHEMAS,
+            ),
         ):
             require_bounded_positive_int(name, value, hard_limit)
 
@@ -456,6 +463,7 @@ class OrchestrationLimits:
             "max_history": self.max_history,
             "max_obligations": self.max_obligations,
             "max_occurrence_owners": self.max_occurrence_owners,
+            "max_strategy_schemas": self.max_strategy_schemas,
         }
 
 
@@ -968,6 +976,7 @@ class OrchestrationState:
     logical_tick: int = 0
     history: tuple[str, ...] = ()
     occurrence_owners: tuple[OccurrenceOwnership, ...] = ()
+    strategy_schemas: tuple[StrategySchema, ...] = ()
 
     def __post_init__(self) -> None:
         if not isinstance(self.obligations, ObligationRegistry):
@@ -1026,6 +1035,19 @@ class OrchestrationState:
             raise ValueError("occurrence ownership keys must be unique")
         object.__setattr__(self, "occurrence_owners", owners)
 
+        supplied_schemas = materialize_bounded_iterable(
+            "strategy schemas",
+            self.strategy_schemas,
+            limit=self.limits.max_strategy_schemas,
+        )
+        if any(not isinstance(item, StrategySchema) for item in supplied_schemas):
+            raise TypeError("strategy_schemas must contain StrategySchema records")
+        schemas = tuple(sorted(supplied_schemas, key=lambda item: item.strategy_key))
+        schema_keys = [item.strategy_key for item in schemas]
+        if len(schema_keys) != len(set(schema_keys)):
+            raise ValueError("strategy schema keys must be unique")
+        object.__setattr__(self, "strategy_schemas", schemas)
+
     @classmethod
     def create(
         cls,
@@ -1033,6 +1055,7 @@ class OrchestrationState:
         *,
         epistemic_state: EpistemicState | None = None,
         capabilities: Iterable[Capability] = (),
+        strategy_schemas: Iterable[StrategySchema] = (),
         limits: OrchestrationLimits | None = None,
     ) -> OrchestrationState:
         active_limits = limits or OrchestrationLimits()
@@ -1049,6 +1072,11 @@ class OrchestrationState:
                 capabilities,
                 limit=active_limits.max_capabilities,
             ),
+            strategy_schemas=materialize_bounded_iterable(
+                "strategy schemas",
+                strategy_schemas,
+                limit=active_limits.max_strategy_schemas,
+            ),
             limits=active_limits,
         )
 
@@ -1059,6 +1087,13 @@ class OrchestrationState:
     def capability(self, name: str) -> Capability | None:
         require_symbol("capability name", name)
         return next((item for item in self.capabilities if item.name == name), None)
+
+    def strategy_schema(self, key: str) -> StrategySchema | None:
+        require_symbol("strategy key", key)
+        return next(
+            (item for item in self.strategy_schemas if item.strategy_key == key),
+            None,
+        )
 
     def canonical_record(self) -> dict[str, object]:
         return {
@@ -1075,6 +1110,9 @@ class OrchestrationState:
                 item.canonical_record() for item in self.occurrence_owners
             ],
             "protocol": AGENT_PROTOCOL,
+            "strategy_schemas": [
+                item.canonical_record() for item in self.strategy_schemas
+            ],
         }
 
     def compact_projection(self) -> dict[str, object]:
@@ -1120,6 +1158,9 @@ class OrchestrationState:
                 "occurrence_owner_slots_remaining": (
                     self.limits.max_occurrence_owners - len(self.occurrence_owners)
                 ),
+                "strategy_schema_slots_remaining": (
+                    self.limits.max_strategy_schemas - len(self.strategy_schemas)
+                ),
             },
             "canonical_state_identity": self.state_id,
             "epistemic_state": self.epistemic_state.projection(),
@@ -1132,6 +1173,9 @@ class OrchestrationState:
                 item.canonical_record() for item in self.occurrence_owners
             ],
             "protocol": AGENT_PROTOCOL,
+            "strategy_schemas": [
+                item.canonical_record() for item in self.strategy_schemas
+            ],
         }
 
     def advance(
@@ -1325,6 +1369,15 @@ def admit_batch(
         raise TypeError("state must be an OrchestrationState")
     if not isinstance(batch, ProposalBatch):
         raise TypeError("batch must be a ProposalBatch")
+
+    admitted_strategy_schema = state.strategy_schema(batch.strategy.key)
+    if (
+        admitted_strategy_schema is None
+        or admitted_strategy_schema.schema_id != batch.strategy.schema.schema_id
+    ):
+        raise ValueError(
+            "strategy schema is not admitted by the orchestration state"
+        )
 
     prior_state_id = state.state_id
     if len(batch.proposals) > state.limits.max_batch_proposals:

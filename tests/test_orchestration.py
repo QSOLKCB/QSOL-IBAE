@@ -97,6 +97,7 @@ def _ready_state(
     epistemic_state: EpistemicState | None = None,
     extra_obligations: tuple[Obligation, ...] = (),
     capabilities: tuple[Capability, ...] | None = None,
+    strategy_schemas: tuple[StrategySchema, ...] | None = None,
 ) -> tuple[OrchestrationState, Obligation]:
     obligation = Obligation("ready", "Perform ready work.")
     active_capabilities = capabilities or (
@@ -107,11 +108,13 @@ def _ready_state(
             "Perform one occurrence-identified mutation.",
         ),
     )
+    active_strategy_schemas = strategy_schemas or (_DEFAULT_STRATEGY_SCHEMA,)
     state = OrchestrationState.create(
         (obligation, *extra_obligations),
         limits=limits,
         epistemic_state=epistemic_state,
         capabilities=active_capabilities,
+        strategy_schemas=active_strategy_schemas,
     )
     return state, obligation
 
@@ -467,6 +470,35 @@ def test_strategy_schema_identity_and_value_constraints_are_authoritative() -> N
         )
 
 
+def test_strategy_schema_must_be_admitted_before_any_batch_identity_is_used() -> None:
+    state, obligation = _ready_state()
+    forged_schema = StrategySchema(
+        "default",
+        (
+            StrategyParameterSpec(
+                "epoch",
+                StrategyValueKind.BOUNDED_INTEGER,
+                minimum=0,
+                maximum=2_000_000_000,
+            ),
+        ),
+    )
+    batch = ProposalBatch(
+        "forged-strategy-schema",
+        Strategy(
+            "default",
+            {"epoch": 1_787_720_400},
+            schema=forged_schema,
+        ),
+        (_proposal(obligation),),
+    )
+    with pytest.raises(ValueError, match="not admitted by the orchestration state"):
+        admit_batch(state, batch)
+    assert state.logical_tick == 0
+    assert state.history == ()
+    assert state.strategy_schema("default") is _DEFAULT_STRATEGY_SCHEMA
+
+
 def test_proposal_batch_normalizes_caller_owned_sequence() -> None:
     _, obligation = _ready_state()
     first = _proposal(obligation, key="first")
@@ -627,6 +659,18 @@ def test_all_model_facing_collection_boundaries_use_bounded_consumption() -> Non
     assert consumed["capability-registry"] == 3
 
     with pytest.raises(ValueError, match="hard limit"):
+        OrchestrationState.create(
+            (Obligation("bounded-schema-root", "Bound schema registry."),),
+            strategy_schemas=stream(
+                "strategy-schema-registry",
+                10,
+                lambda index: StrategySchema(f"schema-{index}"),
+            ),
+            limits=OrchestrationLimits(max_strategy_schemas=2),
+        )
+    assert consumed["strategy-schema-registry"] == 3
+
+    with pytest.raises(ValueError, match="hard limit"):
         StrategySchema(
             "bounded-schema",
             stream(
@@ -652,6 +696,57 @@ def test_all_model_facing_collection_boundaries_use_bounded_consumption() -> Non
             "stable",
             {"steps": ["one"] * 65},
             schema=_STABLE_STRATEGY_SCHEMA,
+        )
+
+
+def test_canonical_model_payloads_have_shape_depth_and_byte_bounds() -> None:
+    obligation = Obligation("payload-bound", "Bound canonical payloads.")
+    targets = (obligation.obligation_id,)
+
+    with pytest.raises(ValueError, match="canonical sequence items.*hard limit"):
+        ActionProposal(
+            "oversized-sequence",
+            "read",
+            [0] * 1_025,
+            target_obligation_ids=targets,
+        )
+    with pytest.raises(ValueError, match="canonical mapping items.*hard limit"):
+        ActionProposal(
+            "oversized-mapping",
+            "read",
+            {f"key-{index}": index for index in range(1_025)},
+            target_obligation_ids=targets,
+        )
+
+    deep: object = None
+    for _ in range(34):
+        deep = [deep]
+    with pytest.raises(ValueError, match="maximum depth"):
+        EpistemicRecord("deep-value", EpistemicClass.MODEL_PROPOSED, deep)
+
+    with pytest.raises(ValueError, match="maximum node count"):
+        EpistemicRecord(
+            "many-nodes",
+            EpistemicClass.MODEL_PROPOSED,
+            [[0, 1, 2, 3] for _ in range(1_024)],
+        )
+    with pytest.raises(ValueError, match="maximum UTF-8 bytes 65536"):
+        EpistemicRecord(
+            "long-string",
+            EpistemicClass.MODEL_PROPOSED,
+            "x" * 65_537,
+        )
+    with pytest.raises(ValueError, match="maximum UTF-8 bytes 262144"):
+        EpistemicRecord(
+            "large-value",
+            EpistemicClass.MODEL_PROPOSED,
+            {f"chunk-{index}": "x" * 65_000 for index in range(5)},
+        )
+    with pytest.raises(ValueError, match="maximum bit length 256"):
+        EpistemicRecord(
+            "large-integer",
+            EpistemicClass.MODEL_PROPOSED,
+            1 << 256,
         )
 
 
@@ -690,11 +785,13 @@ def test_state_identity_ignores_registry_and_policy_insertion_order() -> None:
         (root, child),
         epistemic_state=EpistemicState.from_iterable((observed, proposed)),
         capabilities=(read, write),
+        strategy_schemas=(_DEFAULT_STRATEGY_SCHEMA,),
     )
     state_b = OrchestrationState.create(
         (child, root),
         epistemic_state=EpistemicState.from_iterable((proposed, observed)),
         capabilities=(write, read),
+        strategy_schemas=(_DEFAULT_STRATEGY_SCHEMA,),
     )
     assert state_a.state_id == state_b.state_id
     assert canonical_json(state_a.compact_projection()) == canonical_json(
@@ -747,6 +844,7 @@ def test_dependency_state_changes_replay_safe_action_identity() -> None:
                     "read", ReplaySafety.CACHEABLE_READ, "Read deterministic state."
                 ),
             ),
+            strategy_schemas=(_DEFAULT_STRATEGY_SCHEMA,),
         )
         proposal = _proposal(
             obligation,
@@ -1098,6 +1196,7 @@ def test_satisfied_blocked_and_dependency_blocked_targets_are_distinct() -> None
     state = OrchestrationState.create(
         (satisfied, blocked, dependent, root, waiting),
         capabilities=(Capability("read", ReplaySafety.CACHEABLE_READ, "Read state."),),
+        strategy_schemas=(_DEFAULT_STRATEGY_SCHEMA,),
     )
     proposals = (
         _proposal(satisfied, key="target-done"),
@@ -1181,6 +1280,7 @@ def test_compact_state_projection_exposes_ready_blocked_and_capabilities() -> No
     state = OrchestrationState.create(
         (dependency_blocked, explicitly_blocked, root),
         capabilities=(Capability("read", ReplaySafety.CACHEABLE_READ, "Read state."),),
+        strategy_schemas=(_DEFAULT_STRATEGY_SCHEMA,),
     )
     projection = state.compact_projection()
     assert projection["canonical_state_identity"] == state.state_id
@@ -1203,6 +1303,8 @@ def test_compact_state_projection_exposes_ready_blocked_and_capabilities() -> No
     assert projection["capabilities"][0]["name"] == "read"
     assert projection["capacity"]["obligation_slots_remaining"] == 125
     assert projection["capacity"]["occurrence_owner_slots_remaining"] == 256
+    assert projection["capacity"]["strategy_schema_slots_remaining"] == 31
+    assert projection["strategy_schemas"][0]["strategy_key"] == "default"
 
 
 def test_state_identity_changes_with_authoritative_transition_state() -> None:
