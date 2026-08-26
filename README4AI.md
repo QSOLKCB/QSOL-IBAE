@@ -48,18 +48,22 @@ progress authority. Classification and completion are derived from exact bound
 prior/current sources; external counters require a source-bound native
 observation matched to its governed tool admission. Policy, state, and native
 context bind the exact admitted progress contract and its orchestration
-lineage. Structured strategy changes revalidate admitted strategy, capability
+lineage; the built-in contract counts both unsatisfied and blocked obligations,
+and observation refreshes live control state. Structured strategy changes
+revalidate admitted strategy, capability
 frontier, targets, dependency path, recovery mode, and runtime-derived cycle
 evidence; paraphrase is excluded from identity. Governance precommits an exact
 initial budget, finite indexed schedule, cumulative ceiling, request cap, and
 strategy-recovery cap. The supervisor requests, governance grants or denies,
 and an opt-in Rust session applies only a full validated governance-issued
-grant after an evaluator-only capability gates its separate non-constructible
-native seal, using an exact `apply_lease` transition. An accepted application
-changes exact limits plus one runtime logical tick while consuming no
+grant after the exported native issuer validates an evaluator-only capability
+for its separate non-constructible native seal, using an exact `apply_lease`
+transition. Evaluator-issued lineage protects recovery accounting. An accepted
+application changes exact limits plus one runtime logical tick while consuming no
 tool/runtime resource counter or history; rejection is state-neutral. The
-compact state exposes remaining request decisions. Structural in-process
-checkpoints require live status, semantic partial evidence derives from the
+compact state exposes effective remaining request and schedule decisions.
+Structural in-process checkpoints require live status, strategy, and that same
+effective capacity; semantic partial evidence derives from the
 checkpoint, and watchdog lease exhaustion is identity-bearing but
 non-authoritative. Existing v0.2-v0.4 schemas and fixture bytes remain
 unchanged.

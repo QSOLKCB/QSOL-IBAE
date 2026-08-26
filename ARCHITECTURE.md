@@ -294,12 +294,15 @@ Lease count and total possible extension are finite before execution begins.
 
 The implemented v0.5 policy makes that rule exact: one versioned progress
 contract compares canonical prior/current measures and derives classification
-and completion from their bound sources. Governed external counters require a
-source-bound native observation matched to its exact tool admission.
+and completion from their bound sources. The built-in contract counts both
+unsatisfied and blocked obligations, so discovering a blocker cannot masquerade
+as satisfying work. Governed external counters require a source-bound native
+observation matched to its exact tool admission.
 Governance binds an exact initial budget, finite indexed resource schedule,
-request cap, strategy-recovery cap, and total ceiling; an evaluator-only
-capability gates native seal issuance, and Rust applies only the resulting full
-identity-checked grant. Every grant/deny decision advances a separate
+request cap, strategy-recovery cap, and total ceiling; evaluator-issued lineage
+protects the recovery ledger from reconstruction, the exported native issuer
+validates an evaluator-only capability, and Rust applies only the resulting
+full identity-checked grant. Every grant/deny decision advances a separate
 continuation logical tick.
 Accepted native application advances the runtime logical tick once while
 consuming no tool resource counter or execution history; rejected application
@@ -308,7 +311,9 @@ is state-neutral.
 Period-1/2/3 cycle evidence is recomputed from the live native history rather
 than trusted as optional caller input. The compact projection exposes both
 remaining schedule slots and remaining request decisions, so exhausted request
-capacity cannot advertise an impossible recovery.
+or schedule capacity cannot advertise an impossible recovery. Checkpoints use
+that same effective minimum and cannot bind a strategy absent from live state;
+ordinary progress observation refreshes stalled/progressing/complete state.
 
 The `tiny`, `standard`, `extended`, and `repository` profiles are exact
 version-1 experimental fixtures, not universal constants. Equal, front-loaded,
@@ -638,11 +643,13 @@ policy, state, and native context bind one exact progress contract; progress
 rebinds preserve both prior and current orchestration endpoints, derive their
 claims from bound sources, and require source-bound governed provenance for
 external counters. Strategy receipts revalidate their exact material and live
-cycle evidence is recomputed internally. An evaluator-only capability gates
-Rust native-seal issuance for the exact governance grant, so a self-consistent
-reconstructed grant cannot extend limits. The candidate also implements
-endpoint-checked fixed-shape continuation evidence, request-cap-aware compact
-AI recovery state, exact structural in-process checkpoint/resume,
+cycle evidence is recomputed internally. The exported Rust issuer validates an
+evaluator-only capability for the exact governance grant, so a self-consistent
+reconstructed grant cannot extend limits. Evaluator-issued decision lineage
+also protects the strategy-recovery counter. The candidate implements
+endpoint-checked fixed-shape continuation evidence,
+request-and-schedule-aware compact AI recovery state, exact structural
+in-process checkpoint/resume,
 checkpoint-evidence-bound semantic continuation partials, and an exact-context
 watchdog record whose lease-exhaustion flag is identity-bearing but cannot
 become completion authority. The existing v0.4 governance/evidence schema

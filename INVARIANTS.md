@@ -368,7 +368,11 @@ denial, advances a bounded continuation decision ledger, and cannot exceed the
 precommitted request/schedule/cumulative ceilings. Period-1/2/3 evidence is
 recomputed from live native history, so omitting caller evidence cannot bypass
 a terminal-cycle denial; the compact projection reports both remaining
-schedule slots and request decisions and suppresses impossible recoveries.
+schedule slots and request decisions and suppresses impossible recoveries when
+either is exhausted. Progress observation immediately refreshes the live
+stalled/progressing/complete control state. The built-in contract counts both
+unsatisfied and blocked obligations, so newly blocked work cannot authorize a
+lease.
 Repeated inputs produce byte-identical fixtures across hash seeds.
 
 ## IBAE-PROG-005 — Strategy identity is explicit
@@ -386,7 +390,9 @@ capabilities, at least one bound target, and a pattern that does not reproduce
 bound period-1/2/3 cycle evidence. Every receipt revalidates its exact bound
 orchestration state, prior/proposed material, status, reason, and cycle evidence
 before it can authorize recovery. A strategy receipt may authorize only the
-policy-bounded recovery count and is never classified as progress.
+policy-bounded recovery count and is never classified as progress. The live
+recovery count is protected by evaluator-issued decision lineage; reconstructing
+that public counter cannot restore recovery authority.
 
 ---
 
@@ -784,6 +790,8 @@ A rejected or partial run may be persisted for audit, but cannot later be relabe
 Current enforcement: rejection, partial, and final acceptance are separate
 immutable record classes with fixed closed statuses and distinct receipt
 domains. v0.5 checkpoints require status to equal the live continuation state;
+any supplied strategy must equal the live strategy even when that identity is
+absent, and remaining leases use the effective request/schedule minimum;
 semantic partial evidence IDs are derived from the cited checkpoint and cannot
 be replaced by unrelated fingerprints. A later accepted attempt creates a new
 final receipt rather than mutating earlier evidence.

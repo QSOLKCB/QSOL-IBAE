@@ -1574,7 +1574,8 @@ class RustRuntimeSession:
         if grant.source_bound:
             raise ValueError("lease grant is already source-bound")
         return self.__native.issue_lease_grant(
-            canonical_json(grant.canonical_record())
+            canonical_json(grant.canonical_record()),
+            grant._governance_source_capability(),
         )
 
     def apply_lease(self, grant: Any) -> RuntimeLeaseApplicationReceipt:

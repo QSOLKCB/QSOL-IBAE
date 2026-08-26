@@ -125,8 +125,10 @@ and no duplicate/replayed grant ID.
 Rust does not decide whether progress justifies a lease and exposes no
 `request_lease` command. The Python runtime facade also refuses to ask native
 code to seal a structural grant unless the complete governance evaluator has
-already attached its exact non-constructible decision capability. Governance
-grants; Rust seals and applies only that decision.
+already attached its exact non-constructible decision capability. The exported
+native issuer validates that capability against the same canonical grant, so
+direct native-session access cannot bypass governance. Governance grants; Rust
+seals and applies only that decision.
 
 Unknown variants—including `request_lease` and `finalize`—reject without runtime mutation. Each canonical attempted command, command type, and valid admission ID remains bound into its distinct rejection receipt. Those command semantics are not reserved by implementation and require their later roadmap phase.
 

@@ -3991,7 +3991,18 @@ impl NativeRuntimeSession {
         &self,
         py: Python<'_>,
         canonical_grant: &str,
+        governance_capability: &Bound<'_, PyAny>,
     ) -> PyResult<Py<NativeLeaseGrantSeal>> {
+        let continuation = PyModule::import_bound(py, "ibae.continuation")?;
+        let evaluator_authorized: bool = continuation
+            .getattr("_validate_governance_capability")?
+            .call1((governance_capability, canonical_grant))?
+            .extract()?;
+        if !evaluator_authorized {
+            return Err(PyValueError::new_err(
+                "native lease grant issuance requires evaluator authority",
+            ));
+        }
         let value = parse_runtime_canonical(canonical_grant)
             .map_err(|_| PyValueError::new_err("lease grant must be canonical JSON"))?;
         let grant = LeaseGrant::parse(&value)

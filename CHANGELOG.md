@@ -11,7 +11,10 @@ All notable changes to QSOL-IBAE will be documented here.
   counters. Classification and completion are derived from exact bound
   prior/current sources, and external counters require matching governed tool
   admission plus a source-bound native observation; activity, confidence, wall
-  time, and strategy rephrasing remain non-authoritative.
+  time, and strategy rephrasing remain non-authoritative. The built-in
+  obligation contract counts both unsatisfied and blocked work, preventing a
+  newly blocked obligation from being misclassified as progress, and context
+  observation refreshes stalled/progressing/complete control state immediately.
 - structured strategy-material and strategy-change receipts that bind admitted
   strategy identity, capability frontier, target obligations, dependency path,
   recovery mode, and period-1/2/3 cycle-breaking evidence. Receipts revalidate
@@ -26,15 +29,17 @@ All notable changes to QSOL-IBAE will be documented here.
   replay index, and checked ceiling before changing exact limits. Accepted
   application consumes one runtime logical tick and no tool counters/history;
   rejection is state-neutral. An evaluator-only governance capability gates
-  issuance of the separate non-constructible native grant seal, preventing a
-  runtime caller with a hash-consistent but unissued record from extending
-  limits.
+  issuance of the separate non-constructible native grant seal. The exported
+  native issuer independently requires and validates that exact evaluator
+  capability, preventing direct native callers with hash-consistent but
+  unissued records from extending limits.
 - structural in-process `IBAE-CONTINUATION-CHECKPOINT-V1`, fixed-shape
   continuation evidence capped at 4,096 bytes, semantic continuation partial
   receipts, and non-authoritative watchdog observations that cannot establish
   completion or lease exhaustion. Exact progress-contract and prior/current
   endpoints, live evidence/checkpoint endpoints, actual partial-denial causes,
-  recovery counters, exact checkpoint status/evidence bindings, and watchdog
+  evaluator-bound recovery counters, exact live strategy/status/evidence
+  bindings, effective request/schedule capacity, and watchdog
   orchestration/runtime/lease-exhaustion identity fail closed.
 - exact experimental `tiny`, `standard`, `extended`, and `repository`
   continuation profiles plus a model-free benchmark of fixed, front-loaded,

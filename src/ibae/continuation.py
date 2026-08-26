@@ -637,6 +637,11 @@ def default_obligation_progress_contract() -> ProgressMeasureContract:
         1,
         (
             ProgressDimension(
+                "blocked",
+                ProgressSource.BLOCKED_OBLIGATION_COUNT,
+                ProgressDirection.DECREASE,
+            ),
+            ProgressDimension(
                 "unsatisfied",
                 ProgressSource.UNSATISFIED_OBLIGATION_COUNT,
                 ProgressDirection.DECREASE,
@@ -1666,6 +1671,15 @@ def _advance_decision_aggregate(
     )
 
 
+class _ContinuationDecisionLineageCapability:
+    """Non-public evaluator proof for one exact continuation decision ledger."""
+
+    __slots__ = ("__authority", "__canonical_lineage")
+
+    def __new__(cls) -> _ContinuationDecisionLineageCapability:
+        raise TypeError("continuation decision lineage is not constructible")
+
+
 @dataclass(frozen=True, slots=True)
 class ContinuationState:
     task_id: str
@@ -1693,6 +1707,9 @@ class ContinuationState:
     progress_state: ProgressState
     pending_grant_id: str | None = None
     pending_grant_receipt_id: str | None = None
+    _decision_lineage_capability: Any | None = field(
+        default=None, repr=False, compare=False
+    )
 
     def __post_init__(self) -> None:
         for name, value in (
@@ -1764,6 +1781,17 @@ class ContinuationState:
             raise ValueError("a denied last decision requires a denial reason")
         if self.last_decision != "denied" and self.last_denial_reason is not None:
             raise ValueError("only a denied last decision may carry a denial reason")
+        if self._decision_lineage_capability is not None:
+            if (
+                type(self._decision_lineage_capability)
+                is not _ContinuationDecisionLineageCapability
+            ):
+                raise TypeError("continuation decision lineage is not trusted")
+            if not _validate_continuation_state_lineage(
+                self._decision_lineage_capability,
+                canonical_json(self._decision_lineage_record()),
+            ):
+                raise ValueError("continuation decision lineage does not match state")
 
     @classmethod
     def create(
@@ -1869,7 +1897,20 @@ class ContinuationState:
             ),
             last_decision="none",
             last_denial_reason=None,
-            progress_state=ProgressState.STALLED,
+            progress_state=(
+                ProgressState.STALLED
+                if progress is None
+                else (
+                    ProgressState.COMPLETE
+                    if progress.task_complete
+                    else (
+                        ProgressState.PROGRESSING
+                        if progress.classification
+                        is ProgressClassification.MEASURABLE_PROGRESS
+                        else ProgressState.STALLED
+                    )
+                )
+            ),
         )
 
     @property
@@ -1891,6 +1932,7 @@ class ContinuationState:
         return policy.max_leases - self.leases_granted
 
     def _require_policy(self, policy: ContinuationPolicy) -> None:
+        self._require_decision_lineage()
         if type(policy) is not ContinuationPolicy:
             raise TypeError("policy must be an exact ContinuationPolicy")
         if policy.continuation_policy_id != self.continuation_policy_id:
@@ -1909,7 +1951,7 @@ class ContinuationState:
         request_decisions_remaining = policy.max_lease_requests - self.lease_requests
         schedule_slots_remaining = self.leases_remaining(policy)
         recovery_actions: list[str] = []
-        if request_decisions_remaining == 0:
+        if request_decisions_remaining == 0 or schedule_slots_remaining == 0:
             recovery_actions = []
         elif self.progress_state is ProgressState.STALLED:
             recovery_actions.append("provide_objective_progress")
@@ -1947,6 +1989,7 @@ class ContinuationState:
             "legal_recovery_actions": recovery_actions,
             "material_strategy_change_admissible": (
                 request_decisions_remaining > 0
+                and schedule_slots_remaining > 0
                 and not self.has_pending_grant
                 and self.strategy_recoveries < policy.max_strategy_recoveries
                 and self.progress_state
@@ -1959,7 +2002,37 @@ class ContinuationState:
             ).canonical_record(),
         }
 
+    def _decision_lineage_record(self) -> dict[str, Any]:
+        """Return the evaluator-owned subset unchanged by observation/application."""
+
+        return {
+            "continuation_logical_tick": self.continuation_logical_tick,
+            "continuation_policy_id": self.continuation_policy_id,
+            "cumulative_granted": self.cumulative_granted.canonical_record(),
+            "decision_aggregate_id": self.decision_aggregate_id,
+            "decision_receipt_ids": list(self.decision_receipt_ids),
+            "governance_id": self.governance_id,
+            "lease_requests": self.lease_requests,
+            "leases_denied": self.leases_denied,
+            "leases_granted": self.leases_granted,
+            "strategy_recoveries": self.strategy_recoveries,
+            "task_id": self.task_id,
+        }
+
+    def _require_decision_lineage(self) -> None:
+        capability = self._decision_lineage_capability
+        if self.lease_requests == 0 and self.strategy_recoveries == 0:
+            if capability is None:
+                return
+        if type(capability) is not _ContinuationDecisionLineageCapability:
+            raise ValueError("continuation state lacks evaluated decision lineage")
+        if not _validate_continuation_state_lineage(
+            capability, canonical_json(self._decision_lineage_record())
+        ):
+            raise ValueError("continuation decision lineage does not match state")
+
     def canonical_record(self) -> dict[str, Any]:
+        self._require_decision_lineage()
         return {
             "continuation_logical_tick": self.continuation_logical_tick,
             "continuation_policy_id": self.continuation_policy_id,
@@ -2083,6 +2156,20 @@ def observe_continuation_context(
             state.last_progress_classification
             if progress is None
             else progress.classification
+        ),
+        progress_state=(
+            state.progress_state
+            if progress is None
+            else (
+                ProgressState.COMPLETE
+                if progress.task_complete
+                else (
+                    ProgressState.PROGRESSING
+                    if progress.classification
+                    is ProgressClassification.MEASURABLE_PROGRESS
+                    else ProgressState.STALLED
+                )
+            )
         ),
     )
 
@@ -2448,6 +2535,14 @@ class LeaseGrantReceipt:
             raise ValueError("lease grant native source seal no longer matches")
         return self._native_seal
 
+    def _governance_source_capability(self) -> _GovernanceDecisionCapability:
+        capability = self._governance_capability
+        if not _validate_governance_capability(
+            capability, canonical_json(self.canonical_record())
+        ):
+            raise ValueError("lease grant lacks evaluated governance authority")
+        return capability
+
 
 @dataclass(frozen=True, slots=True)
 class LeaseDenyReceipt:
@@ -2598,6 +2693,7 @@ def _deny_continuation(
     ordinal = state.lease_requests
     next_state = replace(
         state,
+        _decision_lineage_capability=None,
         lease_requests=state.lease_requests + 1,
         leases_denied=state.leases_denied + 1,
         continuation_logical_tick=decision_tick,
@@ -2860,6 +2956,7 @@ def _evaluate_continuation(
     )
     next_state = replace(
         state,
+        _decision_lineage_capability=None,
         lease_requests=state.lease_requests + 1,
         leases_granted=state.leases_granted + 1,
         cumulative_granted=next_cumulative,
@@ -2893,7 +2990,7 @@ def _evaluate_continuation(
 
 def _build_continuation_evaluator(
     internal_evaluator: Any,
-) -> tuple[Any, Any]:
+) -> tuple[Any, Any, Any]:
     authority = object()
 
     def issue_capability(canonical_grant: str) -> _GovernanceDecisionCapability:
@@ -2926,6 +3023,42 @@ def _build_continuation_evaluator(
             return False
         return bound_authority is authority and bound_grant == canonical_grant
 
+    def issue_state_lineage(
+        canonical_lineage: str,
+    ) -> _ContinuationDecisionLineageCapability:
+        if type(canonical_lineage) is not str:
+            raise TypeError("canonical continuation lineage must be exact text")
+        capability = object.__new__(_ContinuationDecisionLineageCapability)
+        object.__setattr__(
+            capability,
+            "_ContinuationDecisionLineageCapability__authority",
+            authority,
+        )
+        object.__setattr__(
+            capability,
+            "_ContinuationDecisionLineageCapability__canonical_lineage",
+            canonical_lineage,
+        )
+        return capability
+
+    def validate_state_lineage(capability: Any, canonical_lineage: str) -> bool:
+        if type(capability) is not _ContinuationDecisionLineageCapability:
+            return False
+        try:
+            bound_authority = object.__getattribute__(
+                capability,
+                "_ContinuationDecisionLineageCapability__authority",
+            )
+            bound_lineage = object.__getattribute__(
+                capability,
+                "_ContinuationDecisionLineageCapability__canonical_lineage",
+            )
+        except AttributeError:
+            return False
+        return (
+            bound_authority is authority and bound_lineage == canonical_lineage
+        )
+
     def public_evaluator(
         state: ContinuationState,
         request: ContinuationRequest,
@@ -2941,7 +3074,7 @@ def _build_continuation_evaluator(
     ) -> ContinuationDecision:
         """Return one deterministic, finite governance GRANT or DENY."""
 
-        return internal_evaluator(
+        decision = internal_evaluator(
             state,
             request,
             runtime_session=runtime_session,
@@ -2954,13 +3087,28 @@ def _build_continuation_evaluator(
             benchmark_observation=benchmark_observation,
             _grant_capability_issuer=issue_capability,
         )
+        next_state = decision.next_state
+        if next_state is state:
+            return decision
+        if next_state.lease_requests > 0 or next_state.strategy_recoveries > 0:
+            next_state = replace(
+                next_state,
+                _decision_lineage_capability=issue_state_lineage(
+                    canonical_json(next_state._decision_lineage_record())
+                ),
+            )
+        return ContinuationDecision(next_state, decision.receipt)
 
     public_evaluator.__name__ = "evaluate_continuation"
     public_evaluator.__qualname__ = "evaluate_continuation"
-    return public_evaluator, validate_capability
+    return public_evaluator, validate_capability, validate_state_lineage
 
 
-evaluate_continuation, _validate_governance_capability = (
+(
+    evaluate_continuation,
+    _validate_governance_capability,
+    _validate_continuation_state_lineage,
+) = (
     _build_continuation_evaluator(_evaluate_continuation)
 )
 del _build_continuation_evaluator
@@ -3077,11 +3225,7 @@ class ContinuationCheckpoint:
         if strategy is not None:
             if type(strategy) is not StrategyMaterialization:
                 raise TypeError("strategy must be exact StrategyMaterialization")
-            if (
-                state.current_strategy_material_id is not None
-                and strategy.strategy_material_id
-                != state.current_strategy_material_id
-            ):
+            if strategy.strategy_material_id != state.current_strategy_material_id:
                 raise ValueError("checkpoint strategy identity is stale")
         for name, value in (
             ("compact evidence receipt id", compact_evidence_receipt_id),
@@ -3120,7 +3264,10 @@ class ContinuationCheckpoint:
                 else strategy.strategy_material_id
             ),
             "leases_used": state.leases_granted,
-            "leases_remaining": state.leases_remaining(policy),
+            "leases_remaining": min(
+                policy.max_lease_requests - state.lease_requests,
+                state.leases_remaining(policy),
+            ),
             "lease_requests": state.lease_requests,
             "leases_denied": state.leases_denied,
             "strategy_recoveries_used": state.strategy_recoveries,

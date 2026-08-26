@@ -441,6 +441,40 @@ def test_measurable_progress_uses_obligation_state_not_activity():
     assert progress.progress_id == _progress(task, governance, prior, current).progress_id
 
 
+def test_newly_blocked_obligations_do_not_authorize_continuation():
+    policy, _, task, governance, policy_receipt, runtime = _governed_runtime(
+        "tiny", session="newly-blocked"
+    )
+    prior = _obligation_states(total=2)
+    blocked = OrchestrationState.create(
+        tuple(
+            item.with_status(
+                ObligationStatus.BLOCKED,
+                block_reason="Newly discovered external blocker.",
+            )
+            if index == 0
+            else item
+            for index, item in enumerate(prior.obligations.obligations)
+        )
+    )
+    progress = _progress(task, governance, prior, blocked)
+    assert progress.classification is ProgressClassification.INCOMPARABLE
+    state = ContinuationState.create(
+        policy=policy,
+        policy_receipt=policy_receipt,
+        orchestration_state=blocked,
+        runtime_snapshot=runtime.snapshot,
+        progress=progress,
+    )
+    _, decision = _request_and_decide(
+        policy, policy_receipt, runtime, progress, state
+    )
+    assert (
+        decision.receipt.denial_reason
+        is LeaseDenialReason.NO_MEASURABLE_PROGRESS
+    )
+
+
 def test_activity_without_progress_is_no_progress_and_denied():
     (
         policy,
@@ -897,6 +931,18 @@ def test_hash_consistent_but_unissued_grant_cannot_extend_native_limits():
     assert runtime.snapshot.canonical_record() == before
     with pytest.raises(ValueError, match="not issued by governance evaluation"):
         runtime._bind_evaluated_lease_grant(fabricated)
+
+    native = object.__getattribute__(runtime, "_RustRuntimeSession__native")
+    canonical_fabricated = canonical_json(fabricated.canonical_record())
+    with pytest.raises(TypeError):
+        native.issue_lease_grant(canonical_fabricated)
+    with pytest.raises(ValueError, match="requires evaluator authority"):
+        native.issue_lease_grant(canonical_fabricated, object())
+    with pytest.raises(ValueError, match="requires evaluator authority"):
+        native.issue_lease_grant(
+            canonical_fabricated,
+            decision.receipt._governance_source_capability(),
+        )
 
     from ibae._runtime import NativeLeaseGrantSeal
     from ibae.continuation import _GovernanceDecisionCapability
@@ -1379,21 +1425,74 @@ def test_strategy_recovery_count_is_finite():
         strategy=prior_strategy,
         progress=progress,
     )
-    state = replace(state, strategy_recoveries=policy.max_strategy_recoveries)
-    change = evaluate_strategy_change(
+    first_change = evaluate_strategy_change(
         task_id=task.task_id,
         governance_id=governance.governance_id,
         orchestration_state=orchestration,
         prior_strategy=prior_strategy,
         proposed_strategy=alternate,
     )
-    _, decision = _request_and_decide(
+    _, first = _request_and_decide(
         policy,
         policy_receipt,
         runtime,
         progress,
         state,
-        strategy_change=change,
+        strategy_change=first_change,
+    )
+    application = runtime.apply_lease(first.receipt)
+    state = commit_lease_application(
+        first.next_state,
+        policy=policy,
+        grant=first.receipt,
+        application=application,
+        runtime_snapshot=runtime.snapshot,
+    )
+    assert state.strategy_recoveries == policy.max_strategy_recoveries
+
+    from ibae.continuation import _ContinuationDecisionLineageCapability
+
+    with pytest.raises(TypeError):
+        _ContinuationDecisionLineageCapability()
+    with pytest.raises(ValueError, match="decision lineage does not match"):
+        replace(state, strategy_recoveries=0)
+    reconstructed = replace(
+        state,
+        strategy_recoveries=0,
+        _decision_lineage_capability=None,
+    )
+    second_change = evaluate_strategy_change(
+        task_id=task.task_id,
+        governance_id=governance.governance_id,
+        orchestration_state=orchestration,
+        prior_strategy=alternate,
+        proposed_strategy=prior_strategy,
+    )
+    request = ContinuationRequest.from_state(
+        state,
+        progress=progress,
+        requested_resources=policy.lease_schedule[state.leases_granted],
+        requester=PrincipalAuthority.OPENAI_SUPERVISOR,
+        strategy_change=second_change,
+    )
+    with pytest.raises(ValueError, match="lacks evaluated decision lineage"):
+        evaluate_continuation(
+            reconstructed,
+            request,
+            runtime_session=runtime,
+            policy=policy,
+            policy_receipt=policy_receipt,
+            progress=progress,
+            strategy_change=second_change,
+        )
+    decision = evaluate_continuation(
+        state,
+        request,
+        runtime_session=runtime,
+        policy=policy,
+        policy_receipt=policy_receipt,
+        progress=progress,
+        strategy_change=second_change,
     )
     assert (
         decision.receipt.denial_reason
@@ -1494,6 +1593,21 @@ def test_governance_ceiling_exhaustion_is_deterministic():
             runtime_snapshot=runtime.snapshot,
         )
 
+    projection = state.compact_projection(policy)
+    assert projection["lease_requests_remaining"] > 0
+    assert projection["lease_schedule_slots_remaining"] == 0
+    assert projection["leases_remaining"] == 0
+    assert projection["legal_recovery_actions"] == []
+    assert projection["material_strategy_change_admissible"] is False
+    checkpoint = ContinuationCheckpoint(
+        state=state,
+        policy=policy,
+        orchestration_state=orchestration_states[2],
+        runtime_snapshot=runtime.snapshot,
+        progress=progress,
+    )
+    assert checkpoint.leases_remaining == 0
+
     progress = _progress(
         task, governance, orchestration_states[2], orchestration_states[3]
     )
@@ -1569,7 +1683,7 @@ def test_requested_amount_cannot_exceed_schedule_or_cumulative_ceiling():
 
 
 def test_denials_are_finitely_bounded_by_request_policy():
-    policy, _, _, _, policy_receipt, runtime, _, _, progress, state = (
+    policy, _, _, _, policy_receipt, runtime, _, current, progress, state = (
         _state_and_progress("tiny", progressing=False)
     )
     for _ in range(policy.max_lease_requests):
@@ -1585,6 +1699,14 @@ def test_denials_are_finitely_bounded_by_request_policy():
     assert projection["leases_remaining"] == 0
     assert projection["legal_recovery_actions"] == []
     assert projection["material_strategy_change_admissible"] is False
+    checkpoint = ContinuationCheckpoint(
+        state=state,
+        policy=policy,
+        orchestration_state=current,
+        runtime_snapshot=runtime.snapshot,
+        progress=progress,
+    )
+    assert checkpoint.leases_remaining == 0
     request = ContinuationRequest.from_state(
         state,
         progress=progress,
@@ -1639,7 +1761,7 @@ def test_checkpoint_resume_validates_exact_live_in_process_lineage():
 
 def test_checkpoint_status_must_equal_the_live_continuation_state():
     policy, _, _, _, _, runtime, _, current, progress, state = (
-        _state_and_progress()
+        _state_and_progress(progressing=False)
     )
     assert state.progress_state is ProgressState.STALLED
     with pytest.raises(ValueError, match="status does not match"):
@@ -1650,6 +1772,23 @@ def test_checkpoint_status_must_equal_the_live_continuation_state():
             runtime_snapshot=runtime.snapshot,
             progress=progress,
             checkpoint_status=ProgressState.COMPLETE,
+        )
+
+
+def test_checkpoint_rejects_strategy_absent_from_live_state():
+    policy, _, _, _, _, runtime, _, current, progress, state = (
+        _state_and_progress()
+    )
+    _, unrelated_strategy, _ = _strategy_state()
+    assert state.current_strategy_material_id is None
+    with pytest.raises(ValueError, match="checkpoint strategy identity is stale"):
+        ContinuationCheckpoint(
+            state=state,
+            policy=policy,
+            orchestration_state=current,
+            runtime_snapshot=runtime.snapshot,
+            progress=progress,
+            strategy=unrelated_strategy,
         )
 
 
@@ -1709,6 +1848,49 @@ def test_context_rebind_requires_the_actual_prior_orchestration_state():
             runtime_snapshot=runtime.snapshot,
             progress=fabricated,
         )
+
+
+def test_context_rebind_refreshes_progress_control_state():
+    policy, _, task, governance, policy_receipt, runtime, _, current, progress, state = (
+        _state_and_progress("standard")
+    )
+    assert state.progress_state is ProgressState.PROGRESSING
+    _, granted = _request_and_decide(
+        policy, policy_receipt, runtime, progress, state
+    )
+    application = runtime.apply_lease(granted.receipt)
+    state = commit_lease_application(
+        granted.next_state,
+        policy=policy,
+        grant=granted.receipt,
+        application=application,
+        runtime_snapshot=runtime.snapshot,
+    )
+
+    stalled_progress = _progress(task, governance, current, current)
+    state = observe_continuation_context(
+        state,
+        policy=policy,
+        orchestration_state=current,
+        runtime_snapshot=runtime.snapshot,
+        progress=stalled_progress,
+    )
+    assert state.progress_state is ProgressState.STALLED
+    assert "propose_material_strategy_change" in state.compact_projection(policy)[
+        "legal_recovery_actions"
+    ]
+
+    complete = _obligation_states(total=3, satisfied=3)
+    complete_progress = _progress(task, governance, current, complete)
+    state = observe_continuation_context(
+        state,
+        policy=policy,
+        orchestration_state=complete,
+        runtime_snapshot=runtime.snapshot,
+        progress=complete_progress,
+    )
+    assert state.progress_state is ProgressState.COMPLETE
+    assert state.compact_projection(policy)["legal_recovery_actions"] == []
 
 
 def test_request_requires_the_live_progress_ledger_endpoint():

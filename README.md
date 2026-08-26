@@ -108,10 +108,12 @@ continuation without changing those frozen v0.2-v0.4 records:
   finite lease schedules, checked cumulative ceilings, request caps, and a
   finite strategy-recovery allowance;
 - one task/session continuation ledger with deterministic grant/deny receipts,
-  request-cap-aware compact AI recovery state, and no self-extension by
-  runtime, tools, or future workers;
-- an opt-in Rust `apply_lease` transition that independently validates a full
-  governance-issued grant whose evaluator-only capability gates a separate
+  evaluator-bound recovery accounting, request-and-schedule-aware compact AI
+  recovery state, live progress-state refresh, and no self-extension by runtime,
+  tools, or future workers;
+- an opt-in Rust `apply_lease` transition and native seal issuer that
+  independently validate a full governance-issued grant whose evaluator-only
+  capability gates a separate
   non-constructible native seal, changes only exact limits plus one runtime
   logical tick, and rejects unissued/replayed/forged/stale state without
   mutation;

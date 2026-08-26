@@ -77,7 +77,10 @@ Canonical obligation sources have fixed safe directions: unsatisfied and
 blocked counts may only decrease, and satisfied counts may only increase. The
 continuation policy and its governance receipt commit the exact admitted
 `ProgressMeasureContract` identity; a record from any other contract is stale
-for that continuation ledger.
+for that continuation ledger. Every built-in v0.5 profile uses both the
+unsatisfied and blocked counts. Moving an obligation from `unsatisfied` to
+`blocked` therefore yields mixed improvement/regression (`incomparable`), not
+lease-authorizing progress.
 
 Prior and current obligation counters are comparable only when their complete
 obligation-definition identity is equal. The definition identity includes
@@ -202,7 +205,7 @@ input, decision order is deterministic and fail closed. It checks, in order:
 
 1. state, task, governance, policy, orchestration, runtime, and progress
    lineage, including the policy-bound contract and exact live progress-ledger
-   endpoint;
+   endpoint and evaluator-issued continuation-decision lineage;
 2. supervisor requester authority;
 3. absence of a pending unapplied grant;
 4. incomplete task and absence of a blocking governance violation;
@@ -236,9 +239,11 @@ session. Rust independently parses the full canonical governance grant and
 recomputes both grant and receipt identities. The complete Python governance
 evaluator first attaches a non-serialized, non-constructible decision
 capability bound to the exact canonical grant. The runtime facade cannot bind a
-structural grant without that capability. Only then may the native session
-mint its separate non-constructible seal for that grant, session, and prior
-runtime state. Rust refuses a hash-consistent but unissued grant. It then
+structural grant without that capability. The exported native issuer also
+validates the same exact evaluator capability before it may mint its separate
+non-constructible seal for that grant, session, and prior runtime state. Direct
+native-session access therefore cannot bypass governance. Rust refuses a
+hash-consistent but unissued grant. It then
 validates:
 
 - task, governance, governance receipt, policy, and policy receipt bindings;
@@ -304,13 +309,18 @@ decision receipt IDs, strategy recovery count, progress state, pending
 application, and continuation logical tick. Advancing orchestration state
 requires a progress record whose prior endpoint is the ledger's current state;
 lease requests must reuse the exact last committed progress identity.
+Every evaluator-produced decision state also carries non-constructible lineage
+over the decision/recovery ledger, so replacing or erasing the public recovery
+counter cannot authorize another recovery. Binding a new progress record
+immediately derives `complete`, `progressing`, or `stalled` control state.
 
 The compact AI projection exposes remaining request decisions, remaining lease
 schedule slots, their effective minimum, total continuation capacity, the last
 progress/decision/denial state, pending-application state, and legal
 deterministic recovery actions. Once request decisions are exhausted it
-suppresses progress/strategy actions that cannot result in another request. It
-is an observation of authority state, not authority to alter that state.
+suppresses progress/strategy actions that cannot result in another request;
+the same suppression applies when schedule slots are exhausted. It is an
+observation of authority state, not authority to alter that state.
 
 ## Checkpoint and resume scope
 
@@ -320,7 +330,9 @@ and continuation state, the exact live progress endpoint and strategy
 identities, lease and strategy-recovery ledgers, optional compact
 evidence/relevant receipt IDs, all three logical ticks, status, and optional
 partial reason. Checkpoint status is derived from or required to equal the live
-continuation state's status.
+continuation state's status. A supplied strategy must equal the live state's
+strategy even when that live identity is `null`, and checkpoint
+`leases_remaining` is the minimum of request decisions and schedule slots.
 
 Resume reconstructs the expected checkpoint from the exact live in-process
 objects and requires byte-equivalent canonical content and checkpoint identity.
