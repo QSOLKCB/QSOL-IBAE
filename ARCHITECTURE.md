@@ -1,8 +1,8 @@
 # QSOL-IBAE Architecture
 
 Status: frozen architecture contract with accepted v0.2 Python orchestration,
-accepted v0.3 Rust runtime, and v0.4 governance/compact-evidence implementation
-candidate.
+accepted v0.3 Rust runtime, accepted v0.4 governance/compact evidence, and a
+v0.5 objective-progress/bounded-continuation implementation candidate.
 
 QSOL-IBAE is a small OpenAI-exclusive governed execution substrate, not a general-purpose proprietary multi-provider agent framework.
 
@@ -116,7 +116,7 @@ Future local open-weight models are workers, not peers. They return candidate re
 
 ## 3. Python logic core and Rust runtime
 
-The v0.4 modular implementation split is:
+The v0.5 modular implementation split is:
 
 ### Python logic core
 
@@ -125,7 +125,8 @@ Python owns change-friendly semantic logic:
 - governance configuration and policy composition;
 - task/obligation construction;
 - deterministic orchestration reference semantics;
-- progress predicates and strategy representation;
+- exact progress predicates, strategy materiality, and continuation decisions;
+- structural in-process continuation checkpoints and semantic partial records;
 - AI-facing compact state projection;
 - governance receipt-chain validation and final-acceptance interpretation;
 - future OpenAI API/SDK integration;
@@ -143,6 +144,7 @@ Rust owns exact authority-bearing runtime mechanics:
 - observation cache and invalidation;
 - cycle detection;
 - deterministic bounded containers/streaming;
+- exact validation/application of pre-granted continuation leases;
 - execution and correctness receipts;
 - deterministic CPU reference execution;
 - future SIMD/CUDA-facing runtime adapters.
@@ -193,6 +195,9 @@ contracts are defined in `GOVERNANCE_PROTOCOL.md` and `EVIDENCE_PROTOCOL.md`.
 The evidence reducer is an execution-support mechanism, not governance
 authority.
 
+The v0.5 progress, strategy, continuation, lease-application, checkpoint, and
+semantic-partial contracts are defined in `CONTINUATION_PROTOCOL.md`.
+
 ---
 
 ## 4. Versioned narrow protocol
@@ -205,11 +210,12 @@ Implemented runtime command family:
 IBAE-RUNTIME-PROTOCOL-V1
     execute_read
     record_retry
+    apply_lease   # opt-in continuation sessions only
 ```
 
-`execute_read` is restricted to Python/orchestrator-classified cacheable reads. The callback crosses the bridge only as a controlled canonical observation envelope. Rust admits request/execution activity before invocation, validates the canonical observation before cache insertion, and emits a canonical receipt. `record_retry` performs exact bounded retry accounting. Unsupported command variants fail closed without mutating runtime state.
+`execute_read` is restricted to Python/orchestrator-classified cacheable reads. The callback crosses the bridge only as a controlled canonical observation envelope. Rust admits request/execution activity before invocation, validates the canonical observation before cache insertion, and emits a canonical receipt. `record_retry` performs exact bounded retry accounting. `apply_lease` is available only when the native session was constructed with an exact continuation policy/receipt pair; it independently validates and applies one canonical governance grant. Unsupported command variants fail closed without mutating runtime state.
 
-`REQUEST_LEASE`, finalization, governance admission, generic mutation/effect execution, RPC, and worker commands are deliberately absent; they belong to later phases.
+`request_lease`, finalization, governance admission, generic mutation/effect execution, RPC, and worker commands are deliberately absent. Rust applies authority but cannot request or grant it.
 
 Candidate agent-facing protocol:
 
@@ -286,7 +292,26 @@ AND (measurable progress OR admitted non-cyclic strategy change)
 
 Lease count and total possible extension are finite before execution begins.
 
-Geometrically decreasing lease sizes are a candidate policy to benchmark, not yet a frozen constant.
+The implemented v0.5 policy makes that rule exact: one versioned progress
+contract compares canonical prior/current measures; governance binds an exact
+initial budget, finite indexed resource schedule, request cap, strategy-
+recovery cap, and total ceiling; and Rust applies only a full identity-checked
+grant. Every grant/deny decision advances a separate continuation logical tick.
+Accepted native application advances the runtime logical tick once while
+consuming no tool resource counter or execution history; rejected application
+is state-neutral.
+
+The `tiny`, `standard`, `extended`, and `repository` profiles are exact
+version-1 experimental fixtures, not universal constants. Equal, front-loaded,
+geometric-candidate, and small-base/recovery schedules are compared only in a
+model-free benchmark. Geometric continuation remains a candidate, not an
+architectural law.
+
+Checkpoint/resume support is intentionally structural and in-process. It
+revalidates exact live task, governance, orchestration, native runtime,
+progress, strategy, policy, and lease lineage. It does not authenticate a
+producer or reconstruct an opaque native runtime from serialized bytes in
+another process.
 
 ---
 
@@ -581,7 +606,7 @@ observation/snapshot copies. The Rust crate has no network or model-provider
 dependency. The retained Python executor is conformance evidence, not an
 alternate production authority.
 
-The v0.4 candidate implements the deterministic governance policy/receipt
+The accepted v0.4 implementation provides the deterministic governance policy/receipt
 surface, separate task/governance/orchestration/execution/plan/benchmark/final
 identities, immutable rejection/partial receipts, and the bounded Compact
 Evidence Plane. Governed tool admissions are bound to v0.2 action identities;
@@ -590,11 +615,20 @@ the finalizable v1 execution path additionally requires live sealed v0.3
 `record_retry` receipts may appear only as exact known-admission accounting
 transitions and cannot cover a manifest action on their own. The
 wrapper may classify effect permissions, but v0.4 does not execute a mutation
-or volatile read. It does not authenticate a producer, call a model, or grant a
-continuation lease. The exact v0.2 and v0.3 fixtures remain
-frozen compatibility evidence.
+or volatile read. It does not authenticate a producer or call a model. The
+exact v0.2 and v0.3 fixtures remain frozen compatibility evidence.
 
-The logical lease system, live OpenAI adapter, GPU path, distributed execution,
-and local workers remain **later architecture targets, not current
-implementation claims**. They remain blocked until the exact v0.4 head passes
-CI, determinism, compact-evidence stress, and fresh review.
+The v0.5 candidate implements an exact objective-progress contract, structured
+material strategy changes, period-1-to-3 cycle-bound recovery, finite
+precommitted continuation policies, a single task/session continuation ledger,
+governance grant/deny receipts, and opt-in exact Rust lease application. It
+also implements fixed-shape continuation evidence, compact AI recovery state,
+structural in-process checkpoint/resume, semantic continuation partials, and a
+watchdog record that cannot become completion authority. The existing v0.4
+governance/evidence schema remains unchanged.
+
+Live OpenAI integration, mutation/effect execution, durable cross-process
+runtime reconstruction, authority authentication, GPU paths, distributed
+execution, and local workers remain **later architecture targets, not current
+implementation claims**. They remain blocked until the exact v0.5 head passes
+CI, determinism, fresh package verification, and fresh review.

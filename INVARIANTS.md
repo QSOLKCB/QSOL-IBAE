@@ -1,7 +1,7 @@
 # QSOL-IBAE Invariant Registry
 
-Status: frozen architecture contract with accepted v0.3 and v0.4 candidate
-enforcement annotations.
+Status: frozen architecture contract with accepted v0.3/v0.4 and v0.5
+implementation-candidate enforcement annotations.
 
 Violation of an **ENFORCED MUST** invariant is a system defect in the current implementation.
 Violation of an **ARCHITECTURE MUST** invariant is a design defect in any future implementation.
@@ -142,9 +142,16 @@ Current enforcement: the v0.2 canonical orchestration state, events, admitted ac
 
 ## IBAE-CLK-003 — Wall-clock watchdog is failsafe only
 
-**ARCHITECTURE MUST**
+**ENFORCED MUST**
 
 An absolute time watchdog may exist to terminate catastrophic hangs or infrastructure failure, but normal task boundedness and completion semantics must not depend solely on that watchdog.
+
+Current enforcement: normal runtime and continuation boundedness derives only
+from exact precommitted budgets, lease/request ceilings, and logical
+transitions. `IBAE-WATCHDOG-OBSERVATION-V1` is explicitly non-authoritative,
+always reports `task_complete = false`, excludes elapsed magnitude from its
+correctness identity, and must match independently computed lease-exhaustion
+state before a watchdog partial can bind that flag.
 
 ## IBAE-CLK-004 — Cache hits still advance canonical activity
 
@@ -186,15 +193,29 @@ Current v0.3 enforcement for `IBAE-BND-001` through `IBAE-BND-004`: Rust owns th
 
 ## IBAE-BND-005 — Finite continuation leases
 
-**ARCHITECTURE MUST**
+**ENFORCED MUST**
 
 Continuation leases are explicitly finite in count and size. The maximum total execution allowance obtainable from all leases must be bounded by policy before execution begins.
 
+Current enforcement: `IBAE-CONTINUATION-LEASE-V1` binds an exact initial
+budget, finite ordered schedule, request cap, strategy-recovery cap, and total
+ceiling equal to the initial budget plus the complete schedule. Governance
+checks every requested/cumulative vector componentwise with checked arithmetic;
+Rust independently checks the grant, indexed schedule, cumulative ledger, and
+ceiling before changing limits.
+
 ## IBAE-BND-006 — No self-extension
 
-**ARCHITECTURE MUST**
+**ENFORCED MUST**
 
 No model, local worker, tool backend, runtime, GPU kernel, or scheduler may grant itself additional execution budget.
+
+Current enforcement: only the closed OpenAI-supervisor principal can request;
+governance alone emits a grant; Rust accepts only a complete identity-checked
+governance grant. Tool, runtime, orchestrator, and candidate-worker requesters
+deny deterministically. `request_lease` is not a Rust command, and a rejected
+or forged `apply_lease` transition is state-, tick-, limit-, and
+resource-neutral.
 
 ## IBAE-BND-007 — Exact authority-bearing counters
 
@@ -202,13 +223,14 @@ No model, local worker, tool backend, runtime, GPU kernel, or scheduler may gran
 
 Requests, executions, retries, mutations, logical ticks, lease counters, execution addresses, and authority flags use exact integer/enumerated representations. Floating point cannot be the sole authority for these values.
 
-Current v0.4 partial enforcement: all implemented runtime/evidence counters,
+Current v0.5 partial enforcement: all implemented runtime/evidence/continuation counters,
 limits, logical ticks, statuses, authority classes, gate flags, and rejection
 classes use checked exact integer or closed enumerated representations. Inputs
 are type-checked, booleans are not accepted as integers, and hard caps prevent
-unbounded resident state. The evidence plane can exactly aggregate a declared
-mutation count, but mutation execution, lease, and execution-address counters do
-not exist yet; therefore this broad invariant remains architecture-only.
+unbounded resident state. Continuation policies and native application use
+checked unsigned 64-bit resource/lease/tick arithmetic, with mutation present
+but fixed to zero. Mutation execution and execution-address counters do not
+exist yet; therefore this broad invariant remains architecture-only.
 
 ## IBAE-BND-008 — Bounded batches and queues
 
@@ -216,7 +238,7 @@ not exist yet; therefore this broad invariant remains architecture-only.
 
 Batch proposal size, ready queue size, worker count, and other resident execution structures must have explicit finite bounds or deterministic streaming rules.
 
-Current enforcement: v0.2 gives every model-facing collection boundary an explicit protocol/configuration cap, including obligation and epistemic registries/dependencies, capability semantic-argument keys and state keys, proposal targets/batches, admitted strategy schemas/parameters, persistent occurrence ownership, and retained history. Canonical model values additionally have explicit byte, depth, total-node, per-collection, string, and integer-size bounds enforced while copying the input before serialization. Free-text record fields have a 4,096-byte UTF-8 cap, identity-bearing integers have a 256-bit cap, and oversized strings are measured incrementally without allocating a full encoded copy. Bounded consumers stop at cap + 1 instead of fully materializing over-size/infinite iterables. v0.3 adds explicit hard caps for Rust requests, executions/cache entries, retries, history, canonical bytes/depth/nodes/items/strings, and tool/session text. v0.4 adds finite policy/gate/receipt collections, one-million-case streaming evidence admission, a fixed compact receipt ceiling, and bounded failure retention/expansion. No worker queue exists yet; any later worker phase inherits this invariant.
+Current enforcement: v0.2 gives every model-facing collection boundary an explicit protocol/configuration cap, including obligation and epistemic registries/dependencies, capability semantic-argument keys and state keys, proposal targets/batches, admitted strategy schemas/parameters, persistent occurrence ownership, and retained history. Canonical model values additionally have explicit byte, depth, total-node, per-collection, string, and integer-size bounds enforced while copying the input before serialization. Free-text record fields have a 4,096-byte UTF-8 cap, identity-bearing integers have a 256-bit cap, and oversized strings are measured incrementally without allocating a full encoded copy. Bounded consumers stop at cap + 1 instead of fully materializing over-size/infinite iterables. v0.3 adds explicit hard caps for Rust requests, executions/cache entries, retries, history, canonical bytes/depth/nodes/items/strings, and tool/session text. v0.4 adds finite policy/gate/receipt collections, one-million-case streaming evidence admission, a fixed compact receipt ceiling, and bounded failure retention/expansion. v0.5 bounds progress dimensions, strategy material, lease schedule/request/decision history, continuation evidence, and all experimental profiles. No worker queue exists yet; any later worker phase inherits this invariant.
 
 ---
 
@@ -284,15 +306,26 @@ Equivalent cold-execution and cache-hit transitions use the same canonical trans
 
 ## IBAE-PROG-001 — Progress is explicit
 
-**ARCHITECTURE MUST**
+**ENFORCED MUST**
 
 Progress is computed from declared task obligations/acceptance conditions or another explicit deterministic predicate. Activity alone is not progress.
 
+Current enforcement: `IBAE-OBJECTIVE-PROGRESS-V1` compares a finite declared
+integer measure contract over canonical obligation counts or governed external
+counters. It emits closed measurable/no-progress/regression/new-information/
+incomparable classes and computes completion independently. Tool activity and
+elapsed time are absent.
+
 ## IBAE-PROG-002 — Model confidence is not progress authority
 
-**ARCHITECTURE MUST**
+**ENFORCED MUST**
 
 A model's self-reported confidence, percentage complete, or request for more time cannot by itself establish measurable progress or justify another execution lease.
+
+Current enforcement: only exact obligation measures or task/governance-bound
+`observed`/`derived` counter evidence can enter a progress record. The
+continuation evaluator validates and deliberately ignores bounded benchmark
+observations; it has no confidence, percentage, token, or wall-clock input.
 
 ## IBAE-PROG-003 — Obligation state is canonical
 
@@ -304,7 +337,7 @@ Current enforcement: v0.2 provides immutable obligation records, key-derived can
 
 ## IBAE-PROG-004 — Continuation admission is deterministic
 
-**ARCHITECTURE MUST**
+**ENFORCED MUST**
 
 A continuation lease may be granted only when:
 
@@ -314,13 +347,27 @@ A continuation lease may be granted only when:
 - no disallowed terminal cycle exists; and
 - measurable progress occurred or an explicitly admitted non-cyclic strategy change is available.
 
+Current enforcement: one pure ordered decision function binds exact task,
+governance/policy receipt, continuation/orchestration/runtime state, progress,
+strategy, and cycle evidence. It returns a domain-separated grant or a closed
+denial, advances a bounded continuation decision ledger, and cannot exceed the
+precommitted request/schedule/cumulative ceilings. Repeated inputs produce
+byte-identical fixtures across hash seeds.
+
 ## IBAE-PROG-005 — Strategy identity is explicit
 
-**ARCHITECTURE MUST**
+**ENFORCED MUST**
 
 A strategy change used to justify continuation must have a canonical identity distinct from superficial rewording of the same action sequence.
 
-Current v0.2 partial implementation provides a domain-separated identity over structured strategy key, normalized parameters, and an admitted typed parameter-schema identity. Each schema has a finite parameter-key allowlist and bounded value contract; schemas live in canonical orchestration state, and a non-matching proposal schema produces a canonical batch rejection before any proposal is admitted. Determining whether a proposed strategy is materially non-cyclic remains deferred to the v0.5 continuation gate.
+Current enforcement: the v0.2 typed strategy identity is combined with a
+v0.5 material identity over available capability frontier, target obligations,
+ordered dependency path, recovery mode, and initial transition pattern.
+Description/paraphrase is excluded. Admission requires a different strategy
+identity, structured material difference, active schema, known targets and
+capabilities, and a pattern that does not reproduce bound period-1/2/3 cycle
+evidence. A strategy receipt may authorize only the policy-bounded recovery
+count and is never classified as progress.
 
 ---
 
@@ -506,7 +553,11 @@ Current enforcement: the supported Python `InvariantExecutor` delegates all impl
 
 Python and Rust communicate through a small versioned command/receipt protocol. Arbitrary internal Rust mutation surfaces must not be exposed to Python.
 
-Current enforcement: `IBAE-RUNTIME-PROTOCOL-V1` admits exactly `execute_read` and `record_retry`. Commands and observations cross as bounded canonical records; unsupported variants reject structurally. Future lease/finalization/effect commands are absent.
+Current enforcement: `IBAE-RUNTIME-PROTOCOL-V1` admits `execute_read` and
+`record_retry`, plus `apply_lease` only for a session opted into an exact
+continuation policy/receipt pair. Commands and observations cross as bounded
+canonical records; unsupported variants reject structurally. Rust cannot
+request or grant a lease, and finalization/effect commands are absent.
 
 ## IBAE-RT-003 — No direct Python mutation of authoritative Rust state
 
@@ -530,7 +581,7 @@ Current enforcement: the Rust crate dependency graph contains only PyO3, JSON/ca
 
 Every authority-bearing Rust transition must have reference fixtures sufficient to demonstrate conformance with the frozen semantic contract.
 
-Current enforcement: Rust unit tests and Python integration tests cover canonical bytes/hashes, repeated reads, dependency invalidation, invalid observations, caller mutation isolation, each budget boundary, bounded history, cycle equivalence, unsupported commands, and wall-clock neutrality. The v0.3 checked-in fixture compares the merged Python reference and Rust semantic projections and receipts under multiple `PYTHONHASHSEED` values.
+Current enforcement: Rust unit tests and Python integration tests cover canonical bytes/hashes, repeated reads, dependency invalidation, invalid observations, caller mutation isolation, each budget boundary, bounded history, cycle equivalence, unsupported commands, and wall-clock neutrality. The v0.3 checked-in fixture compares the merged Python reference and Rust semantic projections and receipts under multiple `PYTHONHASHSEED` values. v0.5 adds adversarial Rust application tests for exact acceptance, duplicate/skip replay, forged identity, overflow, and state-neutral rejection, plus a checked-in end-to-end Python/Rust progress/continuation fixture across hash seeds.
 
 ## IBAE-RT-006 — Performance implementation is not semantic authority
 

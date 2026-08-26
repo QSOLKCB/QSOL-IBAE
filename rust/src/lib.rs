@@ -1,5 +1,5 @@
 //! Exact, bounded deterministic execution authority and compact evidence
-//! reduction for QSOL-IBAE v0.3/v0.4.
+//! reduction for QSOL-IBAE v0.3-v0.5.
 //!
 //! The crate deliberately exposes one runtime command dispatcher plus one
 //! opaque evidence accumulator and non-constructible source seals rather than
@@ -19,6 +19,17 @@ const COMMAND_DOMAIN: &str = "ibae.runtime-command-id.v1";
 const RECEIPT_DOMAIN: &str = "ibae.runtime-receipt-id.v1";
 const SESSION_DOMAIN: &str = "ibae.runtime-session-id.v1";
 const STATE_DOMAIN: &str = "ibae.runtime-state-id.v1";
+
+const CONTINUATION_PROTOCOL_VERSION: &str = "IBAE-CONTINUATION-LEASE-V1";
+const CONTINUATION_POLICY_RECEIPT_VERSION: &str = "IBAE-CONTINUATION-POLICY-RECEIPT-V1";
+const LEASE_GRANT_RECEIPT_VERSION: &str = "IBAE-CONTINUATION-LEASE-GRANT-V1";
+const LEASE_APPLICATION_RECEIPT_VERSION: &str = "IBAE-RUNTIME-LEASE-APPLICATION-RECEIPT-V1";
+const CONTINUATION_POLICY_ID_DOMAIN: &str = "ibae.continuation-policy-id.v1";
+const CONTINUATION_POLICY_RECEIPT_ID_DOMAIN: &str = "ibae.continuation-policy-receipt-id.v1";
+const LEASE_GRANT_ID_DOMAIN: &str = "ibae.continuation-lease-grant-id.v1";
+const LEASE_GRANT_RECEIPT_ID_DOMAIN: &str = "ibae.continuation-lease-grant-receipt-id.v1";
+const LEASE_APPLICATION_ID_DOMAIN: &str = "ibae.runtime-lease-application-id.v1";
+const LEASE_APPLICATION_RECEIPT_ID_DOMAIN: &str = "ibae.runtime-lease-application-receipt-id.v1";
 
 const EVIDENCE_PROTOCOL_VERSION: &str = "IBAE-COMPACT-EVIDENCE-V1";
 const EVIDENCE_PROFILE: &str = "IBAE-COMPACT-EVIDENCE-COUNTS-AND-IDENTITIES-V1";
@@ -49,6 +60,8 @@ const MAX_REQUESTS: u64 = 1_000_000;
 const MAX_EXECUTIONS: u64 = 4_096;
 const MAX_RETRIES: u64 = 1_000_000;
 const MAX_HISTORY: u64 = 4_096;
+const MAX_CONTINUATION_LEASES: usize = 64;
+const MAX_CONTINUATION_REQUESTS: u64 = 128;
 
 const MAX_EVIDENCE_CASES: u64 = 1_000_000;
 const MAX_EVIDENCE_FAILURE_DETAILS: u64 = 32;
@@ -102,6 +115,52 @@ impl Reason {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LeaseApplyReason {
+    ContinuationDisabled,
+    StaleRuntimeState,
+    StaleGovernance,
+    PolicyMismatch,
+    GrantIdentityMismatch,
+    LeaseIndexMismatch,
+    LeaseScheduleExceeded,
+    LeaseCeilingExceeded,
+    UnsupportedResource,
+    ArithmeticOverflow,
+}
+
+impl LeaseApplyReason {
+    fn code(self) -> &'static str {
+        match self {
+            Self::ContinuationDisabled => "IBAE-RT-LEASE-REJECT-CONTINUATION-DISABLED",
+            Self::StaleRuntimeState => "IBAE-RT-LEASE-REJECT-STALE-RUNTIME-STATE",
+            Self::StaleGovernance => "IBAE-RT-LEASE-REJECT-STALE-GOVERNANCE",
+            Self::PolicyMismatch => "IBAE-RT-LEASE-REJECT-POLICY-MISMATCH",
+            Self::GrantIdentityMismatch => "IBAE-RT-LEASE-REJECT-GRANT-IDENTITY",
+            Self::LeaseIndexMismatch => "IBAE-RT-LEASE-REJECT-LEASE-INDEX",
+            Self::LeaseScheduleExceeded => "IBAE-RT-LEASE-REJECT-SCHEDULE",
+            Self::LeaseCeilingExceeded => "IBAE-RT-LEASE-REJECT-CEILING",
+            Self::UnsupportedResource => "IBAE-RT-LEASE-REJECT-UNSUPPORTED-RESOURCE",
+            Self::ArithmeticOverflow => "IBAE-RT-LEASE-REJECT-ARITHMETIC-OVERFLOW",
+        }
+    }
+
+    fn invariant_ids(self) -> &'static [&'static str] {
+        match self {
+            Self::ContinuationDisabled
+            | Self::StaleGovernance
+            | Self::PolicyMismatch
+            | Self::GrantIdentityMismatch => &["IBAE-BND-005", "IBAE-BND-006", "IBAE-PROG-004"],
+            Self::StaleRuntimeState | Self::LeaseIndexMismatch => &["IBAE-BND-005", "IBAE-BND-006"],
+            Self::LeaseScheduleExceeded | Self::LeaseCeilingExceeded => {
+                &["IBAE-BND-005", "IBAE-BND-007"]
+            }
+            Self::UnsupportedResource => &["IBAE-BND-005", "IBAE-BND-006"],
+            Self::ArithmeticOverflow => &["IBAE-BND-007", "IBAE-CLK-001"],
+        }
+    }
+}
+
 #[derive(Debug)]
 struct CanonicalError;
 
@@ -139,6 +198,18 @@ fn is_fingerprint(value: &str) -> bool {
         && value
             .bytes()
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+fn is_symbol(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    !bytes.is_empty()
+        && bytes.len() <= 128
+        && bytes[0].is_ascii_lowercase()
+        && bytes.iter().all(|byte| {
+            byte.is_ascii_lowercase()
+                || byte.is_ascii_digit()
+                || matches!(*byte, b'.' | b'_' | b':' | b'/' | b'-')
+        })
 }
 
 fn python_float_repr(value: f64) -> Result<String, CanonicalError> {
@@ -451,6 +522,384 @@ impl Limits {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct LeaseResources {
+    requests: u64,
+    executions: u64,
+    retries: u64,
+    mutations: u64,
+    history: u64,
+}
+
+impl LeaseResources {
+    fn parse(value: &Value) -> Result<Self, &'static str> {
+        let mapping = value
+            .as_object()
+            .ok_or("continuation resource vector must be an object")?;
+        if !object_has_exact_keys(
+            mapping,
+            &[
+                "execution_delta",
+                "history_delta",
+                "mutation_delta",
+                "request_delta",
+                "retry_delta",
+            ],
+        ) {
+            return Err("continuation resource vector does not match the v1 schema");
+        }
+        let item = |name: &str| {
+            mapping
+                .get(name)
+                .and_then(Value::as_u64)
+                .ok_or("continuation resources must be exact unsigned integers")
+        };
+        Ok(Self {
+            requests: item("request_delta")?,
+            executions: item("execution_delta")?,
+            retries: item("retry_delta")?,
+            mutations: item("mutation_delta")?,
+            history: item("history_delta")?,
+        })
+    }
+
+    fn value(self) -> Value {
+        json!({
+            "execution_delta": self.executions,
+            "history_delta": self.history,
+            "mutation_delta": self.mutations,
+            "request_delta": self.requests,
+            "retry_delta": self.retries,
+        })
+    }
+
+    fn is_zero(self) -> bool {
+        self == Self::default()
+    }
+
+    fn is_within(self, ceiling: Self) -> bool {
+        self.requests <= ceiling.requests
+            && self.executions <= ceiling.executions
+            && self.retries <= ceiling.retries
+            && self.mutations <= ceiling.mutations
+            && self.history <= ceiling.history
+    }
+
+    fn checked_add(self, other: Self) -> Result<Self, LeaseApplyReason> {
+        Ok(Self {
+            requests: self
+                .requests
+                .checked_add(other.requests)
+                .ok_or(LeaseApplyReason::ArithmeticOverflow)?,
+            executions: self
+                .executions
+                .checked_add(other.executions)
+                .ok_or(LeaseApplyReason::ArithmeticOverflow)?,
+            retries: self
+                .retries
+                .checked_add(other.retries)
+                .ok_or(LeaseApplyReason::ArithmeticOverflow)?,
+            mutations: self
+                .mutations
+                .checked_add(other.mutations)
+                .ok_or(LeaseApplyReason::ArithmeticOverflow)?,
+            history: self
+                .history
+                .checked_add(other.history)
+                .ok_or(LeaseApplyReason::ArithmeticOverflow)?,
+        })
+    }
+}
+
+#[derive(Clone)]
+struct ContinuationPolicySpec {
+    policy_id: String,
+    initial: LeaseResources,
+    schedule: Vec<LeaseResources>,
+    total_ceiling: LeaseResources,
+    task_profile: String,
+    task_profile_version: u64,
+}
+
+impl ContinuationPolicySpec {
+    fn parse(value: &Value) -> Result<Self, &'static str> {
+        let mapping = value
+            .as_object()
+            .ok_or("continuation policy must be an object")?;
+        if !object_has_exact_keys(
+            mapping,
+            &[
+                "admitted_progress",
+                "authority_layer",
+                "initial_budget",
+                "lease_schedule",
+                "max_lease_requests",
+                "max_leases",
+                "max_strategy_recoveries",
+                "policy_key",
+                "policy_version",
+                "protocol_version",
+                "task_profile",
+                "task_profile_version",
+                "total_ceiling",
+            ],
+        ) {
+            return Err("continuation policy does not match the v1 schema");
+        }
+        if mapping.get("authority_layer").and_then(Value::as_str) != Some("governance")
+            || mapping.get("protocol_version").and_then(Value::as_str)
+                != Some(CONTINUATION_PROTOCOL_VERSION)
+        {
+            return Err("continuation policy authority or protocol is invalid");
+        }
+        for name in ["policy_key", "task_profile"] {
+            if !mapping
+                .get(name)
+                .and_then(Value::as_str)
+                .is_some_and(is_symbol)
+            {
+                return Err("continuation policy contains an invalid symbol");
+            }
+        }
+        for name in ["policy_version", "task_profile_version"] {
+            if !mapping
+                .get(name)
+                .and_then(Value::as_u64)
+                .is_some_and(|item| item > 0)
+            {
+                return Err("continuation policy versions must be positive integers");
+            }
+        }
+        let admitted = mapping
+            .get("admitted_progress")
+            .and_then(Value::as_array)
+            .ok_or("continuation admitted progress must be an array")?;
+        if admitted.is_empty() || admitted.len() > 5 {
+            return Err("continuation admitted progress is outside its hard bound");
+        }
+        let mut admitted_set = BTreeSet::new();
+        for item in admitted {
+            let classification = item
+                .as_str()
+                .ok_or("continuation progress classifications must be strings")?;
+            if !matches!(classification, "measurable_progress" | "new_information")
+                || !admitted_set.insert(classification)
+            {
+                return Err("continuation policy admits an unsafe progress class");
+            }
+        }
+
+        let initial = LeaseResources::parse(
+            mapping
+                .get("initial_budget")
+                .ok_or("continuation policy omits initial budget")?,
+        )?;
+        if initial.requests == 0
+            || initial.executions == 0
+            || initial.retries == 0
+            || initial.history == 0
+            || initial.mutations != 0
+        {
+            return Err("continuation initial budget is invalid");
+        }
+        let schedule_values = mapping
+            .get("lease_schedule")
+            .and_then(Value::as_array)
+            .ok_or("continuation lease schedule must be an array")?;
+        if schedule_values.len() > MAX_CONTINUATION_LEASES {
+            return Err("continuation lease schedule exceeds its hard bound");
+        }
+        let mut schedule = Vec::with_capacity(schedule_values.len());
+        for item in schedule_values {
+            let resource = LeaseResources::parse(item)?;
+            if resource.is_zero() || resource.mutations != 0 {
+                return Err("continuation schedule contains an invalid resource vector");
+            }
+            schedule.push(resource);
+        }
+        let max_leases = mapping
+            .get("max_leases")
+            .and_then(Value::as_u64)
+            .ok_or("continuation max_leases must be an exact integer")?;
+        if usize::try_from(max_leases).ok() != Some(schedule.len()) {
+            return Err("continuation max_leases does not match its schedule");
+        }
+        let max_requests = mapping
+            .get("max_lease_requests")
+            .and_then(Value::as_u64)
+            .ok_or("continuation max_lease_requests must be an exact integer")?;
+        if max_requests == 0
+            || max_requests > MAX_CONTINUATION_REQUESTS
+            || max_requests < max_leases
+        {
+            return Err("continuation max_lease_requests is outside its hard bound");
+        }
+        let max_recoveries = mapping
+            .get("max_strategy_recoveries")
+            .and_then(Value::as_u64)
+            .ok_or("continuation max_strategy_recoveries must be an exact integer")?;
+        if max_recoveries > max_leases {
+            return Err("continuation strategy recovery bound exceeds lease count");
+        }
+
+        let total_ceiling = LeaseResources::parse(
+            mapping
+                .get("total_ceiling")
+                .ok_or("continuation policy omits total ceiling")?,
+        )?;
+        let mut computed = initial;
+        for item in &schedule {
+            computed = computed
+                .checked_add(*item)
+                .map_err(|_| "continuation policy resource arithmetic overflow")?;
+        }
+        if computed != total_ceiling {
+            return Err("continuation total ceiling does not equal base plus schedule");
+        }
+        if total_ceiling.requests > MAX_REQUESTS
+            || total_ceiling.executions > MAX_EXECUTIONS
+            || total_ceiling.retries > MAX_RETRIES
+            || total_ceiling.history > MAX_HISTORY
+            || total_ceiling.mutations != 0
+        {
+            return Err("continuation total ceiling exceeds runtime hard limits");
+        }
+        let canonical = canonical_value(value)
+            .map_err(|_| "continuation policy is outside the canonical profile")?;
+        Ok(Self {
+            policy_id: domain_fingerprint(CONTINUATION_POLICY_ID_DOMAIN, &canonical),
+            initial,
+            schedule,
+            total_ceiling,
+            task_profile: mapping["task_profile"]
+                .as_str()
+                .expect("validated task profile")
+                .to_owned(),
+            task_profile_version: mapping["task_profile_version"]
+                .as_u64()
+                .expect("validated task profile version"),
+        })
+    }
+}
+
+#[derive(Clone)]
+struct ContinuationContext {
+    policy: ContinuationPolicySpec,
+    policy_receipt_id: String,
+    task_id: String,
+    governance_id: String,
+    governance_receipt_id: String,
+}
+
+impl ContinuationContext {
+    fn parse(canonical_context: &str, limits: Limits) -> Result<Self, &'static str> {
+        let value = parse_canonical(canonical_context)
+            .map_err(|_| "continuation context must be canonical JSON")?;
+        let mapping = value
+            .as_object()
+            .ok_or("continuation context must be an object")?;
+        if !object_has_exact_keys(
+            mapping,
+            &["continuation_policy", "continuation_policy_receipt"],
+        ) {
+            return Err("continuation context does not match the v1 schema");
+        }
+        let policy = ContinuationPolicySpec::parse(&mapping["continuation_policy"])?;
+        if policy.initial.requests != limits.requests
+            || policy.initial.executions != limits.executions
+            || policy.initial.retries != limits.retries
+            || policy.initial.history != limits.history
+        {
+            return Err("native runtime limits do not match continuation base budget");
+        }
+        let receipt = mapping["continuation_policy_receipt"]
+            .as_object()
+            .ok_or("continuation policy receipt must be an object")?;
+        if !object_has_exact_keys(
+            receipt,
+            &[
+                "authority_layer",
+                "continuation_policy_id",
+                "governance_id",
+                "governance_receipt_id",
+                "protocol_version",
+                "receipt_id",
+                "status",
+                "task_id",
+                "task_profile",
+                "task_profile_version",
+            ],
+        ) {
+            return Err("continuation policy receipt does not match the v1 schema");
+        }
+        if receipt.get("authority_layer").and_then(Value::as_str) != Some("governance")
+            || receipt.get("protocol_version").and_then(Value::as_str)
+                != Some(CONTINUATION_POLICY_RECEIPT_VERSION)
+            || receipt.get("status").and_then(Value::as_str) != Some("admitted")
+            || receipt
+                .get("continuation_policy_id")
+                .and_then(Value::as_str)
+                != Some(policy.policy_id.as_str())
+            || receipt.get("task_profile").and_then(Value::as_str)
+                != Some(policy.task_profile.as_str())
+            || receipt.get("task_profile_version").and_then(Value::as_u64)
+                != Some(policy.task_profile_version)
+        {
+            return Err("continuation policy receipt binding is invalid");
+        }
+        let identity = |name: &str| -> Result<String, &'static str> {
+            receipt
+                .get(name)
+                .and_then(Value::as_str)
+                .filter(|item| is_fingerprint(item))
+                .map(str::to_owned)
+                .ok_or("continuation policy receipt identity is invalid")
+        };
+        let supplied_receipt_id = identity("receipt_id")?;
+        let mut receipt_body = receipt.clone();
+        receipt_body.remove("receipt_id");
+        let receipt_canonical = canonical_value(&Value::Object(receipt_body))
+            .map_err(|_| "continuation policy receipt is not canonical")?;
+        if domain_fingerprint(CONTINUATION_POLICY_RECEIPT_ID_DOMAIN, &receipt_canonical)
+            != supplied_receipt_id
+        {
+            return Err("continuation policy receipt identity is invalid");
+        }
+        Ok(Self {
+            policy,
+            policy_receipt_id: supplied_receipt_id,
+            task_id: identity("task_id")?,
+            governance_id: identity("governance_id")?,
+            governance_receipt_id: identity("governance_receipt_id")?,
+        })
+    }
+}
+
+#[derive(Clone)]
+struct ContinuationRuntimeState {
+    context: ContinuationContext,
+    cumulative_granted: LeaseResources,
+    applied_grant_ids: Vec<String>,
+}
+
+impl ContinuationRuntimeState {
+    fn value(&self) -> Value {
+        json!({
+            "applied_grant_ids": self.applied_grant_ids,
+            "continuation_policy_id": self.context.policy.policy_id,
+            "continuation_policy_receipt_id": self.context.policy_receipt_id,
+            "cumulative_granted": self.cumulative_granted.value(),
+            "governance_id": self.context.governance_id,
+            "governance_receipt_id": self.context.governance_receipt_id,
+            "leases_applied": self.applied_grant_ids.len(),
+            "next_lease_index": self.applied_grant_ids.len() + 1,
+            "protocol_version": CONTINUATION_PROTOCOL_VERSION,
+            "task_id": self.context.task_id,
+            "total_ceiling": self.context.policy.total_ceiling.value(),
+        })
+    }
+}
+
 #[derive(Clone)]
 struct CachedObservation {
     canonical: Arc<str>,
@@ -498,9 +947,146 @@ struct RecordRetry {
     admission_id: String,
 }
 
+#[derive(Clone)]
+struct LeaseGrant {
+    task_id: String,
+    governance_id: String,
+    governance_receipt_id: String,
+    continuation_policy_id: String,
+    continuation_policy_receipt_id: String,
+    receipt_id: String,
+    lease_grant_id: String,
+    prior_runtime_state_id: String,
+    runtime_session_id: String,
+    lease_index: u64,
+    granted_resources: LeaseResources,
+    cumulative_granted: LeaseResources,
+    total_ceiling: LeaseResources,
+    identity_valid: bool,
+}
+
+impl LeaseGrant {
+    fn parse(value: &Value) -> Result<Self, Reason> {
+        let mapping = value.as_object().ok_or(Reason::InvalidCommand)?;
+        if !object_has_exact_keys(
+            mapping,
+            &[
+                "authority_layer",
+                "continuation_policy_id",
+                "continuation_policy_receipt_id",
+                "continuation_request_id",
+                "cumulative_granted",
+                "decision_logical_tick",
+                "governance_id",
+                "governance_receipt_id",
+                "granted_resources",
+                "lease_grant_id",
+                "lease_index",
+                "orchestration_state_id",
+                "prior_continuation_state_id",
+                "prior_runtime_state_id",
+                "progress_id",
+                "protocol_version",
+                "receipt_id",
+                "runtime_session_id",
+                "status",
+                "strategy_change_id",
+                "task_id",
+                "total_ceiling",
+            ],
+        ) {
+            return Err(Reason::InvalidCommand);
+        }
+        if mapping.get("authority_layer").and_then(Value::as_str) != Some("governance")
+            || mapping.get("protocol_version").and_then(Value::as_str)
+                != Some(LEASE_GRANT_RECEIPT_VERSION)
+            || mapping.get("status").and_then(Value::as_str) != Some("granted")
+        {
+            return Err(Reason::InvalidCommand);
+        }
+        let identity = |name: &str| -> Result<String, Reason> {
+            mapping
+                .get(name)
+                .and_then(Value::as_str)
+                .filter(|item| is_fingerprint(item))
+                .map(str::to_owned)
+                .ok_or(Reason::InvalidCommand)
+        };
+        for name in [
+            "continuation_request_id",
+            "orchestration_state_id",
+            "prior_continuation_state_id",
+            "progress_id",
+        ] {
+            identity(name)?;
+        }
+        match mapping.get("strategy_change_id") {
+            Some(Value::Null) => {}
+            Some(Value::String(item)) if is_fingerprint(item) => {}
+            _ => return Err(Reason::InvalidCommand),
+        }
+        if mapping
+            .get("decision_logical_tick")
+            .and_then(Value::as_u64)
+            .is_none()
+        {
+            return Err(Reason::InvalidCommand);
+        }
+        let lease_index = mapping
+            .get("lease_index")
+            .and_then(Value::as_u64)
+            .filter(|item| *item > 0)
+            .ok_or(Reason::InvalidCommand)?;
+        let granted_resources = LeaseResources::parse(&mapping["granted_resources"])
+            .map_err(|_| Reason::InvalidCommand)?;
+        let cumulative_granted = LeaseResources::parse(&mapping["cumulative_granted"])
+            .map_err(|_| Reason::InvalidCommand)?;
+        let total_ceiling =
+            LeaseResources::parse(&mapping["total_ceiling"]).map_err(|_| Reason::InvalidCommand)?;
+        let receipt_id = identity("receipt_id")?;
+        let lease_grant_id = identity("lease_grant_id")?;
+
+        let mut grant_body = mapping.clone();
+        grant_body.remove("receipt_id");
+        grant_body.remove("lease_grant_id");
+        let grant_canonical =
+            canonical_value(&Value::Object(grant_body)).map_err(|_| Reason::InvalidCommand)?;
+        let expected_grant_id = domain_fingerprint(LEASE_GRANT_ID_DOMAIN, &grant_canonical);
+        let mut receipt_body = mapping.clone();
+        receipt_body.remove("receipt_id");
+        let receipt_canonical =
+            canonical_value(&Value::Object(receipt_body)).map_err(|_| Reason::InvalidCommand)?;
+        let expected_receipt_id =
+            domain_fingerprint(LEASE_GRANT_RECEIPT_ID_DOMAIN, &receipt_canonical);
+
+        Ok(Self {
+            task_id: identity("task_id")?,
+            governance_id: identity("governance_id")?,
+            governance_receipt_id: identity("governance_receipt_id")?,
+            continuation_policy_id: identity("continuation_policy_id")?,
+            continuation_policy_receipt_id: identity("continuation_policy_receipt_id")?,
+            receipt_id,
+            lease_grant_id: lease_grant_id.clone(),
+            prior_runtime_state_id: identity("prior_runtime_state_id")?,
+            runtime_session_id: identity("runtime_session_id")?,
+            lease_index,
+            granted_resources,
+            cumulative_granted,
+            total_ceiling,
+            identity_valid: lease_grant_id == expected_grant_id
+                && identity("receipt_id")? == expected_receipt_id,
+        })
+    }
+}
+
+struct ApplyLease {
+    grant: LeaseGrant,
+}
+
 enum Command {
     ExecuteRead(ExecuteRead),
     RecordRetry(RecordRetry),
+    ApplyLease(Box<ApplyLease>),
 }
 
 fn parse_command_value(value: &Value) -> Result<Command, Reason> {
@@ -578,6 +1164,17 @@ fn parse_command_value(value: &Value) -> Result<Command, Reason> {
                 .to_owned();
             Ok(Command::RecordRetry(RecordRetry { admission_id }))
         }
+        "apply_lease" => {
+            if !object_has_exact_keys(
+                mapping,
+                &["command_type", "grant_receipt", "protocol_version"],
+            ) {
+                return Err(Reason::InvalidCommand);
+            }
+            let grant =
+                LeaseGrant::parse(mapping.get("grant_receipt").ok_or(Reason::InvalidCommand)?)?;
+            Ok(Command::ApplyLease(Box::new(ApplyLease { grant })))
+        }
         _ => Err(Reason::UnsupportedCommand),
     }
 }
@@ -632,18 +1229,53 @@ struct RuntimeCore {
     counters: Counters,
     cache: BTreeMap<String, CachedObservation>,
     history: VecDeque<String>,
+    continuation: Option<ContinuationRuntimeState>,
 }
 
 impl RuntimeCore {
     fn new(session_key: &str, limits: Limits) -> Result<Self, &'static str> {
+        Self::new_internal(session_key, limits, None)
+    }
+
+    fn new_with_continuation(
+        session_key: &str,
+        limits: Limits,
+        context: ContinuationContext,
+    ) -> Result<Self, &'static str> {
+        Self::new_internal(session_key, limits, Some(context))
+    }
+
+    fn new_internal(
+        session_key: &str,
+        limits: Limits,
+        context: Option<ContinuationContext>,
+    ) -> Result<Self, &'static str> {
         if session_key.is_empty() || session_key.len() > MAX_RECORD_TEXT_BYTES {
             return Err("session_key must be non-empty and bounded");
         }
-        let session_record = json!({
+        let mut session_record = json!({
             "limits": limits.value(),
             "protocol_version": PROTOCOL_VERSION,
             "session_key": session_key,
         });
+        if let Some(active) = &context {
+            let record = session_record
+                .as_object_mut()
+                .expect("session record is an object");
+            record.insert(
+                "continuation_policy_id".to_owned(),
+                Value::String(active.policy.policy_id.clone()),
+            );
+            record.insert(
+                "continuation_policy_receipt_id".to_owned(),
+                Value::String(active.policy_receipt_id.clone()),
+            );
+            record.insert(
+                "governance_id".to_owned(),
+                Value::String(active.governance_id.clone()),
+            );
+            record.insert("task_id".to_owned(), Value::String(active.task_id.clone()));
+        }
         let canonical = canonical_value(&session_record)
             .expect("the internally constructed session record is canonicalizable");
         Ok(Self {
@@ -652,6 +1284,11 @@ impl RuntimeCore {
             counters: Counters::zero(),
             cache: BTreeMap::new(),
             history: VecDeque::new(),
+            continuation: context.map(|active| ContinuationRuntimeState {
+                context: active,
+                cumulative_granted: LeaseResources::default(),
+                applied_grant_ids: Vec::new(),
+            }),
         })
     }
 
@@ -666,7 +1303,7 @@ impl RuntimeCore {
                 })
             })
             .collect();
-        json!({
+        let mut record = json!({
             "cache": cache_entries,
             "counters": self.counters.value(),
             "history": self.history.iter().cloned().collect::<Vec<_>>(),
@@ -674,7 +1311,14 @@ impl RuntimeCore {
             "logical_tick": self.counters.logical_tick,
             "protocol_version": PROTOCOL_VERSION,
             "session_id": self.session_id,
-        })
+        });
+        if let Some(continuation) = &self.continuation {
+            record
+                .as_object_mut()
+                .expect("state record is an object")
+                .insert("continuation".to_owned(), continuation.value());
+        }
+        record
     }
 
     fn state_id(&self) -> Result<String, CanonicalError> {
@@ -982,6 +1626,208 @@ impl RuntimeCore {
         )
     }
 
+    fn validate_lease_application(
+        &self,
+        grant: &LeaseGrant,
+        prior_state_id: &str,
+    ) -> Result<(LeaseResources, Limits, u64), LeaseApplyReason> {
+        let continuation = self
+            .continuation
+            .as_ref()
+            .ok_or(LeaseApplyReason::ContinuationDisabled)?;
+        let context = &continuation.context;
+        if !grant.identity_valid {
+            return Err(LeaseApplyReason::GrantIdentityMismatch);
+        }
+        if grant.task_id != context.task_id
+            || grant.governance_id != context.governance_id
+            || grant.governance_receipt_id != context.governance_receipt_id
+        {
+            return Err(LeaseApplyReason::StaleGovernance);
+        }
+        if grant.continuation_policy_id != context.policy.policy_id
+            || grant.continuation_policy_receipt_id != context.policy_receipt_id
+            || grant.total_ceiling != context.policy.total_ceiling
+        {
+            return Err(LeaseApplyReason::PolicyMismatch);
+        }
+        if grant.runtime_session_id != self.session_id
+            || grant.prior_runtime_state_id != prior_state_id
+        {
+            return Err(LeaseApplyReason::StaleRuntimeState);
+        }
+        let expected_index = u64::try_from(continuation.applied_grant_ids.len())
+            .map_err(|_| LeaseApplyReason::ArithmeticOverflow)?
+            .checked_add(1)
+            .ok_or(LeaseApplyReason::ArithmeticOverflow)?;
+        if grant.lease_index != expected_index
+            || continuation
+                .applied_grant_ids
+                .contains(&grant.lease_grant_id)
+        {
+            return Err(LeaseApplyReason::LeaseIndexMismatch);
+        }
+        if grant.granted_resources.is_zero() {
+            return Err(LeaseApplyReason::LeaseScheduleExceeded);
+        }
+        if grant.granted_resources.mutations != 0 {
+            return Err(LeaseApplyReason::UnsupportedResource);
+        }
+        let schedule_index = usize::try_from(grant.lease_index - 1)
+            .map_err(|_| LeaseApplyReason::LeaseIndexMismatch)?;
+        let scheduled = context
+            .policy
+            .schedule
+            .get(schedule_index)
+            .ok_or(LeaseApplyReason::LeaseIndexMismatch)?;
+        if !grant.granted_resources.is_within(*scheduled) {
+            return Err(LeaseApplyReason::LeaseScheduleExceeded);
+        }
+        let expected_prior_limits = context
+            .policy
+            .initial
+            .checked_add(continuation.cumulative_granted)?;
+        if self.limits.requests != expected_prior_limits.requests
+            || self.limits.executions != expected_prior_limits.executions
+            || self.limits.retries != expected_prior_limits.retries
+            || self.limits.history != expected_prior_limits.history
+        {
+            return Err(LeaseApplyReason::PolicyMismatch);
+        }
+        let cumulative = continuation
+            .cumulative_granted
+            .checked_add(grant.granted_resources)?;
+        if cumulative != grant.cumulative_granted {
+            return Err(LeaseApplyReason::LeaseCeilingExceeded);
+        }
+        let resulting_resources = context.policy.initial.checked_add(cumulative)?;
+        if !resulting_resources.is_within(context.policy.total_ceiling) {
+            return Err(LeaseApplyReason::LeaseCeilingExceeded);
+        }
+        let resulting_limits = Limits {
+            requests: resulting_resources.requests,
+            executions: resulting_resources.executions,
+            retries: resulting_resources.retries,
+            history: resulting_resources.history,
+        }
+        .validate()
+        .map_err(|_| LeaseApplyReason::LeaseCeilingExceeded)?;
+        let logical_tick = self
+            .counters
+            .logical_tick
+            .checked_add(1)
+            .ok_or(LeaseApplyReason::ArithmeticOverflow)?;
+        Ok((cumulative, resulting_limits, logical_tick))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn lease_application_outcome(
+        &self,
+        command_id: &str,
+        grant: &LeaseGrant,
+        prior_state_id: &str,
+        before_tick: u64,
+        accepted_delta: LeaseResources,
+        rejection: Option<LeaseApplyReason>,
+    ) -> Result<String, CanonicalError> {
+        let resulting_state_id = self.state_id()?;
+        let (cumulative, total_ceiling) = self
+            .continuation
+            .as_ref()
+            .map(|active| {
+                (
+                    active.cumulative_granted,
+                    active.context.policy.total_ceiling,
+                )
+            })
+            .unwrap_or((LeaseResources::default(), grant.total_ceiling));
+        let receipt_without_application_id = json!({
+            "authority_layer": "execution",
+            "command_id": command_id,
+            "command_type": "apply_lease",
+            "continuation_policy_id": grant.continuation_policy_id,
+            "continuation_policy_receipt_id": grant.continuation_policy_receipt_id,
+            "cumulative_granted": cumulative.value(),
+            "governance_id": grant.governance_id,
+            "grant_receipt_id": grant.receipt_id,
+            "invariant_ids": rejection.map_or(&[][..], LeaseApplyReason::invariant_ids),
+            "lease_grant_id": grant.lease_grant_id,
+            "lease_index": grant.lease_index,
+            "limit_delta": accepted_delta.value(),
+            "logical_tick": self.counters.logical_tick,
+            "logical_tick_delta": self.counters.logical_tick - before_tick,
+            "prior_state_id": prior_state_id,
+            "protocol_version": LEASE_APPLICATION_RECEIPT_VERSION,
+            "reason_code": rejection.map(LeaseApplyReason::code),
+            "resulting_limits": self.limits.value(),
+            "resulting_state_id": resulting_state_id,
+            "runtime_budget_delta": LeaseResources::default().value(),
+            "session_id": self.session_id,
+            "status": if rejection.is_none() { "accepted" } else { "rejected" },
+            "task_id": grant.task_id,
+            "total_ceiling": total_ceiling.value(),
+        });
+        let application_canonical = canonical_runtime_value(&receipt_without_application_id)?;
+        let application_id =
+            domain_fingerprint(LEASE_APPLICATION_ID_DOMAIN, &application_canonical);
+        let mut receipt_without_id = receipt_without_application_id;
+        receipt_without_id
+            .as_object_mut()
+            .expect("lease receipt is an object")
+            .insert(
+                "lease_application_id".to_owned(),
+                Value::String(application_id),
+            );
+        let receipt_canonical = canonical_runtime_value(&receipt_without_id)?;
+        let receipt_id =
+            domain_fingerprint(LEASE_APPLICATION_RECEIPT_ID_DOMAIN, &receipt_canonical);
+        let mut receipt = receipt_without_id;
+        receipt
+            .as_object_mut()
+            .expect("lease receipt is an object")
+            .insert("receipt_id".to_owned(), Value::String(receipt_id));
+        canonical_runtime_value(&json!({"observation": null, "receipt": receipt}))
+    }
+
+    fn apply_lease(
+        &mut self,
+        command_id: &str,
+        grant: &LeaseGrant,
+        prior_state_id: &str,
+    ) -> Result<String, CanonicalError> {
+        let before_tick = self.counters.logical_tick;
+        match self.validate_lease_application(grant, prior_state_id) {
+            Ok((cumulative, resulting_limits, logical_tick)) => {
+                self.limits = resulting_limits;
+                self.counters.logical_tick = logical_tick;
+                let continuation = self
+                    .continuation
+                    .as_mut()
+                    .expect("validated continuation context exists");
+                continuation.cumulative_granted = cumulative;
+                continuation
+                    .applied_grant_ids
+                    .push(grant.lease_grant_id.clone());
+                self.lease_application_outcome(
+                    command_id,
+                    grant,
+                    prior_state_id,
+                    before_tick,
+                    grant.granted_resources,
+                    None,
+                )
+            }
+            Err(reason) => self.lease_application_outcome(
+                command_id,
+                grant,
+                prior_state_id,
+                before_tick,
+                LeaseResources::default(),
+                Some(reason),
+            ),
+        }
+    }
+
     fn dispatch<F>(&mut self, command_json: &str, invoke: F) -> Result<String, CanonicalError>
     where
         F: FnOnce() -> Invocation,
@@ -1012,6 +1858,9 @@ impl RuntimeCore {
         let command_id = self.command_id(&command_value, &prior_state_id)?;
 
         match command {
+            Command::ApplyLease(command) => {
+                self.apply_lease(&command_id, &command.grant, &prior_state_id)
+            }
             Command::RecordRetry(command) => {
                 let rejection = self.increment_retry().err();
                 self.outcome(
@@ -2998,7 +3847,8 @@ impl NativeRuntimeSession {
         max_requests=None,
         max_executions=None,
         max_retries=None,
-        max_history=None
+        max_history=None,
+        continuation_context=None
     ))]
     fn new(
         session_key: &str,
@@ -3006,6 +3856,7 @@ impl NativeRuntimeSession {
         max_executions: Option<&Bound<'_, PyAny>>,
         max_retries: Option<&Bound<'_, PyAny>>,
         max_history: Option<&Bound<'_, PyAny>>,
+        continuation_context: Option<&str>,
     ) -> PyResult<Self> {
         let limits = Limits {
             requests: exact_u64(max_requests, 32, "max_requests")?,
@@ -3015,7 +3866,15 @@ impl NativeRuntimeSession {
         }
         .validate()
         .map_err(PyValueError::new_err)?;
-        let core = RuntimeCore::new(session_key, limits).map_err(PyValueError::new_err)?;
+        let core = match continuation_context {
+            None => RuntimeCore::new(session_key, limits),
+            Some(canonical) => {
+                let context =
+                    ContinuationContext::parse(canonical, limits).map_err(PyValueError::new_err)?;
+                RuntimeCore::new_with_continuation(session_key, limits, context)
+            }
+        }
+        .map_err(PyValueError::new_err)?;
         Ok(Self { core })
     }
 
@@ -3104,6 +3963,138 @@ mod tests {
             .validate()
             .unwrap(),
         )
+        .unwrap()
+    }
+
+    fn continuation_identity(byte: char) -> String {
+        std::iter::repeat(byte).take(64).collect()
+    }
+
+    fn continuation_core() -> RuntimeCore {
+        let limits = Limits {
+            requests: 8,
+            executions: 4,
+            retries: 2,
+            history: 8,
+        }
+        .validate()
+        .unwrap();
+        let policy = json!({
+            "admitted_progress": ["measurable_progress"],
+            "authority_layer": "governance",
+            "initial_budget": {
+                "execution_delta": 4,
+                "history_delta": 8,
+                "mutation_delta": 0,
+                "request_delta": 8,
+                "retry_delta": 2,
+            },
+            "lease_schedule": [{
+                "execution_delta": 2,
+                "history_delta": 4,
+                "mutation_delta": 0,
+                "request_delta": 4,
+                "retry_delta": 1,
+            }],
+            "max_lease_requests": 2,
+            "max_leases": 1,
+            "max_strategy_recoveries": 1,
+            "policy_key": "experimental.tiny",
+            "policy_version": 1,
+            "protocol_version": CONTINUATION_PROTOCOL_VERSION,
+            "task_profile": "tiny",
+            "task_profile_version": 1,
+            "total_ceiling": {
+                "execution_delta": 6,
+                "history_delta": 12,
+                "mutation_delta": 0,
+                "request_delta": 12,
+                "retry_delta": 3,
+            },
+        });
+        let policy_canonical = canonical_value(&policy).unwrap();
+        let policy_id = domain_fingerprint(CONTINUATION_POLICY_ID_DOMAIN, &policy_canonical);
+        let receipt_body = json!({
+            "authority_layer": "governance",
+            "continuation_policy_id": policy_id,
+            "governance_id": continuation_identity('b'),
+            "governance_receipt_id": continuation_identity('c'),
+            "protocol_version": CONTINUATION_POLICY_RECEIPT_VERSION,
+            "status": "admitted",
+            "task_id": continuation_identity('d'),
+            "task_profile": "tiny",
+            "task_profile_version": 1,
+        });
+        let receipt_id = domain_fingerprint(
+            CONTINUATION_POLICY_RECEIPT_ID_DOMAIN,
+            &canonical_value(&receipt_body).unwrap(),
+        );
+        let mut receipt = receipt_body;
+        receipt
+            .as_object_mut()
+            .unwrap()
+            .insert("receipt_id".to_owned(), Value::String(receipt_id));
+        let context_json = canonical_value(&json!({
+            "continuation_policy": policy,
+            "continuation_policy_receipt": receipt,
+        }))
+        .unwrap();
+        let context = ContinuationContext::parse(&context_json, limits).unwrap();
+        RuntimeCore::new_with_continuation("rust-continuation", limits, context).unwrap()
+    }
+
+    fn lease_command(
+        runtime: &RuntimeCore,
+        lease_index: u64,
+        resources: LeaseResources,
+        cumulative: LeaseResources,
+    ) -> String {
+        let continuation = runtime.continuation.as_ref().unwrap();
+        let grant_body = json!({
+            "authority_layer": "governance",
+            "continuation_policy_id": continuation.context.policy.policy_id,
+            "continuation_policy_receipt_id": continuation.context.policy_receipt_id,
+            "continuation_request_id": continuation_identity('e'),
+            "cumulative_granted": cumulative.value(),
+            "decision_logical_tick": 1,
+            "governance_id": continuation.context.governance_id,
+            "governance_receipt_id": continuation.context.governance_receipt_id,
+            "granted_resources": resources.value(),
+            "lease_index": lease_index,
+            "orchestration_state_id": continuation_identity('f'),
+            "prior_continuation_state_id": continuation_identity('1'),
+            "prior_runtime_state_id": runtime.state_id().unwrap(),
+            "progress_id": continuation_identity('2'),
+            "protocol_version": LEASE_GRANT_RECEIPT_VERSION,
+            "runtime_session_id": runtime.session_id,
+            "status": "granted",
+            "strategy_change_id": null,
+            "task_id": continuation.context.task_id,
+            "total_ceiling": continuation.context.policy.total_ceiling.value(),
+        });
+        let grant_id = domain_fingerprint(
+            LEASE_GRANT_ID_DOMAIN,
+            &canonical_value(&grant_body).unwrap(),
+        );
+        let mut receipt_body = grant_body;
+        receipt_body
+            .as_object_mut()
+            .unwrap()
+            .insert("lease_grant_id".to_owned(), Value::String(grant_id));
+        let receipt_id = domain_fingerprint(
+            LEASE_GRANT_RECEIPT_ID_DOMAIN,
+            &canonical_value(&receipt_body).unwrap(),
+        );
+        let mut receipt = receipt_body;
+        receipt
+            .as_object_mut()
+            .unwrap()
+            .insert("receipt_id".to_owned(), Value::String(receipt_id));
+        canonical_runtime_value(&json!({
+            "command_type": "apply_lease",
+            "grant_receipt": receipt,
+            "protocol_version": PROTOCOL_VERSION,
+        }))
         .unwrap()
     }
 
@@ -3328,6 +4319,125 @@ mod tests {
             outcome_receipt(&rejected)["rejection"]["reason_code"],
             Reason::UnsupportedCommand.code()
         );
+    }
+
+    #[test]
+    fn applies_exact_governance_lease_without_consuming_tool_resources() {
+        let mut runtime = continuation_core();
+        let before = runtime.counters;
+        let command = lease_command(
+            &runtime,
+            1,
+            LeaseResources {
+                requests: 4,
+                executions: 2,
+                retries: 1,
+                mutations: 0,
+                history: 4,
+            },
+            LeaseResources {
+                requests: 4,
+                executions: 2,
+                retries: 1,
+                mutations: 0,
+                history: 4,
+            },
+        );
+        let outcome = run(&mut runtime, &command, || Invocation::OperationFailed);
+        let receipt = outcome_receipt(&outcome);
+        assert_eq!(
+            receipt["protocol_version"],
+            LEASE_APPLICATION_RECEIPT_VERSION
+        );
+        assert_eq!(receipt["status"], "accepted");
+        assert_eq!(receipt["logical_tick_delta"], 1);
+        assert_eq!(
+            receipt["runtime_budget_delta"],
+            LeaseResources::default().value()
+        );
+        assert_eq!(runtime.counters.requests, before.requests);
+        assert_eq!(runtime.counters.executions, before.executions);
+        assert_eq!(runtime.counters.retries, before.retries);
+        assert_eq!(runtime.limits.requests, 12);
+        assert_eq!(runtime.limits.executions, 6);
+        assert_eq!(runtime.limits.retries, 3);
+        assert_eq!(runtime.limits.history, 12);
+        assert_eq!(
+            runtime
+                .continuation
+                .as_ref()
+                .unwrap()
+                .applied_grant_ids
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn rejects_duplicate_and_skipped_lease_applications_without_state_change() {
+        let mut runtime = continuation_core();
+        let resources = LeaseResources {
+            requests: 4,
+            executions: 2,
+            retries: 1,
+            mutations: 0,
+            history: 4,
+        };
+        let command = lease_command(&runtime, 1, resources, resources);
+        run(&mut runtime, &command, || Invocation::OperationFailed);
+        let accepted_state = runtime.state_id().unwrap();
+        let duplicate = run(&mut runtime, &command, || Invocation::OperationFailed);
+        assert_eq!(
+            outcome_receipt(&duplicate)["reason_code"],
+            LeaseApplyReason::StaleRuntimeState.code()
+        );
+        assert_eq!(runtime.state_id().unwrap(), accepted_state);
+
+        let mut fresh = continuation_core();
+        let skipped_command = lease_command(&fresh, 2, resources, resources);
+        let skipped = run(&mut fresh, &skipped_command, || Invocation::OperationFailed);
+        assert_eq!(
+            outcome_receipt(&skipped)["reason_code"],
+            LeaseApplyReason::LeaseIndexMismatch.code()
+        );
+        assert_eq!(
+            fresh.continuation.as_ref().unwrap().applied_grant_ids.len(),
+            0
+        );
+    }
+
+    #[test]
+    fn rejects_forged_grant_identity_and_tick_overflow_state_neutrally() {
+        let resources = LeaseResources {
+            requests: 4,
+            executions: 2,
+            retries: 1,
+            mutations: 0,
+            history: 4,
+        };
+        let mut runtime = continuation_core();
+        let command = lease_command(&runtime, 1, resources, resources);
+        let mut value = parse_runtime_canonical(&command).unwrap();
+        value["grant_receipt"]["lease_grant_id"] = Value::String(continuation_identity('9'));
+        let forged = canonical_runtime_value(&value).unwrap();
+        let prior = runtime.state_id().unwrap();
+        let rejected = run(&mut runtime, &forged, || Invocation::OperationFailed);
+        assert_eq!(
+            outcome_receipt(&rejected)["reason_code"],
+            LeaseApplyReason::GrantIdentityMismatch.code()
+        );
+        assert_eq!(runtime.state_id().unwrap(), prior);
+
+        let mut overflow = continuation_core();
+        overflow.counters.logical_tick = u64::MAX;
+        let command = lease_command(&overflow, 1, resources, resources);
+        let prior = overflow.state_id().unwrap();
+        let rejected = run(&mut overflow, &command, || Invocation::OperationFailed);
+        assert_eq!(
+            outcome_receipt(&rejected)["reason_code"],
+            LeaseApplyReason::ArithmeticOverflow.code()
+        );
+        assert_eq!(overflow.state_id().unwrap(), prior);
     }
 
     #[test]

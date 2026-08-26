@@ -20,15 +20,25 @@ from .canonical import canonical_json, domain_fingerprint
 RUNTIME_PROTOCOL_VERSION = "IBAE-RUNTIME-PROTOCOL-V1"
 RUNTIME_ADMISSION_DOMAIN = "ibae.runtime-admission-id.v1"
 RUNTIME_RECEIPT_DOMAIN = "ibae.runtime-receipt-id.v1"
+RUNTIME_LEASE_APPLICATION_PROTOCOL_VERSION = (
+    "IBAE-RUNTIME-LEASE-APPLICATION-RECEIPT-V1"
+)
+RUNTIME_LEASE_APPLICATION_ID_DOMAIN = "ibae.runtime-lease-application-id.v1"
+RUNTIME_LEASE_APPLICATION_RECEIPT_ID_DOMAIN = (
+    "ibae.runtime-lease-application-receipt-id.v1"
+)
+CONTINUATION_PROTOCOL_VERSION = "IBAE-CONTINUATION-LEASE-V1"
 
 MAX_RUNTIME_REQUESTS = 1_000_000
 MAX_RUNTIME_EXECUTIONS = 4_096
 MAX_RUNTIME_RETRIES = 1_000_000
 MAX_RUNTIME_HISTORY = 4_096
+MAX_RUNTIME_LEASES = 64
 MAX_RUNTIME_LOGICAL_TICK = (
     (2 * MAX_RUNTIME_REQUESTS)
     + (2 * MAX_RUNTIME_EXECUTIONS)
     + MAX_RUNTIME_RETRIES
+    + MAX_RUNTIME_LEASES
 )
 
 _RECEIPT_FIELDS = {
@@ -84,7 +94,93 @@ _SNAPSHOT_FIELDS = {
     "session_id",
     "state_id",
 }
+_EXTENDED_SNAPSHOT_FIELDS = _SNAPSHOT_FIELDS | {"continuation"}
 _CACHE_ENTRY_FIELDS = {"observation_id", "tool_key"}
+_CONTINUATION_SNAPSHOT_FIELDS = {
+    "applied_grant_ids",
+    "continuation_policy_id",
+    "continuation_policy_receipt_id",
+    "cumulative_granted",
+    "governance_id",
+    "governance_receipt_id",
+    "leases_applied",
+    "next_lease_index",
+    "protocol_version",
+    "task_id",
+    "total_ceiling",
+}
+_LEASE_RESOURCE_FIELDS = {
+    "execution_delta",
+    "history_delta",
+    "mutation_delta",
+    "request_delta",
+    "retry_delta",
+}
+_LEASE_APPLICATION_FIELDS = {
+    "authority_layer",
+    "command_id",
+    "command_type",
+    "continuation_policy_id",
+    "continuation_policy_receipt_id",
+    "cumulative_granted",
+    "governance_id",
+    "grant_receipt_id",
+    "invariant_ids",
+    "lease_application_id",
+    "lease_grant_id",
+    "lease_index",
+    "limit_delta",
+    "logical_tick",
+    "logical_tick_delta",
+    "prior_state_id",
+    "protocol_version",
+    "reason_code",
+    "receipt_id",
+    "resulting_limits",
+    "resulting_state_id",
+    "runtime_budget_delta",
+    "session_id",
+    "status",
+    "task_id",
+    "total_ceiling",
+}
+_LEASE_APPLICATION_REASONS = {
+    "IBAE-RT-LEASE-REJECT-ARITHMETIC-OVERFLOW": (
+        "IBAE-BND-007",
+        "IBAE-CLK-001",
+    ),
+    "IBAE-RT-LEASE-REJECT-CEILING": ("IBAE-BND-005", "IBAE-BND-007"),
+    "IBAE-RT-LEASE-REJECT-CONTINUATION-DISABLED": (
+        "IBAE-BND-005",
+        "IBAE-BND-006",
+        "IBAE-PROG-004",
+    ),
+    "IBAE-RT-LEASE-REJECT-GRANT-IDENTITY": (
+        "IBAE-BND-005",
+        "IBAE-BND-006",
+        "IBAE-PROG-004",
+    ),
+    "IBAE-RT-LEASE-REJECT-LEASE-INDEX": ("IBAE-BND-005", "IBAE-BND-006"),
+    "IBAE-RT-LEASE-REJECT-POLICY-MISMATCH": (
+        "IBAE-BND-005",
+        "IBAE-BND-006",
+        "IBAE-PROG-004",
+    ),
+    "IBAE-RT-LEASE-REJECT-SCHEDULE": ("IBAE-BND-005", "IBAE-BND-007"),
+    "IBAE-RT-LEASE-REJECT-STALE-GOVERNANCE": (
+        "IBAE-BND-005",
+        "IBAE-BND-006",
+        "IBAE-PROG-004",
+    ),
+    "IBAE-RT-LEASE-REJECT-STALE-RUNTIME-STATE": (
+        "IBAE-BND-005",
+        "IBAE-BND-006",
+    ),
+    "IBAE-RT-LEASE-REJECT-UNSUPPORTED-RESOURCE": (
+        "IBAE-BND-005",
+        "IBAE-BND-006",
+    ),
+}
 _SUPPORTED_COMMAND_TYPES = {"execute_read", "record_retry"}
 _CACHE_STATUSES = {"cache_hit", "cold_execution"}
 _REASON_INVARIANTS = {
@@ -283,6 +379,41 @@ class RuntimeLimits:
             "max_history": self.max_history,
             "max_requests": self.max_requests,
             "max_retries": self.max_retries,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeLeaseResourceVector:
+    request_delta: int = 0
+    execution_delta: int = 0
+    retry_delta: int = 0
+    mutation_delta: int = 0
+    history_delta: int = 0
+
+    def __post_init__(self) -> None:
+        for name, value in self.canonical_record().items():
+            _require_exact_u64(name, value)
+
+    @classmethod
+    def from_record(cls, value: Any) -> RuntimeLeaseResourceVector:
+        record = _copy_exact_mapping(
+            value,
+            _LEASE_RESOURCE_FIELDS,
+            error="runtime lease resource vector does not match the v1 schema",
+        )
+        return cls(**record)
+
+    @property
+    def is_zero(self) -> bool:
+        return all(value == 0 for value in self.canonical_record().values())
+
+    def canonical_record(self) -> dict[str, int]:
+        return {
+            "execution_delta": self.execution_delta,
+            "history_delta": self.history_delta,
+            "mutation_delta": self.mutation_delta,
+            "request_delta": self.request_delta,
+            "retry_delta": self.retry_delta,
         }
 
 
@@ -673,10 +804,276 @@ class RuntimeReceipt:
         return self._validated_value()
 
 
+@dataclass(frozen=True, slots=True, init=False)
+class RuntimeLeaseApplicationReceipt:
+    """Exact Rust-owned result of applying one governance lease grant."""
+
+    _record: CanonicalValue
+
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        raise TypeError("RuntimeLeaseApplicationReceipt cannot be subclassed")
+
+    def __init__(self, record: Mapping[str, Any]) -> None:
+        copied = _copy_exact_mapping(
+            record,
+            _LEASE_APPLICATION_FIELDS,
+            error="runtime lease application receipt does not match the v1 schema",
+        )
+        if copied["protocol_version"] != RUNTIME_LEASE_APPLICATION_PROTOCOL_VERSION:
+            raise ValueError("runtime lease application protocol version mismatch")
+        if copied["authority_layer"] != "execution":
+            raise ValueError("runtime lease application must remain execution authority")
+        if copied["command_type"] != "apply_lease":
+            raise ValueError("runtime lease application command type mismatch")
+        if copied["status"] not in {"accepted", "rejected"}:
+            raise ValueError("runtime lease application status is invalid")
+        for name in (
+            "command_id",
+            "continuation_policy_id",
+            "continuation_policy_receipt_id",
+            "governance_id",
+            "grant_receipt_id",
+            "lease_application_id",
+            "lease_grant_id",
+            "prior_state_id",
+            "receipt_id",
+            "resulting_state_id",
+            "session_id",
+            "task_id",
+        ):
+            if type(copied[name]) is not str:
+                raise ValueError(f"runtime lease application {name} must be a fingerprint")
+            require_fingerprint(f"runtime lease application {name}", copied[name])
+        for name in ("lease_index", "logical_tick", "logical_tick_delta"):
+            _require_exact_u64(name, copied[name])
+        if copied["lease_index"] == 0:
+            raise ValueError("runtime lease application index must be positive")
+        if copied["logical_tick"] > MAX_RUNTIME_LOGICAL_TICK:
+            raise ValueError("runtime lease application logical tick exceeds hard bound")
+        if copied["logical_tick_delta"] > copied["logical_tick"]:
+            raise ValueError("runtime lease application logical tick delta is invalid")
+
+        limit_delta = RuntimeLeaseResourceVector.from_record(copied["limit_delta"])
+        runtime_delta = RuntimeLeaseResourceVector.from_record(
+            copied["runtime_budget_delta"]
+        )
+        cumulative = RuntimeLeaseResourceVector.from_record(
+            copied["cumulative_granted"]
+        )
+        ceiling = RuntimeLeaseResourceVector.from_record(copied["total_ceiling"])
+        if not all(
+            cumulative.canonical_record()[name] <= ceiling.canonical_record()[name]
+            for name in _LEASE_RESOURCE_FIELDS
+        ):
+            raise ValueError("runtime cumulative lease resources exceed ceiling")
+        limits_record = _copy_exact_mapping(
+            copied["resulting_limits"],
+            _LIMIT_FIELDS,
+            error="runtime lease resulting limits do not match the v1 schema",
+        )
+        resulting_limits = RuntimeLimits(
+            max_requests=limits_record["max_requests"],
+            max_executions=limits_record["max_executions"],
+            max_retries=limits_record["max_retries"],
+            max_history=limits_record["max_history"],
+        )
+        copied["resulting_limits"] = resulting_limits.canonical_record()
+
+        invariant_values = materialize_bounded_iterable(
+            "runtime lease application invariant ids",
+            copied["invariant_ids"],
+            limit=4,
+        )
+        for invariant_id in invariant_values:
+            if type(invariant_id) is not str:
+                raise ValueError("runtime lease invariant ids must be strings")
+        copied["invariant_ids"] = list(invariant_values)
+        if copied["status"] == "accepted":
+            if copied["reason_code"] is not None or invariant_values:
+                raise ValueError("accepted runtime lease cannot carry a rejection")
+            if limit_delta.is_zero or limit_delta.mutation_delta != 0:
+                raise ValueError("accepted runtime lease limit delta is invalid")
+            if not all(
+                limit_delta.canonical_record()[name]
+                <= cumulative.canonical_record()[name]
+                for name in _LEASE_RESOURCE_FIELDS
+            ):
+                raise ValueError("runtime lease delta exceeds cumulative grant")
+            if not runtime_delta.is_zero:
+                raise ValueError("lease application cannot consume execution resources")
+            if copied["logical_tick_delta"] != 1:
+                raise ValueError("accepted lease application consumes one runtime tick")
+            if copied["prior_state_id"] == copied["resulting_state_id"]:
+                raise ValueError("accepted lease application must change runtime state")
+        else:
+            reason = copied["reason_code"]
+            if type(reason) is not str or reason not in _LEASE_APPLICATION_REASONS:
+                raise ValueError("runtime lease rejection reason is invalid")
+            if tuple(invariant_values) != _LEASE_APPLICATION_REASONS[reason]:
+                raise ValueError("runtime lease rejection invariant set is invalid")
+            if not limit_delta.is_zero or not runtime_delta.is_zero:
+                raise ValueError("rejected lease application must be resource-neutral")
+            if copied["logical_tick_delta"] != 0:
+                raise ValueError("rejected lease application must be tick-neutral")
+            if copied["prior_state_id"] != copied["resulting_state_id"]:
+                raise ValueError("rejected lease application must be state-neutral")
+
+        supplied_receipt_id = copied.pop("receipt_id")
+        supplied_application_id = copied.pop("lease_application_id")
+        expected_application_id = domain_fingerprint(
+            RUNTIME_LEASE_APPLICATION_ID_DOMAIN, copied
+        )
+        if supplied_application_id != expected_application_id:
+            raise ValueError("runtime lease application identity mismatch")
+        copied["lease_application_id"] = supplied_application_id
+        expected_receipt_id = domain_fingerprint(
+            RUNTIME_LEASE_APPLICATION_RECEIPT_ID_DOMAIN, copied
+        )
+        if supplied_receipt_id != expected_receipt_id:
+            raise ValueError("runtime lease application receipt identity mismatch")
+        copied["receipt_id"] = supplied_receipt_id
+        object.__setattr__(self, "_record", CanonicalValue.from_value(copied))
+
+    def _validated_value(self) -> dict[str, Any]:
+        record = object.__getattribute__(self, "_record")
+        if type(record) is not CanonicalValue:
+            raise ValueError("runtime lease application record is not trusted")
+        CanonicalValue(record.text)
+        return record.to_value()
+
+    @property
+    def receipt_id(self) -> str:
+        return self._validated_value()["receipt_id"]
+
+    @property
+    def lease_application_id(self) -> str:
+        return self._validated_value()["lease_application_id"]
+
+    @property
+    def lease_grant_id(self) -> str:
+        return self._validated_value()["lease_grant_id"]
+
+    @property
+    def status(self) -> str:
+        return self._validated_value()["status"]
+
+    @property
+    def rejection_reason(self) -> str | None:
+        return self._validated_value()["reason_code"]
+
+    @property
+    def prior_state_id(self) -> str:
+        return self._validated_value()["prior_state_id"]
+
+    @property
+    def resulting_state_id(self) -> str:
+        return self._validated_value()["resulting_state_id"]
+
+    @property
+    def source_bound(self) -> bool:
+        # v0.5 checkpoints deliberately claim structural in-process lineage,
+        # not producer authentication or durable remote attestation.
+        return False
+
+    def canonical_record(self) -> dict[str, Any]:
+        return self._validated_value()
+
+
 @dataclass(frozen=True, slots=True)
 class RuntimeTransition:
     observation: Any
-    receipt: RuntimeReceipt
+    receipt: RuntimeReceipt | RuntimeLeaseApplicationReceipt
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeContinuationSnapshot:
+    task_id: str
+    governance_id: str
+    governance_receipt_id: str
+    continuation_policy_id: str
+    continuation_policy_receipt_id: str
+    cumulative_granted: RuntimeLeaseResourceVector
+    total_ceiling: RuntimeLeaseResourceVector
+    applied_grant_ids: tuple[str, ...]
+    leases_applied: int
+    next_lease_index: int
+
+    @classmethod
+    def from_record(cls, value: Any) -> RuntimeContinuationSnapshot:
+        record = _copy_exact_mapping(
+            value,
+            _CONTINUATION_SNAPSHOT_FIELDS,
+            error="runtime continuation snapshot does not match the v1 schema",
+        )
+        if record["protocol_version"] != CONTINUATION_PROTOCOL_VERSION:
+            raise ValueError("runtime continuation snapshot protocol mismatch")
+        for name in (
+            "task_id",
+            "governance_id",
+            "governance_receipt_id",
+            "continuation_policy_id",
+            "continuation_policy_receipt_id",
+        ):
+            if type(record[name]) is not str:
+                raise ValueError(f"runtime continuation {name} must be a fingerprint")
+            require_fingerprint(f"runtime continuation {name}", record[name])
+        applied = materialize_bounded_iterable(
+            "runtime applied lease grant ids",
+            record["applied_grant_ids"],
+            limit=MAX_RUNTIME_LEASES,
+        )
+        for grant_id in applied:
+            require_fingerprint("runtime applied lease grant id", grant_id)
+        if len(applied) != len(set(applied)):
+            raise ValueError("runtime applied lease grant ids must be unique")
+        leases_applied = _require_exact_u64(
+            "continuation leases_applied", record["leases_applied"]
+        )
+        next_lease_index = _require_exact_u64(
+            "continuation next_lease_index", record["next_lease_index"]
+        )
+        if leases_applied != len(applied) or next_lease_index != leases_applied + 1:
+            raise ValueError("runtime continuation lease indexing is inconsistent")
+        cumulative = RuntimeLeaseResourceVector.from_record(
+            record["cumulative_granted"]
+        )
+        ceiling = RuntimeLeaseResourceVector.from_record(record["total_ceiling"])
+        if cumulative.mutation_delta != 0 or ceiling.mutation_delta != 0:
+            raise ValueError("v0.5 runtime continuation cannot contain mutations")
+        if not all(
+            cumulative.canonical_record()[name] <= ceiling.canonical_record()[name]
+            for name in _LEASE_RESOURCE_FIELDS
+        ):
+            raise ValueError("runtime continuation cumulative resources exceed ceiling")
+        return cls(
+            task_id=record["task_id"],
+            governance_id=record["governance_id"],
+            governance_receipt_id=record["governance_receipt_id"],
+            continuation_policy_id=record["continuation_policy_id"],
+            continuation_policy_receipt_id=record[
+                "continuation_policy_receipt_id"
+            ],
+            cumulative_granted=cumulative,
+            total_ceiling=ceiling,
+            applied_grant_ids=applied,
+            leases_applied=leases_applied,
+            next_lease_index=next_lease_index,
+        )
+
+    def canonical_record(self) -> dict[str, Any]:
+        return {
+            "applied_grant_ids": list(self.applied_grant_ids),
+            "continuation_policy_id": self.continuation_policy_id,
+            "continuation_policy_receipt_id": self.continuation_policy_receipt_id,
+            "cumulative_granted": self.cumulative_granted.canonical_record(),
+            "governance_id": self.governance_id,
+            "governance_receipt_id": self.governance_receipt_id,
+            "leases_applied": self.leases_applied,
+            "next_lease_index": self.next_lease_index,
+            "protocol_version": CONTINUATION_PROTOCOL_VERSION,
+            "task_id": self.task_id,
+            "total_ceiling": self.total_ceiling.canonical_record(),
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -691,12 +1088,18 @@ class RuntimeSnapshot:
     history: tuple[str, ...]
     cache: tuple[tuple[str, str], ...]
     limits: RuntimeLimits
+    continuation: RuntimeContinuationSnapshot | None = None
 
     @classmethod
     def from_record(cls, record: Mapping[str, Any]) -> RuntimeSnapshot:
+        fields = (
+            _EXTENDED_SNAPSHOT_FIELDS
+            if isinstance(record, Mapping) and "continuation" in record
+            else _SNAPSHOT_FIELDS
+        )
         record = _copy_exact_mapping(
             record,
-            _SNAPSHOT_FIELDS,
+            fields,
             error="runtime snapshot does not match the v1 schema",
         )
         if record["protocol_version"] != RUNTIME_PROTOCOL_VERSION:
@@ -726,6 +1129,8 @@ class RuntimeSnapshot:
         for name, value in numeric.items():
             if isinstance(value, bool) or not isinstance(value, int) or value < 0:
                 raise ValueError(f"runtime snapshot {name} must be an exact integer")
+        if record["logical_tick"] > MAX_RUNTIME_LOGICAL_TICK:
+            raise ValueError("runtime snapshot logical tick exceeds the hard bound")
         history = materialize_bounded_iterable(
             "runtime snapshot history",
             record["history"],
@@ -755,6 +1160,21 @@ class RuntimeSnapshot:
         for tool_key, observation_id in cache:
             require_fingerprint("runtime cache tool key", tool_key)
             require_fingerprint("runtime cache observation id", observation_id)
+        continuation = (
+            None
+            if "continuation" not in record
+            else RuntimeContinuationSnapshot.from_record(record["continuation"])
+        )
+        expected_tick = (
+            counters["requests"]
+            + counters["executions"]
+            + counters["cache_hits"]
+            + counters["retries"]
+            + len(cache)
+            + (0 if continuation is None else continuation.leases_applied)
+        )
+        if record["logical_tick"] != expected_tick:
+            raise ValueError("runtime snapshot logical tick accounting is inconsistent")
         return cls(
             session_id=record["session_id"],
             state_id=record["state_id"],
@@ -766,10 +1186,11 @@ class RuntimeSnapshot:
             history=history,
             cache=cache,
             limits=limits,
+            continuation=continuation,
         )
 
     def canonical_record(self) -> dict[str, Any]:
-        return {
+        record: dict[str, Any] = {
             "cache": [
                 {"observation_id": observation_id, "tool_key": tool_key}
                 for tool_key, observation_id in self.cache
@@ -787,6 +1208,9 @@ class RuntimeSnapshot:
             "session_id": self.session_id,
             "state_id": self.state_id,
         }
+        if self.continuation is not None:
+            record["continuation"] = self.continuation.canonical_record()
+        return record
 
 
 class RuntimeRejected(RuntimeError):
@@ -795,6 +1219,16 @@ class RuntimeRejected(RuntimeError):
     def __init__(self, receipt: RuntimeReceipt) -> None:
         self.receipt = receipt
         super().__init__(receipt.rejection_reason or "runtime command rejected")
+
+
+class RuntimeLeaseRejected(RuntimeError):
+    """A stable rejection of an authority-bound lease application."""
+
+    def __init__(self, receipt: RuntimeLeaseApplicationReceipt) -> None:
+        self.receipt = receipt
+        super().__init__(
+            receipt.rejection_reason or "runtime lease application rejected"
+        )
 
 
 class RustRuntimeSession:
@@ -806,10 +1240,51 @@ class RustRuntimeSession:
         self,
         session_key: str,
         limits: RuntimeLimits | None = None,
+        *,
+        continuation_policy: Any | None = None,
+        continuation_policy_receipt: Any | None = None,
     ) -> None:
         if not isinstance(session_key, str) or not session_key:
             raise ValueError("session_key must be a non-empty string")
-        active_limits = limits or RuntimeLimits()
+        if (continuation_policy is None) != (continuation_policy_receipt is None):
+            raise ValueError(
+                "continuation policy and policy receipt must be supplied together"
+            )
+        continuation_context: str | None = None
+        if continuation_policy is not None:
+            from .continuation import ContinuationPolicy, ContinuationPolicyReceipt
+
+            if type(continuation_policy) is not ContinuationPolicy:
+                raise TypeError("continuation_policy must be an exact policy")
+            if type(continuation_policy_receipt) is not ContinuationPolicyReceipt:
+                raise TypeError(
+                    "continuation_policy_receipt must be an exact policy receipt"
+                )
+            if (
+                continuation_policy_receipt.continuation_policy_id
+                != continuation_policy.continuation_policy_id
+            ):
+                raise ValueError("continuation policy receipt identity mismatch")
+            base = continuation_policy.initial_budget
+            policy_limits = RuntimeLimits(
+                max_requests=base.request_delta,
+                max_executions=base.execution_delta,
+                max_retries=base.retry_delta,
+                max_history=base.history_delta,
+            )
+            if limits is not None and limits != policy_limits:
+                raise ValueError("runtime limits must match continuation base budget")
+            active_limits = policy_limits
+            continuation_context = canonical_json(
+                {
+                    "continuation_policy": continuation_policy.canonical_record(),
+                    "continuation_policy_receipt": (
+                        continuation_policy_receipt.canonical_record()
+                    ),
+                }
+            )
+        else:
+            active_limits = limits or RuntimeLimits()
         if not isinstance(active_limits, RuntimeLimits):
             raise TypeError("limits must be RuntimeLimits")
         from ._runtime import NativeRuntimeSession
@@ -820,6 +1295,7 @@ class RustRuntimeSession:
             active_limits.max_executions,
             active_limits.max_retries,
             active_limits.max_history,
+            continuation_context,
         )
 
     @property
@@ -887,7 +1363,19 @@ class RustRuntimeSession:
         callback = None if operation is None else self._invocation(operation)
         outcome_text, native_seal = self.__native.dispatch(command_json, callback)
         outcome = CanonicalRuntimeRecord(outcome_text).to_value()
-        receipt = RuntimeReceipt(outcome["receipt"], _native_seal=native_seal)
+        receipt_record = outcome["receipt"]
+        if (
+            isinstance(receipt_record, Mapping)
+            and receipt_record.get("protocol_version")
+            == RUNTIME_LEASE_APPLICATION_PROTOCOL_VERSION
+        ):
+            if native_seal is not None:
+                raise ValueError("lease application cannot carry a v0.3 source seal")
+            receipt: RuntimeReceipt | RuntimeLeaseApplicationReceipt = (
+                RuntimeLeaseApplicationReceipt(receipt_record)
+            )
+        else:
+            receipt = RuntimeReceipt(receipt_record, _native_seal=native_seal)
         return RuntimeTransition(outcome["observation"], receipt)
 
     def dispatch_protocol(
@@ -1032,6 +1520,29 @@ class RustRuntimeSession:
         transition = self.record_retry_transition(admission_id=admission_id)
         if transition.receipt.status == "rejected":
             raise RuntimeRejected(transition.receipt)
+
+    def apply_lease_transition(self, grant: Any) -> RuntimeTransition:
+        """Ask Rust to apply, never grant, one governance lease receipt."""
+
+        from .continuation import LeaseGrantReceipt
+
+        if type(grant) is not LeaseGrantReceipt:
+            raise TypeError("grant must be an exact LeaseGrantReceipt")
+        return self.dispatch_protocol(
+            {
+                "command_type": "apply_lease",
+                "grant_receipt": grant.canonical_record(),
+                "protocol_version": RUNTIME_PROTOCOL_VERSION,
+            }
+        )
+
+    def apply_lease(self, grant: Any) -> RuntimeLeaseApplicationReceipt:
+        transition = self.apply_lease_transition(grant)
+        if type(transition.receipt) is not RuntimeLeaseApplicationReceipt:
+            raise ValueError("Rust did not return a lease application receipt")
+        if transition.receipt.status == "rejected":
+            raise RuntimeLeaseRejected(transition.receipt)
+        return transition.receipt
 
 
 def rust_canonical_json(canonical_text: str) -> str:

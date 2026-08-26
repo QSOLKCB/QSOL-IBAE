@@ -12,7 +12,7 @@ QSOL-IBAE explores whether strong execution invariants can reduce redundant tool
 
 The v0.x line starts intentionally small. The first objective is not to build another general agent framework. It is to prove a compact execution kernel with measurable behavior.
 
-## v0.4 scope
+## v0.5 scope
 
 The v0.1 kernel provides:
 
@@ -51,9 +51,10 @@ The accepted v0.3 Rust deterministic runtime adds:
 - structured execution-layer rejection records with reason codes and relevant invariant IDs;
 - transaction-safe full-envelope construction, exact-JSON observation semantics, and capability-ID rebinding before an admitted read can enter the cache path;
 - independent Python/Rust canonical-byte, SHA-256, execution-semantic, and receipt conformance fixtures;
-- a deliberately limited command family: `execute_read` and `record_retry` only.
+- a deliberately limited accepted v0.3 command family: `execute_read` and
+  `record_retry`.
 
-The v0.4 implementation candidate adds deterministic governance and compact
+The accepted v0.4 implementation adds deterministic governance and compact
 evidence machinery above and below those accepted semantics:
 
 - an OpenAI-only, versioned governance policy with explicit supervisor,
@@ -88,6 +89,33 @@ known-admission accounting and continuity, but cannot cover an authorized read
 on their own. Volatile reads and mutations are classified and fail closed by
 governance, but no effect-execution command is invented in this phase.
 
+The v0.5 implementation candidate adds objective progress and finite governed
+continuation without changing those frozen v0.2-v0.4 records:
+
+- a versioned integer progress-measure contract over canonical obligation state
+  or governed observed/derived counters;
+- closed `measurable_progress`, `no_progress`, `regression`,
+  `new_information`, and `incomparable` classifications, with completion
+  computed separately and model confidence/activity excluded;
+- structured strategy materiality over admitted strategy identity, capability
+  frontier, target obligations, dependency path, recovery mode, and cycle
+  breaking; descriptive paraphrases have no authority;
+- governance-owned continuation policies with exact initial budgets, ordered
+  finite lease schedules, checked cumulative ceilings, request caps, and a
+  finite strategy-recovery allowance;
+- one task/session continuation ledger with deterministic grant/deny receipts,
+  compact AI recovery state, and no self-extension by runtime, tools, or future
+  workers;
+- an opt-in Rust `apply_lease` transition that independently validates a full
+  governance grant, changes only exact limits plus one runtime logical tick,
+  and rejects replay/forgery/stale state without mutation;
+- in-process structural checkpoints, a separate fixed-shape continuation
+  evidence receipt, semantic continuation partial receipts, and watchdog
+  observations that cannot claim completion or lease exhaustion;
+- exact experimental `tiny`, `standard`, `extended`, and `repository` profiles
+  plus a deterministic model-free schedule benchmark with no correctness
+  authority or universal recommendation.
+
 There are deliberately **no model calls yet**. OpenAI SDK integration comes only after the kernel invariants are independently testable.
 
 ## Architecture
@@ -113,7 +141,8 @@ Benchmark observations remain outside correctness authority.
 See [ARCHITECTURE.md](ARCHITECTURE.md), [INVARIANTS.md](INVARIANTS.md),
 [RUNTIME_PROTOCOL.md](RUNTIME_PROTOCOL.md),
 [GOVERNANCE_PROTOCOL.md](GOVERNANCE_PROTOCOL.md), and
-[EVIDENCE_PROTOCOL.md](EVIDENCE_PROTOCOL.md).
+[EVIDENCE_PROTOCOL.md](EVIDENCE_PROTOCOL.md), and
+[CONTINUATION_PROTOCOL.md](CONTINUATION_PROTOCOL.md).
 
 ## Provider scope
 
@@ -143,6 +172,8 @@ python tools/render_v0_2_fixture.py
 python tools/render_v0_3_fixture.py
 python tools/render_v0_4_fixture.py
 python tools/stress_compact_evidence.py
+python tools/render_v0_5_fixture.py
+python tools/render_budget_profile_benchmark.py
 ```
 
 Run both language suites with:
@@ -165,10 +196,13 @@ External code contributions are not currently accepted without a separate writte
 
 ## Status
 
-Experimental v0.4 pre-release implementation candidate. PR #4 merged the exact
-reviewed v0.3 Rust-runtime head, so v0.3 is accepted rather than pending review.
-The merged v0.2 Python orchestrator remains the semantic reference above that
-runtime. v0.4 adds deterministic governance/receipt contracts and bounded
-evidence transport; continuation leases, live OpenAI integration, accelerators,
+Experimental v0.5 pre-release implementation candidate. PR #5 merged the exact
+reviewed v0.4 governance/compact-evidence head, so v0.1-v0.4 are accepted. The
+v0.5 branch adds objective progress, material strategy-change admission,
+precommitted continuation policies, governance grant/deny receipts, exact Rust
+lease application, structural in-process checkpoint/resume, compact
+continuation evidence, and semantic partial finalization. Live OpenAI
+integration, mutation execution, durable cross-process resume, accelerators,
 distributed execution, and local workers remain later gated phases. No
-production, authentication, or performance claim is made.
+production, authentication, universal-calibration, or performance claim is
+made.

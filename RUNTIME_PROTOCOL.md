@@ -1,12 +1,17 @@
 # IBAE Runtime Protocol v1
 
-Status: accepted v0.3 implementation contract; unchanged by v0.4.
+Status: accepted v0.3 implementation contract with an opt-in v0.5 lease-
+application extension. Legacy v0.3/v0.4 bytes remain unchanged.
 
 `IBAE-RUNTIME-PROTOCOL-V1` is the narrow in-process boundary between Python orchestration and the Rust execution authority. It is transported as canonical UTF-8 JSON through one opaque PyO3 session. It is not an RPC or network protocol.
 
 ## Authority boundary
 
-Python may construct a command, provide an admitted cacheable-read callback, and consume copied outcomes. Rust alone mutates runtime counters, logical ticks, cache, history, and runtime state identity.
+Python may construct a command, provide an admitted cacheable-read callback,
+and consume copied outcomes. Rust alone mutates runtime limits, counters,
+logical ticks, cache, history, the opt-in applied-lease ledger, and runtime
+state identity. Python governance may supply a canonical grant, but cannot
+directly change a native limit.
 
 The native session exposes only:
 
@@ -38,7 +43,9 @@ Mappings require unique string keys. NaN, infinities, non-canonical number spell
 
 ## Commands
 
-Only two closed command variants exist.
+Three closed command variants exist. `execute_read` and `record_retry` retain
+their accepted v0.3 semantics. `apply_lease` is accepted only for a v0.5
+continuation-enabled session.
 
 ### `execute_read`
 
@@ -96,6 +103,28 @@ Exception messages, Python object representations, and addresses never enter cor
 
 This command performs one checked retry-counter transition. It does not request or grant more budget.
 
+### `apply_lease`
+
+```json
+{
+  "command_type": "apply_lease",
+  "grant_receipt": {"protocol_version":"IBAE-CONTINUATION-LEASE-GRANT-V1"},
+  "protocol_version": "IBAE-RUNTIME-PROTOCOL-V1"
+}
+```
+
+The `grant_receipt` value is the complete canonical governance receipt, not an ID or a
+caller-selected delta. Rust independently parses its exact schema and
+recomputes both `lease_grant_id` and `receipt_id`. An opted-in native session
+already binds the exact task, governance receipt, continuation policy/receipt,
+initial limits, full indexed schedule, and total ceiling. Application requires
+an exact next index, exact prior runtime session/state, matching authority
+lineage, a schedule-bounded mutation-free vector, checked cumulative grant,
+and no duplicate/replayed grant ID.
+
+Rust does not decide whether progress justifies a lease and exposes no
+`request_lease` command. Governance grants; Rust applies.
+
 Unknown variants—including `request_lease` and `finalize`—reject without runtime mutation. Each canonical attempted command, command type, and valid admission ID remains bound into its distinct rejection receipt. Those command semantics are not reserved by implementation and require their later roadmap phase.
 
 ## Transition accounting
@@ -111,9 +140,18 @@ The logical runtime tick is a checked exact integer derived only from committed 
 | Request-budget rejection | 0 | 0 | 0 | 0 |
 | Accepted retry | 0 | 0 | 0 | 1 |
 | Retry-budget rejection | 0 | 0 | 0 | 0 |
+| Accepted lease application | 0 | 0 | 0 | 1 |
+| Rejected lease application | 0 | 0 | 0 | 0 |
 | Malformed/unsupported command | 0 | 0 | 0 | 0 |
 
 Cold observation commit and cache-hit history commit each append the same canonical transition identity. Retained history truncates deterministically at its configured bound. Rust constructs and bounds the complete prospective outcome on an isolated candidate state before replacing authoritative state, so an output-serialization failure cannot leave a committed transition without a receipt.
+
+Accepted lease application changes the runtime limits by the exact granted
+request/execution/retry/history vector, advances the native logical tick once,
+records the grant in the opt-in lease ledger, and appends no execution history.
+Mutation delta remains zero. It consumes no request, execution, cache-hit,
+retry, or mutation counter. Rejected application changes no limit, counter,
+tick, history, cache, ledger, or state identity.
 
 ## Identities
 
@@ -130,7 +168,17 @@ New v0.3 identities use `SHA256(domain || NUL || canonical_record)` with these d
 - `ibae.runtime-state-id.v1`;
 - `ibae.runtime-receipt-id.v1`.
 
+The v0.5 application uses separate domains:
+
+- `ibae.runtime-lease-application-id.v1`;
+- `ibae.runtime-lease-application-receipt-id.v1`.
+
 A command identity includes its prior state identity, so repeated requests have distinct occurrence identities even when their semantic read key is reusable. State identity includes exact counters/tick, bounded history, cache key/observation identities, limits, protocol, and session identity.
+
+Legacy session/state records omit continuation entirely and retain their prior
+bytes. An opt-in session additionally binds exact task/governance/policy
+lineage, full precommitted policy, cumulative grants, applied grant IDs, and
+next lease index into its session/state identity.
 
 Wall-clock time, latency, build duration, worker/thread/device assignment, Python `hash()`/`id()`, and memory addresses are absent.
 
@@ -163,6 +211,15 @@ It lets the evidence reducer reject a reconstructed or altered Python receipt
 before reducer mutation, but it is not a signature, producer authentication,
 remote attestation, or durable provenance.
 
+`apply_lease` instead returns a separately versioned
+`IBAE-RUNTIME-LEASE-APPLICATION-RECEIPT-V1` execution-authority record. It
+binds command/application/receipt IDs, task/governance/policy/session lineage,
+grant and grant-receipt IDs, lease index, exact limit delta, cumulative grant,
+total ceiling, resulting limits/state, runtime budget delta, logical-tick
+delta, status, and closed rejection evidence. It deliberately carries no
+v0.3 source seal; `IBAE-CONTINUATION-CHECKPOINT-V1` supports structural
+in-process lineage, not authentication or durable reconstruction.
+
 ## Rejection taxonomy
 
 ```text
@@ -176,6 +233,21 @@ IBAE-RT-REJECT-RETRY-BUDGET
 IBAE-RT-REJECT-ARITHMETIC-OVERFLOW
 IBAE-RT-REJECT-INVALID-OBSERVATION
 IBAE-RT-REJECT-OPERATION-FAILED
+```
+
+Lease application has its own closed taxonomy:
+
+```text
+IBAE-RT-LEASE-REJECT-CONTINUATION-DISABLED
+IBAE-RT-LEASE-REJECT-GRANT-IDENTITY
+IBAE-RT-LEASE-REJECT-POLICY-MISMATCH
+IBAE-RT-LEASE-REJECT-STALE-GOVERNANCE
+IBAE-RT-LEASE-REJECT-STALE-RUNTIME-STATE
+IBAE-RT-LEASE-REJECT-LEASE-INDEX
+IBAE-RT-LEASE-REJECT-SCHEDULE
+IBAE-RT-LEASE-REJECT-CEILING
+IBAE-RT-LEASE-REJECT-UNSUPPORTED-RESOURCE
+IBAE-RT-LEASE-REJECT-ARITHMETIC-OVERFLOW
 ```
 
 No rejection grants authority or promotes execution state into orchestration/governance state.

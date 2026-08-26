@@ -4,6 +4,34 @@ from __future__ import annotations
 
 from ._records import CanonicalValue
 from .canonical import canonical_fingerprint, domain_fingerprint
+from .continuation import (
+    CHECKPOINT_PROTOCOL_VERSION,
+    CONTINUATION_EVIDENCE_VERSION,
+    CONTINUATION_PROTOCOL_VERSION,
+    PARTIAL_CONTINUATION_VERSION,
+    PROGRESS_PROTOCOL_VERSION,
+    BudgetVector,
+    ContinuationCheckpoint,
+    ContinuationEvidenceReceipt,
+    ContinuationPartialReason,
+    ContinuationPartialReceipt,
+    ContinuationPolicyReceipt,
+    ContinuationRequest,
+    ContinuationState,
+    LeaseGrantReceipt,
+    ProgressDimension,
+    ProgressDirection,
+    ProgressMeasureContract,
+    ProgressSource,
+    StrategyMaterialization,
+    commit_lease_application,
+    evaluate_continuation,
+    evaluate_progress,
+    evaluate_strategy_change,
+    experimental_continuation_profile,
+    observe_continuation_context,
+)
+from .continuation_benchmark import run_budget_profile_benchmark
 from .epistemic import (
     EpistemicClass,
     EpistemicRecord,
@@ -47,6 +75,7 @@ from .orchestration import (
 )
 from .reference_executor import PythonReferenceExecutor
 from .runtime import (
+    RUNTIME_LEASE_APPLICATION_PROTOCOL_VERSION,
     RUNTIME_PROTOCOL_VERSION,
     RuntimeRejected,
     RustRuntimeSession,
@@ -734,3 +763,333 @@ def v0_4_reference_fixture() -> dict[str, object]:
             "producer_authenticated": False,
         },
     }
+
+
+def v0_5_reference_fixture() -> dict[str, object]:
+    """Build the byte-stable v0.5 progress and continuation fixture."""
+
+    strategy_schema = StrategySchema(
+        "bounded-recovery",
+        (
+            StrategyParameterSpec(
+                "mode",
+                StrategyValueKind.SYMBOL,
+                allowed_symbols=("alternate", "primary"),
+            ),
+        ),
+    )
+    capabilities = (
+        Capability(
+            "read.alternate",
+            ReplaySafety.CACHEABLE_READ,
+            "Read through an alternate dependency frontier.",
+        ),
+        Capability(
+            "read.primary",
+            ReplaySafety.CACHEABLE_READ,
+            "Read through the primary dependency frontier.",
+        ),
+    )
+    obligations = tuple(
+        Obligation(
+            f"v0.5-obligation-{index}",
+            f"Satisfy deterministic continuation obligation {index}.",
+        )
+        for index in range(3)
+    )
+
+    def orchestration(satisfied: int) -> OrchestrationState:
+        return OrchestrationState.create(
+            tuple(
+                item.with_status(ObligationStatus.SATISFIED)
+                if index < satisfied
+                else item
+                for index, item in enumerate(obligations)
+            ),
+            capabilities=capabilities,
+            strategy_schemas=(strategy_schema,),
+        )
+
+    before = orchestration(0)
+    current = orchestration(1)
+    later = orchestration(2)
+    target_id = obligations[1].obligation_id
+    prior_strategy = StrategyMaterialization(
+        Strategy("bounded-recovery", {"mode": "primary"}, schema=strategy_schema),
+        capability_frontier=("read.primary",),
+        target_obligation_ids=(target_id,),
+        dependency_path=(target_id,),
+        recovery_mode="primary",
+        initial_transition_pattern=(
+            domain_fingerprint("ibae.v0.5-transition.v1", {"path": "primary"}),
+        ),
+        description="Use the primary deterministic path.",
+    )
+    alternate_strategy = StrategyMaterialization(
+        Strategy(
+            "bounded-recovery", {"mode": "alternate"}, schema=strategy_schema
+        ),
+        capability_frontier=("read.alternate",),
+        target_obligation_ids=(target_id,),
+        dependency_path=(),
+        recovery_mode="alternate",
+        initial_transition_pattern=(
+            domain_fingerprint("ibae.v0.5-transition.v1", {"path": "alternate"}),
+        ),
+        description="Use the alternate deterministic path.",
+    )
+
+    governance_policy = GovernancePolicy(
+        policy_key="v0.5.reference",
+        policy_version=1,
+        task_profile="standard",
+        task_profile_version=1,
+        provider_authority=ProviderAuthority.OPENAI,
+        tool_permissions=(),
+        required_gate_keys=(
+            COMPACT_EVIDENCE_GATE_KEY,
+            ORCHESTRATION_RECEIPT_GATE_KEY,
+            EXECUTION_RECEIPT_GATE_KEY,
+        ),
+    )
+    wrapper = GovernanceWrapper(governance_policy)
+    task, governance = wrapper.admit_task(
+        "v0.5.reference-task",
+        {"claim": "objective progress admits only finite continuation"},
+        requester=PrincipalAuthority.OPENAI_SUPERVISOR,
+    )
+    continuation_policy = experimental_continuation_profile("standard")
+    continuation_policy_receipt = ContinuationPolicyReceipt(
+        continuation_policy, governance_policy, governance
+    )
+    runtime = RustRuntimeSession(
+        "v0.5-progress-continuation-reference",
+        continuation_policy=continuation_policy,
+        continuation_policy_receipt=continuation_policy_receipt,
+    )
+    progress_contract = ProgressMeasureContract(
+        "reference.obligations",
+        1,
+        (
+            ProgressDimension(
+                "unsatisfied",
+                ProgressSource.UNSATISFIED_OBLIGATION_COUNT,
+                ProgressDirection.DECREASE,
+            ),
+        ),
+    )
+    first_progress = evaluate_progress(
+        task_id=task.task_id,
+        governance_id=governance.governance_id,
+        contract=progress_contract,
+        prior_state=before,
+        current_state=current,
+    )
+    continuation_state = ContinuationState.create(
+        policy=continuation_policy,
+        policy_receipt=continuation_policy_receipt,
+        orchestration_state=current,
+        runtime_snapshot=runtime.snapshot,
+        strategy=prior_strategy,
+    )
+
+    first_request = ContinuationRequest.from_state(
+        continuation_state,
+        progress=first_progress,
+        requested_resources=continuation_policy.lease_schedule[0],
+        requester=PrincipalAuthority.OPENAI_SUPERVISOR,
+    )
+    first_decision = evaluate_continuation(
+        continuation_state,
+        first_request,
+        policy=continuation_policy,
+        policy_receipt=continuation_policy_receipt,
+        progress=first_progress,
+    )
+    if not isinstance(first_decision.receipt, LeaseGrantReceipt):
+        raise AssertionError("measurable fixture progress must receive lease one")
+    first_application = runtime.apply_lease(first_decision.receipt)
+    continuation_state = commit_lease_application(
+        first_decision.next_state,
+        policy=continuation_policy,
+        grant=first_decision.receipt,
+        application=first_application,
+        runtime_snapshot=runtime.snapshot,
+    )
+
+    stalled_progress = evaluate_progress(
+        task_id=task.task_id,
+        governance_id=governance.governance_id,
+        contract=progress_contract,
+        prior_state=current,
+        current_state=current,
+    )
+    stalled_request = ContinuationRequest.from_state(
+        continuation_state,
+        progress=stalled_progress,
+        requested_resources=continuation_policy.lease_schedule[1],
+        requester=PrincipalAuthority.OPENAI_SUPERVISOR,
+    )
+    stalled_decision = evaluate_continuation(
+        continuation_state,
+        stalled_request,
+        policy=continuation_policy,
+        policy_receipt=continuation_policy_receipt,
+        progress=stalled_progress,
+    )
+    continuation_state = stalled_decision.next_state
+
+    strategy_change = evaluate_strategy_change(
+        task_id=task.task_id,
+        governance_id=governance.governance_id,
+        orchestration_state=current,
+        prior_strategy=prior_strategy,
+        proposed_strategy=alternate_strategy,
+    )
+    recovery_request = ContinuationRequest.from_state(
+        continuation_state,
+        progress=stalled_progress,
+        requested_resources=continuation_policy.lease_schedule[1],
+        requester=PrincipalAuthority.OPENAI_SUPERVISOR,
+        strategy_change=strategy_change,
+    )
+    recovery_decision = evaluate_continuation(
+        continuation_state,
+        recovery_request,
+        policy=continuation_policy,
+        policy_receipt=continuation_policy_receipt,
+        progress=stalled_progress,
+        strategy_change=strategy_change,
+    )
+    if not isinstance(recovery_decision.receipt, LeaseGrantReceipt):
+        raise AssertionError("material fixture recovery must receive lease two")
+    recovery_application = runtime.apply_lease(recovery_decision.receipt)
+    continuation_state = commit_lease_application(
+        recovery_decision.next_state,
+        policy=continuation_policy,
+        grant=recovery_decision.receipt,
+        application=recovery_application,
+        runtime_snapshot=runtime.snapshot,
+    )
+
+    final_progress = evaluate_progress(
+        task_id=task.task_id,
+        governance_id=governance.governance_id,
+        contract=progress_contract,
+        prior_state=current,
+        current_state=later,
+    )
+    continuation_state = observe_continuation_context(
+        continuation_state,
+        policy=continuation_policy,
+        orchestration_state=later,
+        runtime_snapshot=runtime.snapshot,
+        progress=final_progress,
+        strategy=alternate_strategy,
+    )
+    exhausted_request = ContinuationRequest.from_state(
+        continuation_state,
+        progress=final_progress,
+        requested_resources=BudgetVector(request_delta=1),
+        requester=PrincipalAuthority.OPENAI_SUPERVISOR,
+    )
+    exhausted_decision = evaluate_continuation(
+        continuation_state,
+        exhausted_request,
+        policy=continuation_policy,
+        policy_receipt=continuation_policy_receipt,
+        progress=final_progress,
+    )
+    continuation_state = exhausted_decision.next_state
+    evidence = ContinuationEvidenceReceipt(
+        state=continuation_state,
+        policy=continuation_policy,
+        progress_records=(first_progress, stalled_progress, final_progress),
+    )
+    checkpoint = ContinuationCheckpoint(
+        state=continuation_state,
+        policy=continuation_policy,
+        orchestration_state=later,
+        runtime_snapshot=runtime.snapshot,
+        progress=final_progress,
+        strategy=alternate_strategy,
+        compact_evidence_receipt_id=evidence.receipt_id,
+        relevant_receipt_id=exhausted_decision.receipt.receipt_id,
+        partial_reason=ContinuationPartialReason.LEASE_CEILING_EXHAUSTED,
+    )
+    partial = ContinuationPartialReceipt(
+        state=continuation_state,
+        checkpoint=checkpoint,
+        reason=ContinuationPartialReason.LEASE_CEILING_EXHAUSTED,
+        compact_evidence_receipt_id=evidence.receipt_id,
+        execution_receipt_id=recovery_application.receipt_id,
+    )
+    return {
+        "authority": {
+            "continuation_policy": continuation_policy.canonical_record(),
+            "continuation_policy_id": continuation_policy.continuation_policy_id,
+            "continuation_policy_receipt": (
+                continuation_policy_receipt.canonical_record()
+            ),
+            "governance": governance.canonical_record(),
+            "governance_policy": governance_policy.canonical_record(),
+            "task": task.canonical_record(),
+        },
+        "checkpoint": {
+            "checkpoint_id": checkpoint.checkpoint_id,
+            "record": checkpoint.canonical_record(),
+        },
+        "continuation_evidence": evidence.canonical_record(),
+        "final_state": {
+            "ai_projection": continuation_state.compact_projection(
+                continuation_policy
+            ),
+            "continuation_state_id": continuation_state.continuation_state_id,
+            "record": continuation_state.canonical_record(),
+            "runtime_snapshot": runtime.snapshot.canonical_record(),
+        },
+        "lease_decisions": {
+            "ceiling_denial": exhausted_decision.receipt.canonical_record(),
+            "first_grant": first_decision.receipt.canonical_record(),
+            "no_progress_denial": stalled_decision.receipt.canonical_record(),
+            "recovery_grant": recovery_decision.receipt.canonical_record(),
+        },
+        "partial_finalization": {
+            "partial_id": partial.partial_id,
+            "record": partial.canonical_record(),
+        },
+        "progress": {
+            "first": first_progress.canonical_record(),
+            "final": final_progress.canonical_record(),
+            "stalled": stalled_progress.canonical_record(),
+        },
+        "protocols": {
+            "checkpoint": CHECKPOINT_PROTOCOL_VERSION,
+            "continuation": CONTINUATION_PROTOCOL_VERSION,
+            "continuation_evidence": CONTINUATION_EVIDENCE_VERSION,
+            "partial": PARTIAL_CONTINUATION_VERSION,
+            "progress": PROGRESS_PROTOCOL_VERSION,
+            "runtime": RUNTIME_PROTOCOL_VERSION,
+            "runtime_lease_application": (
+                RUNTIME_LEASE_APPLICATION_PROTOCOL_VERSION
+            ),
+        },
+        "runtime_applications": {
+            "first": first_application.canonical_record(),
+            "recovery": recovery_application.canonical_record(),
+        },
+        "strategy_change": strategy_change.canonical_record(),
+        "trust_scope": {
+            "benchmark_is_correctness_authority": False,
+            "checkpoint_producer_authenticated": False,
+            "checkpoint_scope": "structural-in-process-lineage-only",
+            "cross_process_runtime_reconstruction": False,
+            "live_model_provider_called": False,
+        },
+    }
+
+
+def v0_5_budget_benchmark_fixture() -> dict[str, object]:
+    """Build the byte-stable observational v0.5 budget-profile report."""
+
+    return run_budget_profile_benchmark()

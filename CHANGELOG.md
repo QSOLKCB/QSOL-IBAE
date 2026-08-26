@@ -6,6 +6,33 @@ All notable changes to QSOL-IBAE will be documented here.
 
 ### Added
 
+- `IBAE-OBJECTIVE-PROGRESS-V1`, with exact versioned progress dimensions over
+  canonical obligation state or task/governance-bound observed/derived
+  counters; activity, confidence, wall time, and strategy rephrasing remain
+  non-authoritative.
+- structured strategy-material and strategy-change receipts that bind admitted
+  strategy identity, capability frontier, target obligations, dependency path,
+  recovery mode, and period-1/2/3 cycle-breaking evidence.
+- `IBAE-CONTINUATION-LEASE-V1`, with governance-precommitted initial budgets,
+  finite indexed lease schedules, exact cumulative ceilings, request caps,
+  strategy-recovery caps, one task/session continuation ledger, and closed
+  grant/deny receipts.
+- opt-in Rust `apply_lease` authority that independently validates complete
+  governance grant/receipt identities, policy/session/state lineage, schedule,
+  replay index, and checked ceiling before changing exact limits. Accepted
+  application consumes one runtime logical tick and no tool counters/history;
+  rejection is state-neutral.
+- structural in-process `IBAE-CONTINUATION-CHECKPOINT-V1`, fixed-shape
+  continuation evidence capped at 4,096 bytes, semantic continuation partial
+  receipts, and non-authoritative watchdog observations that cannot establish
+  completion or lease exhaustion.
+- exact experimental `tiny`, `standard`, `extended`, and `repository`
+  continuation profiles plus a model-free benchmark of fixed, front-loaded,
+  geometric-candidate, and bounded-recovery schedules without a promoted
+  winner or correctness claim.
+- byte-stable v0.5 Python/Rust progress/continuation and budget-profile fixtures
+  under multiple `PYTHONHASHSEED` values while preserving all frozen v0.2-v0.4
+  fixture bytes.
 - v0.4 deterministic governance wrapper with a closed OpenAI-only provider
   authority, explicit supervisor/orchestrator/runtime/future-worker principals,
   and five fail-closed tool authority classes.
@@ -42,7 +69,10 @@ All notable changes to QSOL-IBAE will be documented here.
   QEC/VE-24 pattern-level provenance with no donor implementation code or domain
   semantics imported.
 - v0.3 Rust deterministic execution runtime with an opaque PyO3 session and maturin build path.
-- `IBAE-RUNTIME-PROTOCOL-V1` with only `execute_read` and `record_retry` commands; future lease/finalization commands remain unimplemented.
+- accepted v0.3 `IBAE-RUNTIME-PROTOCOL-V1` read/retry semantics with
+  `execute_read` and `record_retry`; v0.5 adds only the opt-in exact
+  `apply_lease` extension, while request/finalization/effect commands remain
+  unimplemented.
 - Rust-owned checked integer budgets, transition-derived logical ticks, bounded history/cache, dependency-sensitive reuse, cycle detection, and canonical runtime receipts.
 - domain-separated runtime session, command, state, and receipt identities while preserving the v0.1 canonical tool/observation/transition identities.
 - structured runtime rejection taxonomy with execution authority, relevant invariant IDs, and blocking state.
