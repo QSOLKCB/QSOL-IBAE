@@ -25,6 +25,7 @@ def main() -> None:
         "actual_operation_calls": actual_calls,
         "metrics": executor.metrics(),
         "output_fingerprint": canonical_fingerprint(outputs),
+        "status": "completed",
     }
     print(json.dumps(report, sort_keys=True, separators=(",", ":")))
 

@@ -28,7 +28,7 @@ class InvariantExecutor:
 
     def __init__(self, limits: BudgetLimits | None = None) -> None:
         self.limits = limits or BudgetLimits()
-        self.cache = ObservationCache()
+        self._cache = ObservationCache()
         self.state = ExecutionState()
 
     def _commit_state(self, candidate: ExecutionState) -> None:
@@ -36,6 +36,13 @@ class InvariantExecutor:
         if violations:
             raise BudgetExceeded("; ".join(violations))
         self.state = candidate
+
+    @staticmethod
+    def _transition_fingerprint(key: str, value: Any) -> str:
+        observation_fp = canonical_fingerprint(value)
+        return canonical_fingerprint(
+            {"observation": observation_fp, "tool_key": key}
+        )
 
     def execute_read(
         self,
@@ -49,23 +56,28 @@ class InvariantExecutor:
         requested = self.state.with_counters(requests=1)
         self._commit_state(requested)
 
-        hit, value = self.cache.get(key)
+        hit, value = self._cache.get(key)
         if hit:
+            transition_fp = self._transition_fingerprint(key, value)
             candidate = self.state.with_counters(cache_hits=1)
-            candidate = candidate.append_history(key, self.limits.max_history)
+            candidate = candidate.append_history(
+                transition_fp, self.limits.max_history
+            )
             self._commit_state(candidate)
             return value
 
         candidate = self.state.with_counters(executions=1)
         self._commit_state(candidate)
         value = operation()
-        self.cache.put(key, value)
 
-        observation_fp = canonical_fingerprint(value)
-        transition_fp = canonical_fingerprint(
-            {"observation": observation_fp, "tool_key": key}
+        # Validate and fingerprint the observation before it can enter cache.
+        # A failed canonicalization must never poison later equivalent reads.
+        transition_fp = self._transition_fingerprint(key, value)
+        self._cache.put(key, value)
+
+        candidate = self.state.append_history(
+            transition_fp, self.limits.max_history
         )
-        candidate = self.state.append_history(transition_fp, self.limits.max_history)
         self._commit_state(candidate)
         return value
 

@@ -39,7 +39,7 @@ User / future OpenAI supervisor
       +-------------+
       | Invariant   |
       | Gate        |
-      +------+------+ 
+      +------+------+
              |
        +-----+-----+
        |           |
@@ -75,9 +75,10 @@ The benchmark surface records at least:
 - completion/failure status;
 - deterministic output fingerprints.
 
-Run the current micro-benchmark with:
+From a fresh checkout, install the package and run the current micro-benchmark with:
 
 ```bash
+python -m pip install -e .
 python benchmarks/basic.py
 ```
 
