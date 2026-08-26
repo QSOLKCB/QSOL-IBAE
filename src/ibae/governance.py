@@ -1809,7 +1809,7 @@ class GovernanceWrapper:
     ) -> ToolAdmissionReceipt:
         try:
             _require_governance_binding(self.__policy, task, governance)
-        except (TypeError, ValueError):
+        except (AttributeError, TypeError, ValueError):
             self._reject(
                 ReceiptStage.GOVERNANCE,
                 GovernanceRejectionReason.INVALID_BOUND_RECEIPT,
@@ -1841,7 +1841,7 @@ class GovernanceWrapper:
         tool_name = capability.name
         try:
             permission = self.__policy.permission_for(tool_name)
-        except (TypeError, ValueError):
+        except (AttributeError, TypeError, ValueError):
             self._reject(
                 ReceiptStage.GOVERNANCE,
                 GovernanceRejectionReason.UNKNOWN_TOOL_PERMISSION,
@@ -1952,6 +1952,15 @@ class GovernanceWrapper:
         tool_admissions: Iterable[ToolAdmissionReceipt],
     ) -> OrchestrationReceipt:
         try:
+            _require_governance_binding(self.__policy, task, governance)
+        except (AttributeError, TypeError, ValueError):
+            self._reject(
+                ReceiptStage.ORCHESTRATION,
+                GovernanceRejectionReason.INVALID_BOUND_RECEIPT,
+                invariant_ids=("IBAE-GOV-006", "IBAE-GOV-007", "IBAE-ID-002"),
+                details={"record_type": "governance_context"},
+            )
+        try:
             return OrchestrationReceipt(
                 self.__policy,
                 task,
@@ -1959,7 +1968,7 @@ class GovernanceWrapper:
                 admission_receipt,
                 tool_admissions,
             )
-        except (TypeError, ValueError) as exc:
+        except (AttributeError, TypeError, ValueError) as exc:
             self._reject(
                 ReceiptStage.ORCHESTRATION,
                 GovernanceRejectionReason.INVALID_BOUND_RECEIPT,
@@ -1977,6 +1986,17 @@ class GovernanceWrapper:
         orchestration: OrchestrationReceipt,
         evidence_summary: Any,
     ) -> ExecutionReceipt:
+        try:
+            _require_orchestration_binding(
+                self.__policy, task, governance, orchestration
+            )
+        except (AttributeError, TypeError, ValueError):
+            self._reject(
+                ReceiptStage.EXECUTION,
+                GovernanceRejectionReason.INVALID_BOUND_RECEIPT,
+                invariant_ids=("IBAE-GOV-006", "IBAE-GOV-007", "IBAE-ID-003"),
+                details={"record_type": "orchestration_context"},
+            )
         try:
             from .evidence import EvidenceAggregateSummary
 
@@ -2071,7 +2091,7 @@ class GovernanceWrapper:
                     "execution summary runtime boundary does not match typed receipts"
                 )
             return execution
-        except (TypeError, ValueError) as exc:
+        except (AttributeError, TypeError, ValueError) as exc:
             self._reject(
                 ReceiptStage.EXECUTION,
                 GovernanceRejectionReason.INVALID_BOUND_RECEIPT,
@@ -2095,7 +2115,7 @@ class GovernanceWrapper:
     ) -> FinalAcceptanceReceipt | PartialReceipt:
         try:
             _require_governance_binding(self.__policy, task, governance)
-        except (TypeError, ValueError):
+        except (AttributeError, TypeError, ValueError):
             self._reject(
                 ReceiptStage.FINALIZATION,
                 GovernanceRejectionReason.INVALID_BOUND_RECEIPT,
@@ -2113,7 +2133,7 @@ class GovernanceWrapper:
             )
         try:
             results = _normalize_gate_results(gate_results)
-        except (TypeError, ValueError):
+        except (AttributeError, TypeError, ValueError):
             self._reject(
                 ReceiptStage.FINALIZATION,
                 GovernanceRejectionReason.INVALID_BOUND_RECEIPT,
@@ -2160,7 +2180,7 @@ class GovernanceWrapper:
                     missing_gate_keys=missing,
                     gate_results=results,
                 )
-            except (TypeError, ValueError) as exc:
+            except (AttributeError, TypeError, ValueError) as exc:
                 self._reject(
                     ReceiptStage.FINALIZATION,
                     GovernanceRejectionReason.INVALID_BOUND_RECEIPT,
@@ -2181,7 +2201,7 @@ class GovernanceWrapper:
             _require_orchestration_binding(
                 self.__policy, task, governance, orchestration
             )
-        except (TypeError, ValueError):
+        except (AttributeError, TypeError, ValueError):
             self._reject(
                 ReceiptStage.FINALIZATION,
                 GovernanceRejectionReason.INVALID_BOUND_RECEIPT,
@@ -2200,7 +2220,7 @@ class GovernanceWrapper:
             _require_execution_binding(
                 self.__policy, task, governance, orchestration, execution
             )
-        except (TypeError, ValueError):
+        except (AttributeError, TypeError, ValueError):
             self._reject(
                 ReceiptStage.FINALIZATION,
                 GovernanceRejectionReason.INVALID_BOUND_RECEIPT,
@@ -2235,7 +2255,7 @@ class GovernanceWrapper:
                 results,
                 requester=requester,
             )
-        except (TypeError, ValueError) as exc:
+        except (AttributeError, TypeError, ValueError) as exc:
             self._reject(
                 ReceiptStage.FINALIZATION,
                 GovernanceRejectionReason.INVALID_BOUND_RECEIPT,

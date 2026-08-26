@@ -41,6 +41,7 @@ from ibae.governance import (
     ReceiptStage,
     ReceiptValidator,
     RejectionReceipt,
+    TaskReceipt,
     ToolAuthorityClass,
     ToolPermission,
 )
@@ -686,6 +687,75 @@ def test_tool_admission_invalid_authority_contexts_emit_rejection_receipts():
         is GovernanceRejectionReason.INVALID_BOUND_RECEIPT
     )
     assert foreign.value.receipt.bound_receipt_ids == ()
+
+
+def test_orchestration_binding_invalid_contexts_emit_rejection_receipts():
+    _, wrapper, task, governance, admission, orchestration, *_ = _context()
+    foreign_wrapper = GovernanceWrapper(_policy(version=2))
+    foreign_task, foreign_governance = foreign_wrapper.admit_task(
+        "task.foreign-orchestration",
+        {"claim": "belongs to another governance policy"},
+        requester=PrincipalAuthority.OPENAI_SUPERVISOR,
+    )
+    missing_slot_task = TaskReceipt.from_record(task.canonical_record())
+    object.__delattr__(missing_slot_task, "task_key")
+
+    for candidate_task, candidate_governance in (
+        (object(), governance),
+        (missing_slot_task, governance),
+        (task, object()),
+        (task, foreign_governance),
+        (foreign_task, foreign_governance),
+    ):
+        with pytest.raises(GovernanceRejected) as rejected:
+            wrapper.bind_orchestration(
+                candidate_task,  # type: ignore[arg-type]
+                candidate_governance,  # type: ignore[arg-type]
+                admission,
+                orchestration.tool_admissions,
+            )
+        assert (
+            rejected.value.receipt.reason
+            is GovernanceRejectionReason.INVALID_BOUND_RECEIPT
+        )
+        assert rejected.value.receipt.stage is ReceiptStage.ORCHESTRATION
+        assert rejected.value.receipt.task_id is None
+        assert rejected.value.receipt.bound_receipt_ids == ()
+
+
+def test_execution_binding_invalid_contexts_emit_rejection_receipts():
+    _, wrapper, task, governance, _, orchestration, *_ = _context()
+    foreign_wrapper = GovernanceWrapper(_policy(version=2))
+    foreign_task, foreign_governance = foreign_wrapper.admit_task(
+        "task.foreign-execution",
+        {"claim": "belongs to another governance policy"},
+        requester=PrincipalAuthority.OPENAI_SUPERVISOR,
+    )
+    missing_slot_task = TaskReceipt.from_record(task.canonical_record())
+    object.__delattr__(missing_slot_task, "task_key")
+
+    for candidate_task, candidate_governance, candidate_orchestration in (
+        (object(), governance, orchestration),
+        (missing_slot_task, governance, orchestration),
+        (task, object(), orchestration),
+        (task, foreign_governance, orchestration),
+        (foreign_task, foreign_governance, orchestration),
+        (task, governance, object()),
+    ):
+        with pytest.raises(GovernanceRejected) as rejected:
+            wrapper.bind_execution(
+                candidate_task,  # type: ignore[arg-type]
+                candidate_governance,  # type: ignore[arg-type]
+                candidate_orchestration,  # type: ignore[arg-type]
+                object(),
+            )
+        assert (
+            rejected.value.receipt.reason
+            is GovernanceRejectionReason.INVALID_BOUND_RECEIPT
+        )
+        assert rejected.value.receipt.stage is ReceiptStage.EXECUTION
+        assert rejected.value.receipt.task_id is None
+        assert rejected.value.receipt.bound_receipt_ids == ()
 
 
 def test_read_classes_preserve_declared_cache_and_dependency_semantics():
