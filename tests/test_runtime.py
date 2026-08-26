@@ -257,6 +257,31 @@ def test_maximum_admitted_depth_survives_runtime_envelope_wrapping() -> None:
     assert runtime.snapshot.executions == 1
 
 
+def test_maximum_argument_profiles_survive_command_envelope_wrapping() -> None:
+    deep: object = 0
+    for _ in range(32):
+        deep = [deep]
+    text = "x" * 65_500
+    near_byte_limit = {key: text for key in ("a", "b", "c", "d")}
+    maximum_nodes = [
+        {"a": 0, "b": 0, "c": 0} for _ in range(1_023)
+    ] + [[[0]]]
+
+    for name, arguments in (
+        ("depth", deep),
+        ("bytes", near_byte_limit),
+        ("nodes", maximum_nodes),
+    ):
+        CanonicalValue.from_value(arguments)
+        runtime = RustRuntimeSession(f"maximum-argument-{name}")
+        transition = runtime.execute_read_transition(
+            "read", arguments, DEP_A, lambda name=name: {"case": name}
+        )
+        assert transition.receipt.status == "accepted"
+        assert transition.observation == {"case": name}
+        assert runtime.snapshot.executions == 1
+
+
 def test_runtime_output_profile_represents_full_declared_history_shape() -> None:
     record = CanonicalRuntimeRecord.from_value(
         {"history": ["a" * 64] * 4_096}

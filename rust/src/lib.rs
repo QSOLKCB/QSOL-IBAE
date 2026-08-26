@@ -561,8 +561,8 @@ fn parse_command_value(value: &Value) -> Result<Command, Reason> {
 }
 
 fn parse_command(command_json: &str) -> Result<(Command, Value), (Reason, Option<Value>)> {
-    let value =
-        parse_canonical(command_json).map_err(|_| (Reason::InvalidCanonicalCommand, None))?;
+    let value = parse_runtime_canonical(command_json)
+        .map_err(|_| (Reason::InvalidCanonicalCommand, None))?;
     match parse_command_value(&value) {
         Ok(command) => Ok((command, value)),
         Err(reason) => Err((reason, Some(value))),
@@ -1579,6 +1579,31 @@ mod tests {
         });
         assert_eq!(outcome_receipt(&outcome)["status"], "accepted");
         assert!(parse_runtime_canonical(&outcome).is_ok());
+        assert_eq!(runtime.counters.executions, 1);
+        assert_eq!(runtime.cache.len(), 1);
+    }
+
+    #[test]
+    fn maximum_argument_depth_remains_representable_when_command_is_wrapped() {
+        let mut runtime = core(2, 2, 1, 2);
+        let mut arguments = json!(0);
+        for _ in 0..MAX_CANONICAL_VALUE_DEPTH {
+            arguments = Value::Array(vec![arguments]);
+        }
+        assert!(canonical_value(&arguments).is_ok());
+        let command = canonical_runtime_value(&json!({
+            "admission_id": ADMISSION,
+            "arguments": arguments,
+            "command_type": "execute_read",
+            "dependency_fingerprint": "c",
+            "protocol_version": PROTOCOL_VERSION,
+            "tool_name": "read",
+        }))
+        .unwrap();
+        let outcome = run(&mut runtime, &command, || {
+            Invocation::Observation("1".to_owned())
+        });
+        assert_eq!(outcome_receipt(&outcome)["status"], "accepted");
         assert_eq!(runtime.counters.executions, 1);
         assert_eq!(runtime.cache.len(), 1);
     }

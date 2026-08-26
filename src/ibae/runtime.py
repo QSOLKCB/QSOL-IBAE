@@ -353,7 +353,8 @@ class RustRuntimeSession:
         command: Mapping[str, Any],
         operation: Callable[[], Any] | None = None,
     ) -> RuntimeTransition:
-        return self.dispatch_canonical(CanonicalValue.from_value(command).text, operation)
+        envelope = CanonicalRuntimeRecord.from_value(command)
+        return self.dispatch_canonical(envelope.text, operation)
 
     def execute_read_transition(
         self,
