@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections.abc import Mapping
 from typing import Any
+
+_DOMAIN_PATTERN = re.compile(r"^[a-z][a-z0-9._-]*\.v[1-9][0-9]*$")
 
 
 def _validate_mapping_keys(value: Any) -> None:
@@ -47,6 +50,22 @@ def canonical_json(value: Any) -> str:
 def canonical_fingerprint(value: Any) -> str:
     payload = canonical_json(value).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()
+
+
+def domain_fingerprint(domain: str, value: Any) -> str:
+    """Hash a canonical value under an explicit versioned identity domain.
+
+    The NUL separator prevents a domain suffix from being confused with the
+    beginning of a payload. Domains are deliberately lowercase and versioned
+    so future identity classes cannot silently alias existing records.
+    """
+
+    if not isinstance(domain, str) or not _DOMAIN_PATTERN.fullmatch(domain):
+        raise ValueError(
+            "domain must be a lowercase versioned identifier such as 'ibae.example.v1'"
+        )
+    payload = canonical_json(value).encode("utf-8")
+    return hashlib.sha256(domain.encode("ascii") + b"\0" + payload).hexdigest()
 
 
 def canonical_tool_key(

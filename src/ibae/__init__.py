@@ -1,18 +1,86 @@
 """QSOL-IBAE deterministic execution kernel."""
 
-from .canonical import canonical_fingerprint, canonical_json, canonical_tool_key
+from .canonical import (
+    canonical_fingerprint,
+    canonical_json,
+    canonical_tool_key,
+    domain_fingerprint,
+)
+from .epistemic import (
+    EpistemicClass,
+    EpistemicRecord,
+    EpistemicState,
+    ObservationProvenance,
+)
 from .executor import BudgetExceeded, InvariantExecutor
 from .invariants import BudgetLimits, detect_short_cycle
+from .obligations import (
+    Obligation,
+    ObligationReadiness,
+    ObligationRegistry,
+    ObligationStatus,
+    canonical_obligation_id,
+)
+from .orchestration import (
+    AGENT_PROTOCOL,
+    LOGICAL_CLOCK_PROFILE,
+    ActionProposal,
+    AdmissionDecision,
+    AdmissionReceipt,
+    AdmissionTransition,
+    AuthorityLayer,
+    BatchRejection,
+    BatchStatus,
+    Capability,
+    DecisionStatus,
+    OrchestrationLimits,
+    OrchestrationState,
+    ProposalBatch,
+    RecoveryAction,
+    RejectionReason,
+    ReplaySafety,
+    Strategy,
+    admit_batch,
+)
 from .policy import PolicyViolation, require_openai_remote_provider
 
 __all__ = [
+    "AGENT_PROTOCOL",
+    "LOGICAL_CLOCK_PROFILE",
+    "ActionProposal",
+    "AdmissionDecision",
+    "AdmissionReceipt",
+    "AdmissionTransition",
+    "AuthorityLayer",
+    "BatchRejection",
+    "BatchStatus",
     "BudgetExceeded",
     "BudgetLimits",
+    "Capability",
+    "DecisionStatus",
+    "EpistemicClass",
+    "EpistemicRecord",
+    "EpistemicState",
     "InvariantExecutor",
+    "Obligation",
+    "ObligationReadiness",
+    "ObligationRegistry",
+    "ObligationStatus",
+    "ObservationProvenance",
+    "OrchestrationLimits",
+    "OrchestrationState",
     "PolicyViolation",
+    "ProposalBatch",
+    "RecoveryAction",
+    "RejectionReason",
+    "ReplaySafety",
+    "Strategy",
+    "admit_batch",
     "canonical_fingerprint",
     "canonical_json",
+    "canonical_obligation_id",
     "canonical_tool_key",
     "detect_short_cycle",
+    "domain_fingerprint",
     "require_openai_remote_provider",
 ]

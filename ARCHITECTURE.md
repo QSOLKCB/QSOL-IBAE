@@ -1,6 +1,6 @@
 # QSOL-IBAE Architecture
 
-Status: architecture-contract planning after merged v0.1 kernel.
+Status: frozen architecture contract with v0.2 Python orchestration reference.
 
 QSOL-IBAE is a small OpenAI-exclusive governed execution substrate, not a general-purpose proprietary multi-provider agent framework.
 
@@ -446,8 +446,21 @@ Optional features such as GPU scheduling geometry, local workers, alternative or
 
 ## 13. Current implementation boundary
 
-The merged v0.1 Python kernel currently implements only the deterministic execution foundation: canonicalization, observation reuse, finite request/execution/retry/history bounds, short-cycle detection, and provider policy.
+The merged v0.1 Python kernel implements the deterministic execution foundation: canonicalization, observation reuse, finite request/execution/retry/history bounds, short-cycle detection, and provider policy.
 
-The governance wrapper, deterministic orchestration layer, logical lease system, Rust runtime, OpenAI adapter, GPU path, and local workers described here are **architecture targets, not current implementation claims**.
+The v0.2 Python reference implements deterministic orchestration semantics for:
 
-No implementation PR for those targets should begin until the architecture-contract gate in `ROADMAP.md` is accepted.
+- stable obligation identities and validated dependency DAGs;
+- canonical ready sets and proposal ordering;
+- model proposal versus admitted-action separation;
+- orchestrator-owned replay classification;
+- within-batch deduplication only for replay-safe actions;
+- distinct occurrence identity for mutations/non-idempotent effects;
+- explicit epistemic state classes and dependency-bound state identity;
+- bounded proposal/state/history containers;
+- canonical rejection codes, recovery actions, compact state projection, and logical orchestration ticks;
+- byte-stable, model-free conformance fixtures.
+
+v0.2 remains a Python semantic reference. It does not execute admitted actions, grant continuation leases, own governance receipts, call models, or provide a Rust authority boundary.
+
+The governance wrapper, logical lease system, Rust runtime, OpenAI adapter, GPU path, and local workers described elsewhere are **later architecture targets, not current implementation claims**. The v0.3 Rust phase must not begin until the v0.2 conformance gate is accepted.

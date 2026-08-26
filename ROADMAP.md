@@ -1,8 +1,8 @@
 # QSOL-IBAE Roadmap
 
-Status: architecture-contract planning after merged v0.1 kernel.
+Status: v0.2 deterministic Python orchestration reference implemented for review.
 
-QSOL-IBAE is intentionally developed **invariant-first**. The next implementation PR MUST NOT begin until the architecture, authority boundaries, identity model, logical execution clock, and Python/Rust protocol have been reviewed as contracts.
+QSOL-IBAE is intentionally developed **invariant-first**. The architecture-contract exit gate was accepted by merged PR #2. Each later phase remains blocked on the preceding phase gate.
 
 The project goal is not to create another generic agent framework. It is to create a small OpenAI-exclusive governed execution substrate that reduces redundant work, makes bounded continuation auditable, and moves deterministic bookkeeping out of the model's cognitive workload.
 
@@ -93,7 +93,7 @@ Merged in PR #1.
 - [x] Deterministic micro-benchmark.
 - [x] CI and byte-repeat determinism workflow.
 - [ ] Establish benchmark corpus beyond micro-fixtures.
-- [ ] Freeze v0.1 behavioral semantics after architecture review.
+- [x] Freeze v0.1 behavioral semantics after architecture review.
 
 The current Python kernel is a reference prototype. Future Rust implementation must preserve its admitted semantics unless a versioned contract explicitly changes them.
 
@@ -101,15 +101,17 @@ The current Python kernel is a reference prototype. Future Rust implementation m
 
 # Architecture contract gate — BEFORE the next implementation PR
 
+Accepted by merged PR #2 after review findings were addressed. Unchecked items within A0-A9 remain later executable or benchmark obligations; they do not represent current implementation claims or reopen the accepted contract exit gate.
+
 ## A0 — Layer and authority freeze
 
-- [ ] Freeze the three-layer model: governance, orchestration, execution.
-- [ ] Require `governance != orchestration != execution != benchmark`.
-- [ ] Forbid upward authority promotion by lower layers.
-- [ ] Define the OpenAI supervisor as the only model-level completion authority.
-- [ ] Define future local open-weight workers as candidate-only subordinate workers.
-- [ ] Keep proprietary remote inference structurally OpenAI-only.
-- [ ] Define fail-closed behavior for unknown policy, unknown authority, malformed receipts, and unsupported provider state.
+- [x] Freeze the three-layer model: governance, orchestration, execution.
+- [x] Require `governance != orchestration != execution != benchmark`.
+- [x] Forbid upward authority promotion by lower layers.
+- [x] Define the OpenAI supervisor as the only model-level completion authority.
+- [x] Define future local open-weight workers as candidate-only subordinate workers.
+- [x] Keep proprietary remote inference structurally OpenAI-only.
+- [x] Define fail-closed behavior for unknown policy, unknown authority, malformed receipts, and unsupported provider state.
 
 ### Gate
 
@@ -119,12 +121,12 @@ No implementation may allow a runtime, worker, benchmark result, or orchestratio
 
 Define separate canonical identities for:
 
-- [ ] **Task identity** — what is being attempted.
-- [ ] **Governance identity** — policy/version/authority under which execution is admitted.
-- [ ] **Orchestration identity** — obligation graph and admitted orchestration decisions.
-- [ ] **Execution identity** — canonical admitted actions/observations/transitions.
-- [ ] **Execution-plan identity** — worker/chunk/device/scheduling arrangement where relevant.
-- [ ] **Benchmark receipt** — elapsed time, throughput, token/tool counts, device observations, and other non-correctness performance data.
+- [x] **Task identity** — what is being attempted.
+- [x] **Governance identity** — policy/version/authority under which execution is admitted.
+- [x] **Orchestration identity** — obligation graph and admitted orchestration decisions.
+- [x] **Execution identity** — canonical admitted actions/observations/transitions.
+- [x] **Execution-plan identity** — worker/chunk/device/scheduling arrangement where relevant.
+- [x] **Benchmark receipt** — elapsed time, throughput, token/tool counts, device observations, and other non-correctness performance data.
 
 Correctness identity MUST remain independent of elapsed wall-clock time. Where semantics are unchanged, correctness identity SHOULD remain independent of worker count, chunking, locality, and device assignment.
 
@@ -134,12 +136,12 @@ No benchmark observation may silently become correctness evidence.
 
 ## A2 — Deterministic logical execution clock
 
-- [ ] Define `IBAE-LOGICAL-CLOCK-V1`.
-- [ ] Increment the logical clock from canonical admitted transitions, not elapsed seconds.
+- [x] Define `IBAE-LOGICAL-CLOCK-V1`.
+- [x] Increment the logical clock from canonical admitted transitions, not elapsed seconds.
 - [ ] Define which events consume request quanta, execution quanta, retry quanta, mutation quanta, and lease quanta.
-- [ ] Ensure cache hits still advance canonical request/transition history while consuming zero actual-execution quanta.
-- [ ] Keep wall-clock timing as an observational benchmark field only.
-- [ ] Retain a separate absolute wall-clock watchdog solely as a catastrophic-hang failsafe.
+- [x] Ensure cache hits still advance canonical request/transition history while consuming zero actual-execution quanta.
+- [x] Keep wall-clock timing as an observational benchmark field only.
+- [x] Retain a separate absolute wall-clock watchdog solely as a catastrophic-hang failsafe.
 - [ ] Prove watchdog expiry cannot be mistaken for normal task-completion semantics.
 
 ### Gate
@@ -160,21 +162,21 @@ continuation_leases
 optional model_turn observations
 ```
 
-- [ ] Every authority-bearing budget field uses exact integer accounting.
-- [ ] No model, local worker, tool backend, or accelerator may extend its own budget.
+- [x] Every authority-bearing budget field uses exact integer accounting.
+- [x] No model, local worker, tool backend, or accelerator may extend its own budget.
 - [ ] Establish initial named deterministic task profiles for experiments (`tiny`, `standard`, `extended`, `repository`) without claiming the initial numeric values are optimal.
-- [ ] Treat profile tuning as benchmark-driven research.
-- [ ] Keep task-profile selection/version inside governance/orchestration identity.
+- [x] Treat profile tuning as benchmark-driven research.
+- [x] Keep task-profile selection/version inside governance/orchestration identity.
 
 ## A4 — Progress and obligation semantics
 
-- [ ] Define an explicit obligation record and obligation DAG.
-- [ ] Distinguish **progress** from mere **activity**.
-- [ ] Define objective progress signals such as satisfied obligations, reduced failing tests, reduced unresolved review threads, or reduced unsatisfied acceptance gates.
-- [ ] Do not use model self-reported confidence/completion percentage as sole progress authority.
-- [ ] Define canonical strategy identity.
+- [x] Define an explicit obligation record and obligation DAG.
+- [x] Distinguish **progress** from mere **activity**.
+- [x] Define objective progress signals such as satisfied obligations, reduced failing tests, reduced unresolved review threads, or reduced unsatisfied acceptance gates.
+- [x] Do not use model self-reported confidence/completion percentage as sole progress authority.
+- [x] Define canonical strategy identity.
 - [ ] Define stalled-progress and changed-strategy states.
-- [ ] Define completion preconditions separately from model statements.
+- [x] Define completion preconditions separately from model statements.
 
 ### Gate
 
@@ -197,15 +199,15 @@ The sum of all possible leases must remain finitely bounded by policy before exe
 
 ## A6 — Python/Rust boundary freeze
 
-- [ ] Keep Python as the logic/orchestration layer.
-- [ ] Establish Rust as the exact runtime/accounting/reference execution layer.
-- [ ] Use PyO3 + maturin as the initial in-process bridge unless conformance work proves a smaller interface is preferable.
-- [ ] Do not introduce RPC, daemon, socket, or distributed infrastructure during the initial runtime port.
-- [ ] Define a tiny versioned command/receipt protocol rather than exposing many Rust internals to Python.
+- [x] Keep Python as the logic/orchestration layer.
+- [x] Establish Rust as the exact runtime/accounting/reference execution layer.
+- [x] Use PyO3 + maturin as the initial in-process bridge unless conformance work proves a smaller interface is preferable.
+- [x] Do not introduce RPC, daemon, socket, or distributed infrastructure during the initial runtime port.
+- [x] Define a tiny versioned command/receipt protocol rather than exposing many Rust internals to Python.
 - [ ] Candidate command set: `ADMIT`, `EXECUTE`, `RECORD_OBSERVATION`, `RECORD_RETRY`, `REQUEST_LEASE`, `FINALIZE`.
-- [ ] Require Python/Rust conformance fixtures for every authority-bearing state transition.
-- [ ] Prevent direct Python mutation of Rust-owned authoritative runtime state.
-- [ ] Keep arbitrary Python objects out of correctness identity; cross the boundary through declared canonical records.
+- [x] Require Python/Rust conformance fixtures for every authority-bearing state transition.
+- [x] Prevent direct Python mutation of Rust-owned authoritative runtime state.
+- [x] Keep arbitrary Python objects out of correctness identity; cross the boundary through declared canonical records.
 
 ### Gate
 
@@ -226,17 +228,17 @@ FINALIZATION
 
 The agent-facing surface SHOULD expose only the smallest sufficient canonical projection of runtime state.
 
-- [ ] AI need not reconstruct deterministic bookkeeping from prose.
-- [ ] Expose remaining budgets directly rather than requiring arithmetic by the model.
-- [ ] Expose obligation readiness/blocking directly.
-- [ ] Every rejection has a canonical reason code.
-- [ ] When safe recovery moves exist, return legal next actions.
-- [ ] Separate `observed`, `derived`, `model_proposed`, and `unknown` state classes.
-- [ ] Represent missing/unqueried state as `unknown`, not false.
-- [ ] Expose provenance and validity conditions on reused observations.
-- [ ] Provide a deterministic compact state digest instead of replaying the entire execution transcript every turn.
-- [ ] Expose tool/capability availability at session scope so the supervisor need not rediscover unavailable capabilities repeatedly.
-- [ ] Support batch proposals so independent work can be deduplicated, admitted, cached, and parallelized below the model round-trip boundary.
+- [x] AI need not reconstruct deterministic bookkeeping from prose.
+- [x] Expose remaining budgets directly rather than requiring arithmetic by the model.
+- [x] Expose obligation readiness/blocking directly.
+- [x] Every rejection has a canonical reason code.
+- [x] When safe recovery moves exist, return legal next actions.
+- [x] Separate `observed`, `derived`, `model_proposed`, and `unknown` state classes.
+- [x] Represent missing/unqueried state as `unknown`, not false.
+- [x] Expose provenance and validity conditions on reused observations.
+- [x] Provide a deterministic compact state digest instead of replaying the entire execution transcript every turn.
+- [x] Expose tool/capability availability at session scope so the supervisor need not rediscover unavailable capabilities repeatedly.
+- [x] Support batch proposals so independent work can be deduplicated, admitted, cached, and parallelized below the model round-trip boundary.
 
 ### Gate
 
@@ -274,20 +276,20 @@ Required non-promotion rule:
 
 > **Execution adjacency does not imply orchestration meaning.**
 
-- [ ] Any `C5 x K2 x C3`, CRT, 30/32 lane, toroidal, sampling, or other geometry must remain an execution/scheduling representation unless a separately reviewed IBAE contract gives it semantics.
-- [ ] Do not make two IGM padding lanes semantic metadata lanes by default.
+- [x] Any `C5 x K2 x C3`, CRT, 30/32 lane, toroidal, sampling, or other geometry must remain an execution/scheduling representation unless a separately reviewed IBAE contract gives it semantics.
+- [x] Do not make two IGM padding lanes semantic metadata lanes by default.
 - [ ] Benchmark `30 work + 2 inactive padding + metadata sidecar` against alternatives such as `32 work + metadata sidecar` before freezing a GPU layout.
 
 ### Architecture-contract exit gate
 
 Before the next implementation PR:
 
-- [ ] `ARCHITECTURE.md`, `INVARIANTS.md`, and this roadmap agree on layer authority.
-- [ ] Every planned MUST invariant has an ID and implementation phase.
-- [ ] Identity-bearing versus observational fields are explicitly classified.
-- [ ] Python/Rust authority boundary is explicit.
-- [ ] AI-facing protocol has explicit state classes and rejection semantics.
-- [ ] GPU geometry remains optional/deferred and cannot define correctness.
+- [x] `ARCHITECTURE.md`, `INVARIANTS.md`, and this roadmap agree on layer authority.
+- [x] Every planned MUST invariant has an ID and implementation phase.
+- [x] Identity-bearing versus observational fields are explicitly classified.
+- [x] Python/Rust authority boundary is explicit.
+- [x] AI-facing protocol has explicit state classes and rejection semantics.
+- [x] GPU geometry remains optional/deferred and cannot define correctness.
 
 ---
 
@@ -297,22 +299,24 @@ Before the next implementation PR:
 
 Goal: prove orchestration semantics before moving authority into Rust.
 
-- [ ] Obligation registry and canonical obligation IDs.
-- [ ] Dependency DAG with deterministic ready-set calculation.
-- [ ] Canonical ordering/admission of equally ready actions.
-- [ ] Model proposal versus deterministic admission separation.
-- [ ] Canonical strategy identity.
-- [ ] Duplicate-action elimination by canonical identity.
-- [ ] Safe batch proposal representation.
-- [ ] Explicit observed/derived/proposed/unknown state separation.
-- [ ] Canonical state digest.
-- [ ] Canonical rejection reason codes and legal recovery moves.
-- [ ] Logical-clock reference semantics.
-- [ ] Deterministic orchestration fixtures with no model dependency.
+- [x] Obligation registry and canonical obligation IDs.
+- [x] Dependency DAG with deterministic ready-set calculation.
+- [x] Canonical ordering/admission of equally ready actions.
+- [x] Model proposal versus deterministic admission separation.
+- [x] Canonical strategy identity.
+- [x] Duplicate-action elimination by canonical identity, restricted to orchestrator-classified replay-safe actions.
+- [x] Safe batch proposal representation with occurrence identity for effectful actions.
+- [x] Explicit observed/derived/proposed/unknown state separation.
+- [x] Canonical state digest.
+- [x] Canonical rejection reason codes, relevant invariant/authority fields, and legal recovery moves.
+- [x] Logical-clock reference semantics.
+- [x] Deterministic orchestration fixtures with no model dependency.
 
 ### v0.2 gate
 
 Identical canonical task state + identical proposal set + identical policy must yield identical admitted orchestration decisions.
+
+Gate evidence: unit/regression coverage plus `fixtures/v0.2/orchestration-reference.json`, regenerated under multiple `PYTHONHASHSEED` values and byte-compared in CI. v0.3 remains blocked until this PR is reviewed and the v0.2 gate is accepted.
 
 ## v0.3 — Rust Deterministic Runtime
 

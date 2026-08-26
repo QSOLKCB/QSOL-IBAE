@@ -23,3 +23,9 @@ jobs:
           python benchmarks/basic.py > /tmp/run-b.json
           cmp /tmp/run-a.json /tmp/run-b.json
           cat /tmp/run-a.json
+      - name: Repeat v0.2 orchestration across hash seeds
+        run: |
+          PYTHONHASHSEED=1 python tools/render_v0_2_fixture.py > /tmp/orchestration-a.json
+          PYTHONHASHSEED=8675309 python tools/render_v0_2_fixture.py > /tmp/orchestration-b.json
+          cmp /tmp/orchestration-a.json /tmp/orchestration-b.json
+          cmp fixtures/v0.2/orchestration-reference.json /tmp/orchestration-a.json

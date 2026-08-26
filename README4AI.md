@@ -6,9 +6,11 @@ QSOL-IBAE is an invariant-bounded execution substrate intended to sit beneath an
 
 ## CURRENT PHASE
 
-Merged v0.1 deterministic kernel plus **architecture-contract planning**.
+Merged v0.1 deterministic kernel and architecture contract, plus the **v0.2 deterministic Python orchestration reference**.
 
-The next required work is review/freeze of the governance/orchestration/runtime architecture. No OpenAI SDK integration, Rust authority runtime, GPU execution, continuation lease implementation, or local-worker integration is currently claimed.
+v0.2 implements canonical obligations/DAG readiness, proposal/admission separation, replay-safe-only batch deduplication, effect occurrence identity, explicit epistemic state classes, canonical strategy/state/receipt identities, structured rejection/recovery records, and `IBAE-LOGICAL-CLOCK-V1` reference semantics.
+
+The v0.2 gate requires byte-identical admission decisions for identical canonical state, proposal set, and policy. No OpenAI SDK integration, Rust authority runtime, GPU execution, continuation lease implementation, governance receipt layer, or local-worker integration is claimed. v0.3 Rust work remains blocked until v0.2 is reviewed and accepted.
 
 ## ARCHITECTURAL AUTHORITY
 
