@@ -286,9 +286,11 @@ A strategy change used to justify continuation must have a canonical identity di
 
 ## IBAE-GOV-001 — OpenAI-only remote proprietary inference
 
-**ENFORCED MUST / architecture authority continues**
+**ENFORCED MUST**
 
 Any remote proprietary model provider admitted by the project must canonicalize to `openai`. Other proprietary remote providers are outside project scope.
+
+This policy is implemented now and remains a continuing architectural obligation for all future provider/model integration layers.
 
 ## IBAE-GOV-002 — OpenAI supervisor completion authority
 
@@ -334,7 +336,7 @@ No final execution may be labelled accepted without the required governance/orch
 
 **ARCHITECTURE MUST**
 
-OpenAI supplies intelligence and proposed actions. The deterministic orchestrator canonicalizes, deduplicates, dependency-checks, budget-checks, and admits/rejects those actions.
+OpenAI supplies intelligence and proposed actions. The deterministic orchestrator canonicalizes, classifies action authority/replay safety, deduplicates only where replay-safe equivalence is proven, dependency-checks, budget-checks, and admits/rejects those actions.
 
 ## IBAE-ORCH-002 — Ready-set calculation is deterministic
 
@@ -342,11 +344,13 @@ OpenAI supplies intelligence and proposed actions. The deterministic orchestrato
 
 For identical obligation/DAG state, policy, and admitted observations, the ready set is identical.
 
-## IBAE-ORCH-003 — Duplicate work is eliminated before execution where provably equivalent
+## IBAE-ORCH-003 — Duplicate elimination is replay-safe only
 
 **ARCHITECTURE MUST**
 
-Canonical equivalent actions sharing valid dependency state must not be executed repeatedly merely because they were proposed repeatedly.
+Canonical equivalence and unchanged dependency state are sufficient for deduplication only for actions whose authority class is cacheable/read-only or is otherwise explicitly proven replay-safe under the active contract.
+
+Mutations, non-idempotent external effects, and any action with occurrence-sensitive semantics must preserve each admitted occurrence even when canonical arguments are identical. Repeated proposal does not by itself authorize suppressing a required effect.
 
 ## IBAE-ORCH-004 — Batch admission preserves semantics
 
@@ -365,6 +369,12 @@ An action that depends on an unsatisfied obligation/observation cannot be made r
 **ARCHITECTURE MUST**
 
 Obligation graphs, ready sets, pending proposals, and retained orchestration history require explicit bounds or deterministic streaming/compaction policies.
+
+## IBAE-ORCH-007 — Occurrence identity is preserved for effectful actions
+
+**ARCHITECTURE MUST**
+
+Each admitted mutation or non-idempotent action has occurrence identity distinct from content equivalence. An orchestrator may reorder an effectful action only when its dependency/ordering contract permits it, and may never merge two required occurrences into one execution merely because their payloads match.
 
 ---
 
@@ -477,7 +487,7 @@ Subordinate workers receive only the minimum task packet, input evidence, constr
 
 **ARCHITECTURE SHOULD**
 
-The supervisor may propose multiple actions in one structured batch so deterministic orchestration can deduplicate, reuse, dependency-order, and parallelize them without requiring one model round-trip per low-level tool request.
+The supervisor may propose multiple actions in one structured batch so deterministic orchestration can deduplicate only replay-safe equivalent work, reuse valid observations, dependency-order actions, preserve occurrence-sensitive mutations, and parallelize independent work without requiring one model round-trip per low-level tool request.
 
 ---
 
