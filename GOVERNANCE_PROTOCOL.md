@@ -63,7 +63,9 @@ bounded coverage: one valid tool admission for every unique admitted action,
 with no extras or duplicates, and every deduplication must point to an earlier
 admitted proposal with the same action identity. A domain-separated
 authorization-manifest identity and exact count commit to at most 256 resulting
-action-to-permission bindings.
+action-to-permission bindings. The accepted v0.2 governed batch currently
+admits at most 64 actions; 256 is the reducer's independent defensive ceiling,
+not a larger end-to-end orchestration capacity.
 
 The current Rust command family can execute only cacheable reads. Consequently
 only governed `pure_read` and `snapshot_read` entries can enter a finalizable
