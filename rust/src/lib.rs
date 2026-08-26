@@ -1392,7 +1392,11 @@ impl EvidenceRuntimeBoundary {
 
 /// Non-constructible proof that one exact runtime receipt came from a live
 /// native dispatch in this process. It is not producer authentication.
-#[pyclass(name = "NativeRuntimeReceiptSeal", module = "ibae._runtime", unsendable)]
+#[pyclass(
+    name = "NativeRuntimeReceiptSeal",
+    module = "ibae._runtime",
+    unsendable
+)]
 struct NativeRuntimeReceiptSeal {
     admission_id: String,
     // v0.3 record_retry receipts intentionally omit tool/argument/dependency
@@ -1436,7 +1440,10 @@ impl NativeRuntimeReceiptSeal {
             .and_then(Value::as_object)
             .ok_or(CanonicalError)?;
         let budget_value = |name: &str| -> Result<u64, CanonicalError> {
-            budget.get(name).and_then(Value::as_u64).ok_or(CanonicalError)
+            budget
+                .get(name)
+                .and_then(Value::as_u64)
+                .ok_or(CanonicalError)
         };
         let status = receipt
             .get("status")
@@ -1466,9 +1473,7 @@ impl NativeRuntimeReceiptSeal {
         let optional_identity = |name: &str| -> Result<Option<String>, CanonicalError> {
             match receipt.get(name) {
                 Some(Value::Null) => Ok(None),
-                Some(Value::String(value)) if is_fingerprint(value) => {
-                    Ok(Some(value.to_owned()))
-                }
+                Some(Value::String(value)) if is_fingerprint(value) => Ok(Some(value.to_owned())),
                 _ => Err(CanonicalError),
             }
         };
@@ -1496,16 +1501,12 @@ impl NativeRuntimeReceiptSeal {
             _ => return Err(CanonicalError),
         };
         if command_type == "execute_read"
-            && (arguments_id.is_none()
-                || dependency_fingerprint.is_none()
-                || tool_name.is_none())
+            && (arguments_id.is_none() || dependency_fingerprint.is_none() || tool_name.is_none())
         {
             return Err(CanonicalError);
         }
         if command_type == "record_retry"
-            && (arguments_id.is_some()
-                || dependency_fingerprint.is_some()
-                || tool_name.is_some())
+            && (arguments_id.is_some() || dependency_fingerprint.is_some() || tool_name.is_some())
         {
             return Err(CanonicalError);
         }
@@ -1562,7 +1563,12 @@ impl NativeRuntimeReceiptSeal {
         {
             return false;
         }
-        match (&self.rejection, &item.failure, self.status.as_str(), item.status.as_str()) {
+        match (
+            &self.rejection,
+            &item.failure,
+            self.status.as_str(),
+            item.status.as_str(),
+        ) {
             (None, None, "accepted", "passed") => true,
             (Some(expected), Some((reason, detail)), "rejected", "rejected") => {
                 expected.get("reason_code").and_then(Value::as_str) == Some(reason.as_str())
@@ -1635,7 +1641,7 @@ struct ChildEvidence {
 
 enum EvidenceItem {
     Case(EvidenceCase),
-    Child(ChildEvidence),
+    Child(Box<ChildEvidence>),
 }
 
 #[derive(Clone)]
@@ -1819,7 +1825,10 @@ fn parse_case_counts(value: &Value) -> Result<EvidenceCaseCounts, &'static str> 
 }
 
 fn evidence_chain_seed(domain: &str) -> String {
-    domain_fingerprint(domain, "{\"profile\":\"IBAE-COMPACT-EVIDENCE-COUNTS-AND-IDENTITIES-V1\"}")
+    domain_fingerprint(
+        domain,
+        "{\"profile\":\"IBAE-COMPACT-EVIDENCE-COUNTS-AND-IDENTITIES-V1\"}",
+    )
 }
 
 fn evidence_chain_update(
@@ -1852,9 +1861,7 @@ fn update_fast_fold(mut state: u64, item_type: &str, canonical_item: &str) -> u6
 }
 
 fn parse_case_item(value: &Value) -> Result<EvidenceCase, &'static str> {
-    let mapping = value
-        .as_object()
-        .ok_or("evidence case must be an object")?;
+    let mapping = value.as_object().ok_or("evidence case must be an object")?;
     if !object_has_exact_keys(
         mapping,
         &[
@@ -1941,22 +1948,23 @@ fn parse_case_item(value: &Value) -> Result<EvidenceCase, &'static str> {
                     "runtime_receipt_id",
                     "session_id",
                 ],
-            ) => {
-                let source_identity = |name: &str| -> Result<String, &'static str> {
-                    source
-                        .get(name)
-                        .and_then(Value::as_str)
-                        .filter(|identity| is_fingerprint(identity))
-                        .map(str::to_owned)
-                        .ok_or("runtime evidence source identity is invalid")
-                };
-                Some(RuntimeEvidenceSource {
-                    prior_state_id: source_identity("prior_state_id")?,
-                    resulting_state_id: source_identity("resulting_state_id")?,
-                    runtime_receipt_id: source_identity("runtime_receipt_id")?,
-                    session_id: source_identity("session_id")?,
-                })
-            }
+            ) =>
+        {
+            let source_identity = |name: &str| -> Result<String, &'static str> {
+                source
+                    .get(name)
+                    .and_then(Value::as_str)
+                    .filter(|identity| is_fingerprint(identity))
+                    .map(str::to_owned)
+                    .ok_or("runtime evidence source identity is invalid")
+            };
+            Some(RuntimeEvidenceSource {
+                prior_state_id: source_identity("prior_state_id")?,
+                resulting_state_id: source_identity("resulting_state_id")?,
+                runtime_receipt_id: source_identity("runtime_receipt_id")?,
+                session_id: source_identity("session_id")?,
+            })
+        }
         _ => return Err("runtime evidence source does not match the v1 schema"),
     };
     Ok(EvidenceCase {
@@ -1996,14 +2004,13 @@ fn parse_child_receipt(value: &Value) -> Result<ChildEvidence, &'static str> {
     ) {
         return Err("child evidence receipt does not match the v1 schema");
     }
-    if mapping.get("protocol_version").and_then(Value::as_str)
-        != Some(EVIDENCE_PROTOCOL_VERSION)
+    if mapping.get("protocol_version").and_then(Value::as_str) != Some(EVIDENCE_PROTOCOL_VERSION)
         || mapping.get("evidence_profile").and_then(Value::as_str) != Some(EVIDENCE_PROFILE)
     {
         return Err("child evidence profile is unsupported");
     }
-    let full_canonical = canonical_value(value)
-        .map_err(|_| "child evidence receipt is not canonicalizable")?;
+    let full_canonical =
+        canonical_value(value).map_err(|_| "child evidence receipt is not canonicalizable")?;
     if full_canonical.len() > MAX_COMPACT_EVIDENCE_BYTES {
         return Err("child evidence receipt exceeds its fixed byte ceiling");
     }
@@ -2087,7 +2094,12 @@ fn parse_child_receipt(value: &Value) -> Result<ChildEvidence, &'static str> {
         .filter(|item| {
             object_has_exact_keys(
                 item,
-                &["count", "details_available", "details_truncated", "first_index"],
+                &[
+                    "count",
+                    "details_available",
+                    "details_truncated",
+                    "first_index",
+                ],
             )
         })
         .ok_or("child evidence failure summary is invalid")?;
@@ -2096,9 +2108,7 @@ fn parse_child_receipt(value: &Value) -> Result<ChildEvidence, &'static str> {
         .get("details_truncated")
         .and_then(Value::as_bool)
         .ok_or("child evidence failure truncation flag is invalid")?;
-    if exact_json_u64(failure, "count")? != failure_count
-        || details_available > failure_count
-    {
+    if exact_json_u64(failure, "count")? != failure_count || details_available > failure_count {
         return Err("child evidence failure summary is inconsistent");
     }
     let _first_failure_index = match failure.get("first_index") {
@@ -2180,18 +2190,15 @@ fn parse_evidence_item(canonical_item: &str) -> Result<EvidenceItem, &'static st
     if canonical_item.len() > MAX_EVIDENCE_CASE_BYTES {
         return Err("evidence item exceeds its hard byte limit");
     }
-    let value = parse_canonical(canonical_item).map_err(|_| "evidence item is not canonical JSON")?;
-    let mapping = value
-        .as_object()
-        .ok_or("evidence item must be an object")?;
+    let value =
+        parse_canonical(canonical_item).map_err(|_| "evidence item is not canonical JSON")?;
+    let mapping = value.as_object().ok_or("evidence item must be an object")?;
     match mapping.get("item_type").and_then(Value::as_str) {
         Some("case") => parse_case_item(&value).map(EvidenceItem::Case),
         Some("child_receipt") => {
-            if !object_has_exact_keys(
-                mapping,
-                &["item_type", "protocol_version", "receipt"],
-            ) || mapping.get("protocol_version").and_then(Value::as_str)
-                != Some(EVIDENCE_PROTOCOL_VERSION)
+            if !object_has_exact_keys(mapping, &["item_type", "protocol_version", "receipt"])
+                || mapping.get("protocol_version").and_then(Value::as_str)
+                    != Some(EVIDENCE_PROTOCOL_VERSION)
             {
                 return Err("child evidence item does not match the v1 schema");
             }
@@ -2200,7 +2207,7 @@ fn parse_evidence_item(canonical_item: &str) -> Result<EvidenceItem, &'static st
                     .get("receipt")
                     .ok_or("child evidence receipt is required")?,
             )
-            .map(EvidenceItem::Child)
+            .map(|child| EvidenceItem::Child(Box::new(child)))
         }
         _ => Err("unsupported evidence item variant"),
     }
@@ -2244,11 +2251,7 @@ impl EvidenceCore {
         max_failure_details: u64,
         enable_fast_fold: bool,
     ) -> Result<Self, &'static str> {
-        for identity in [
-            task_identity,
-            governance_identity,
-            orchestration_identity,
-        ] {
+        for identity in [task_identity, governance_identity, orchestration_identity] {
             if !is_fingerprint(identity) {
                 return Err("evidence bound identities must be lowercase SHA-256 fingerprints");
             }
@@ -2360,14 +2363,14 @@ impl EvidenceCore {
         }
         let item = parse_evidence_item(canonical_item)?;
         let child = match &item {
-            EvidenceItem::Child(child) => child,
+            EvidenceItem::Child(child) => child.as_ref(),
             _ => return Err("child evidence admission requires a child receipt"),
         };
         if child.receipt_id != seal.receipt_id {
             return Err("child evidence does not match its opaque receipt seal");
         }
-        let value = parse_canonical(canonical_item)
-            .map_err(|_| "child evidence item is not canonical")?;
+        let value =
+            parse_canonical(canonical_item).map_err(|_| "child evidence item is not canonical")?;
         let receipt = value
             .get("receipt")
             .ok_or("child evidence receipt is required")?;
@@ -2458,9 +2461,7 @@ impl EvidenceCore {
                                 if boundary.session_id != source.session_id
                                     || boundary.final_state_id != source.prior_state_id
                                 {
-                                    return Err(
-                                        "runtime evidence source continuity is invalid",
-                                    );
+                                    return Err("runtime evidence source continuity is invalid");
                                 }
                                 boundary.final_state_id = source.resulting_state_id.clone();
                                 boundary.last_runtime_receipt_id =
@@ -2505,16 +2506,15 @@ impl EvidenceCore {
                 self.aggregate_receipt_identity = receipt_aggregate;
             }
             EvidenceItem::Child(item) => {
+                let item = *item;
                 if item.task_identity != self.task_identity
                     || item.governance_identity != self.governance_identity
                     || item.orchestration_identity != self.orchestration_identity
                 {
                     return Err("child evidence authority context does not match its parent");
                 }
-                if item.authorization_manifest_identity
-                    != self.authorization_manifest_identity
-                    || item.authorization_manifest_count
-                        != self.authorization_manifest.len() as u64
+                if item.authorization_manifest_identity != self.authorization_manifest_identity
+                    || item.authorization_manifest_count != self.authorization_manifest.len() as u64
                 {
                     return Err("child evidence authorization manifest does not match its parent");
                 }
@@ -2552,7 +2552,7 @@ impl EvidenceCore {
                     &self.aggregate_receipt_identity,
                     ordinal,
                     "child_receipt",
-                    &item.receipt_id,
+                    &item.aggregate_receipt_identity,
                 )?;
                 self.case_counts = prospective_counts;
                 self.counters = prospective_counters;
@@ -2789,8 +2789,8 @@ impl EvidenceCore {
             .as_object_mut()
             .expect("evidence expansion is an object")
             .insert("expansion_id".to_owned(), Value::String(expansion_id));
-        let canonical = canonical_value(&expansion)
-            .map_err(|_| "evidence expansion is not canonicalizable")?;
+        let canonical =
+            canonical_value(&expansion).map_err(|_| "evidence expansion is not canonicalizable")?;
         if canonical.len() > MAX_EVIDENCE_EXPANSION_BYTES {
             return Err("evidence expansion exceeds its hard byte limit");
         }
@@ -2799,7 +2799,11 @@ impl EvidenceCore {
 }
 
 /// Non-constructible seal for one exact aggregate summary emitted by Rust.
-#[pyclass(name = "NativeEvidenceSummarySeal", module = "ibae._runtime", unsendable)]
+#[pyclass(
+    name = "NativeEvidenceSummarySeal",
+    module = "ibae._runtime",
+    unsendable
+)]
 struct NativeEvidenceSummarySeal {
     canonical: Arc<str>,
     source_bound: bool,
@@ -2817,7 +2821,11 @@ impl NativeEvidenceSummarySeal {
 }
 
 /// Non-constructible seal for one exact compact receipt emitted by Rust.
-#[pyclass(name = "NativeEvidenceReceiptSeal", module = "ibae._runtime", unsendable)]
+#[pyclass(
+    name = "NativeEvidenceReceiptSeal",
+    module = "ibae._runtime",
+    unsendable
+)]
 struct NativeEvidenceReceiptSeal {
     canonical: Arc<str>,
     receipt_id: String,
@@ -2842,7 +2850,11 @@ impl NativeEvidenceReceiptSeal {
 }
 
 /// Opaque, bounded streaming reducer for compact deterministic evidence.
-#[pyclass(name = "NativeEvidenceAccumulator", module = "ibae._runtime", unsendable)]
+#[pyclass(
+    name = "NativeEvidenceAccumulator",
+    module = "ibae._runtime",
+    unsendable
+)]
 struct NativeEvidenceAccumulator {
     core: EvidenceCore,
 }
@@ -2944,9 +2956,8 @@ impl NativeEvidenceAccumulator {
             .core
             .finalize(execution_identity)
             .map_err(PyValueError::new_err)?;
-        let value = parse_canonical(&canonical).map_err(|_| {
-            PyValueError::new_err("finalized compact evidence is not canonical")
-        })?;
+        let value = parse_canonical(&canonical)
+            .map_err(|_| PyValueError::new_err("finalized compact evidence is not canonical"))?;
         let receipt_id = value["receipt_id"]
             .as_str()
             .ok_or_else(|| PyValueError::new_err("compact evidence has no receipt identity"))?
@@ -3603,7 +3614,8 @@ mod tests {
 
         let mut many = evidence_core(MAX_EVIDENCE_CASES, 8, true);
         for seed in 1..=50_000 {
-            many.ingest_structural(&evidence_case(seed, "passed")).unwrap();
+            many.ingest_structural(&evidence_case(seed, "passed"))
+                .unwrap();
         }
         let many_receipt = seal_and_finalize(&mut many);
         assert!(one_receipt.len() <= MAX_COMPACT_EVIDENCE_BYTES);
@@ -3648,12 +3660,16 @@ mod tests {
         assert!(empty.aggregate_summary().is_err());
         assert!(empty.finalize(&evidence_identity('4')).is_err());
 
-        empty.ingest_structural(&evidence_case(1, "passed")).unwrap();
+        empty
+            .ingest_structural(&evidence_case(1, "passed"))
+            .unwrap();
         let summary = empty.aggregate_summary().unwrap();
         assert!(parse_canonical(&summary).unwrap()["summary_id"]
             .as_str()
             .is_some_and(is_fingerprint));
-        assert!(empty.ingest_structural(&evidence_case(2, "passed")).is_err());
+        assert!(empty
+            .ingest_structural(&evidence_case(2, "passed"))
+            .is_err());
         assert!(empty.finalize(&evidence_identity('4')).is_ok());
         assert!(empty.finalize(&evidence_identity('5')).is_err());
     }
@@ -3759,7 +3775,9 @@ mod tests {
             "protocol_version": PROTOCOL_VERSION,
         }))
         .unwrap();
-        let unknown = run(&mut runtime, &unknown_command, || Invocation::OperationFailed);
+        let unknown = run(&mut runtime, &unknown_command, || {
+            Invocation::OperationFailed
+        });
         let mut guarded = runtime_evidence_core(&first, 2, true);
         ingest_runtime_outcome(&mut guarded, &first).unwrap();
         let prior_root = guarded.aggregate_receipt_identity.clone();
@@ -3808,7 +3826,10 @@ mod tests {
         let first_seen_hit = run(&mut stale_runtime, &second_command, || {
             panic!("the v0.3 cache reuses the earlier semantic read")
         });
-        assert_eq!(outcome_receipt(&first_seen_hit)["cache_status"], "cache_hit");
+        assert_eq!(
+            outcome_receipt(&first_seen_hit)["cache_status"],
+            "cache_hit"
+        );
         let mut evidence = runtime_evidence_core(&first_seen_hit, 1, true);
         let prior_root = evidence.aggregate_receipt_identity.clone();
         assert!(ingest_runtime_outcome(&mut evidence, &first_seen_hit).is_err());
@@ -3874,6 +3895,63 @@ mod tests {
         let child_receipt = parse_canonical(&seal_and_finalize(&mut child)).unwrap();
         let child_receipt_text = canonical_value(&child_receipt).unwrap();
         let child_receipt_id = child_receipt["receipt_id"].as_str().unwrap().to_owned();
+        let child_aggregate_admission_identity = child_receipt["aggregate_identities"]
+            ["admissions"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let child_aggregate_input_identity = child_receipt["aggregate_identities"]["inputs"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let child_aggregate_receipt_identity = child_receipt["aggregate_identities"]["receipts"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let child_aggregate_result_identity = child_receipt["aggregate_identities"]["results"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let expected_parent_admission_aggregate = evidence_chain_update(
+            EVIDENCE_ADMISSION_DOMAIN,
+            &evidence_chain_seed(EVIDENCE_ADMISSION_DOMAIN),
+            0,
+            "child_receipt",
+            &child_aggregate_admission_identity,
+        )
+        .unwrap();
+        let expected_parent_input_aggregate = evidence_chain_update(
+            EVIDENCE_INPUT_DOMAIN,
+            &evidence_chain_seed(EVIDENCE_INPUT_DOMAIN),
+            0,
+            "child_receipt",
+            &child_aggregate_input_identity,
+        )
+        .unwrap();
+        let expected_parent_receipt_aggregate = evidence_chain_update(
+            EVIDENCE_CASE_RECEIPT_DOMAIN,
+            &evidence_chain_seed(EVIDENCE_CASE_RECEIPT_DOMAIN),
+            0,
+            "child_receipt",
+            &child_aggregate_receipt_identity,
+        )
+        .unwrap();
+        let transport_receipt_aggregate = evidence_chain_update(
+            EVIDENCE_CASE_RECEIPT_DOMAIN,
+            &evidence_chain_seed(EVIDENCE_CASE_RECEIPT_DOMAIN),
+            0,
+            "child_receipt",
+            &child_receipt_id,
+        )
+        .unwrap();
+        let expected_parent_result_aggregate = evidence_chain_update(
+            EVIDENCE_RESULT_DOMAIN,
+            &evidence_chain_seed(EVIDENCE_RESULT_DOMAIN),
+            0,
+            "child_receipt",
+            &child_aggregate_result_identity,
+        )
+        .unwrap();
         let child_item = canonical_value(&json!({
             "item_type": "child_receipt",
             "protocol_version": EVIDENCE_PROTOCOL_VERSION,
@@ -3890,8 +3968,34 @@ mod tests {
         let parent = parse_canonical(&seal_and_finalize(&mut parent)).unwrap();
         assert_eq!(parent["case_counts"]["total"], 2);
         assert_eq!(parent["item_counts"]["child_receipts"], 1);
-        assert_eq!(parent["bound_identities"]["execution"], evidence_identity('4'));
-        assert_ne!(parent["receipt_id"], parent["bound_identities"]["execution"]);
+        assert_eq!(
+            parent["aggregate_identities"]["admissions"],
+            expected_parent_admission_aggregate
+        );
+        assert_eq!(
+            parent["aggregate_identities"]["inputs"],
+            expected_parent_input_aggregate
+        );
+        assert_eq!(
+            parent["aggregate_identities"]["receipts"],
+            expected_parent_receipt_aggregate
+        );
+        assert_eq!(
+            parent["aggregate_identities"]["results"],
+            expected_parent_result_aggregate
+        );
+        assert_ne!(
+            parent["aggregate_identities"]["receipts"],
+            transport_receipt_aggregate
+        );
+        assert_eq!(
+            parent["bound_identities"]["execution"],
+            evidence_identity('4')
+        );
+        assert_ne!(
+            parent["receipt_id"],
+            parent["bound_identities"]["execution"]
+        );
     }
 
     #[test]

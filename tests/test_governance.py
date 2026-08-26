@@ -638,6 +638,56 @@ def test_only_orchestrator_can_admit_tools_and_unknown_tools_fail_closed():
     assert unknown.value.receipt.reason is GovernanceRejectionReason.UNKNOWN_TOOL_PERMISSION
 
 
+def test_tool_admission_invalid_authority_contexts_emit_rejection_receipts():
+    _, wrapper, _, governance, *_ = _context()
+    decision, proposal, capability, dependency_state_id = _tool_bundle(
+        "read.pure",
+        ToolAuthorityClass.PURE_READ,
+        {},
+        label="invalid-governance-context",
+    )
+
+    with pytest.raises(GovernanceRejected) as malformed:
+        wrapper.admit_tool(
+            object(),  # type: ignore[arg-type]
+            governance,
+            decision,
+            proposal,
+            capability,
+            ToolAuthorityClass.PURE_READ,
+            dependency_state_id=dependency_state_id,
+            requester=PrincipalAuthority.DETERMINISTIC_ORCHESTRATOR,
+        )
+    assert (
+        malformed.value.receipt.reason
+        is GovernanceRejectionReason.INVALID_BOUND_RECEIPT
+    )
+    assert malformed.value.receipt.bound_receipt_ids == ()
+
+    foreign_wrapper = GovernanceWrapper(_policy(version=2))
+    foreign_task, foreign_governance = foreign_wrapper.admit_task(
+        "task.foreign",
+        {"claim": "belongs to another governance policy"},
+        requester=PrincipalAuthority.OPENAI_SUPERVISOR,
+    )
+    with pytest.raises(GovernanceRejected) as foreign:
+        wrapper.admit_tool(
+            foreign_task,
+            foreign_governance,
+            decision,
+            proposal,
+            capability,
+            ToolAuthorityClass.PURE_READ,
+            dependency_state_id=dependency_state_id,
+            requester=PrincipalAuthority.DETERMINISTIC_ORCHESTRATOR,
+        )
+    assert (
+        foreign.value.receipt.reason
+        is GovernanceRejectionReason.INVALID_BOUND_RECEIPT
+    )
+    assert foreign.value.receipt.bound_receipt_ids == ()
+
+
 def test_read_classes_preserve_declared_cache_and_dependency_semantics():
     _, wrapper, task, governance, *_ = _context()
     pure_decision, pure_proposal, pure_capability, pure_dependency = _tool_bundle(
@@ -1770,6 +1820,28 @@ def test_rejection_receipt_tampering_and_unknown_reasons_fail_closed():
     unknown["reason"] = "IBAE-REJECT-GUESSED"
     with pytest.raises(ValueError, match="unknown enum"):
         ReceiptValidator.validate_rejection(unknown)
+
+
+def test_rejection_receipt_canonically_orders_bound_receipt_id_sets():
+    bound_ids = {_id("bound-z"), _id("bound-a"), _id("bound-m")}
+    from_set = RejectionReceipt(
+        stage=ReceiptStage.GOVERNANCE,
+        reason=GovernanceRejectionReason.INVALID_BOUND_RECEIPT,
+        task_id=None,
+        governance_id=None,
+        invariant_ids=("IBAE-GOV-007",),
+        bound_receipt_ids=bound_ids,
+    )
+    from_reverse = RejectionReceipt(
+        stage=ReceiptStage.GOVERNANCE,
+        reason=GovernanceRejectionReason.INVALID_BOUND_RECEIPT,
+        task_id=None,
+        governance_id=None,
+        invariant_ids=("IBAE-GOV-007",),
+        bound_receipt_ids=reversed(sorted(bound_ids)),
+    )
+    assert from_set.bound_receipt_ids == tuple(sorted(bound_ids))
+    assert from_set.canonical_record() == from_reverse.canonical_record()
 
 
 def test_cross_policy_receipts_cannot_be_rebound():

@@ -193,9 +193,10 @@ def _bounded_fingerprints(
     supplied = materialize_bounded_iterable(name, values, limit=limit)
     for value in supplied:
         require_fingerprint(name.removesuffix("s"), value)
-    if len(supplied) != len(set(supplied)):
+    normalized = tuple(sorted(supplied))
+    if len(normalized) != len(set(normalized)):
         raise ValueError(f"{name} must be unique")
-    return supplied
+    return normalized
 
 
 def _with_receipt_id(domain: str, body: Mapping[str, Any]) -> dict[str, Any]:
@@ -1806,7 +1807,15 @@ class GovernanceWrapper:
         dependency_state_id: str | None,
         requester: PrincipalAuthority,
     ) -> ToolAdmissionReceipt:
-        _require_governance_binding(self.__policy, task, governance)
+        try:
+            _require_governance_binding(self.__policy, task, governance)
+        except (TypeError, ValueError):
+            self._reject(
+                ReceiptStage.GOVERNANCE,
+                GovernanceRejectionReason.INVALID_BOUND_RECEIPT,
+                invariant_ids=("IBAE-GOV-006", "IBAE-GOV-007", "IBAE-ID-002"),
+                details={"record_type": "governance_context"},
+            )
         if requester is not PrincipalAuthority.DETERMINISTIC_ORCHESTRATOR:
             self._reject(
                 ReceiptStage.GOVERNANCE,
