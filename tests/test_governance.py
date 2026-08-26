@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import FrozenInstanceError, replace
+from dataclasses import FrozenInstanceError, fields as dataclass_fields, replace
 
 import pytest
 
@@ -689,6 +689,77 @@ def test_tool_admission_invalid_authority_contexts_emit_rejection_receipts():
     assert foreign.value.receipt.bound_receipt_ids == ()
 
 
+@pytest.mark.parametrize(
+    ("record_name", "field_name"),
+    tuple(
+        ("decision", item.name) for item in dataclass_fields(AdmissionDecision)
+    )
+    + tuple(("proposal", item.name) for item in dataclass_fields(ActionProposal))
+    + tuple(("capability", item.name) for item in dataclass_fields(Capability)),
+)
+def test_tool_admission_rejects_every_slot_damaged_v02_record(
+    record_name: str,
+    field_name: str,
+):
+    _, wrapper, task, governance, *_ = _context()
+    decision, proposal, capability, dependency_state_id = _tool_bundle(
+        "read.pure",
+        ToolAuthorityClass.PURE_READ,
+        {},
+        label=f"damaged-{record_name}-{field_name}",
+    )
+    records = {
+        "decision": decision,
+        "proposal": proposal,
+        "capability": capability,
+    }
+    object.__delattr__(records[record_name], field_name)
+
+    with pytest.raises(GovernanceRejected) as rejected:
+        wrapper.admit_tool(
+            task,
+            governance,
+            decision,
+            proposal,
+            capability,
+            ToolAuthorityClass.PURE_READ,
+            dependency_state_id=dependency_state_id,
+            requester=PrincipalAuthority.DETERMINISTIC_ORCHESTRATOR,
+        )
+    assert rejected.value.receipt.reason is GovernanceRejectionReason.MALFORMED_ACTION
+    assert rejected.value.receipt.stage is ReceiptStage.GOVERNANCE
+    assert rejected.value.receipt.bound_receipt_ids == (governance.receipt_id,)
+
+
+def test_tool_admission_snapshots_typed_v02_authority_records():
+    _, wrapper, task, governance, *_ = _context()
+    decision, proposal, capability, dependency_state_id = _tool_bundle(
+        "read.pure",
+        ToolAuthorityClass.PURE_READ,
+        {},
+        label="snapshot-v0.2-authority",
+    )
+    receipt = wrapper.admit_tool(
+        task,
+        governance,
+        decision,
+        proposal,
+        capability,
+        ToolAuthorityClass.PURE_READ,
+        dependency_state_id=dependency_state_id,
+        requester=PrincipalAuthority.DETERMINISTIC_ORCHESTRATOR,
+    )
+    expected = receipt.canonical_record()
+    assert receipt.admission_decision is not decision
+    assert receipt.proposal is not proposal
+    assert receipt.capability is not capability
+
+    object.__setattr__(decision, "proposal_key", "proposal.forged-decision")
+    object.__setattr__(proposal, "proposal_key", "proposal.forged-proposal")
+    object.__setattr__(capability, "description", "forged capability")
+    assert receipt.canonical_record() == expected
+
+
 def test_orchestration_binding_invalid_contexts_emit_rejection_receipts():
     _, wrapper, task, governance, admission, orchestration, *_ = _context()
     foreign_wrapper = GovernanceWrapper(_policy(version=2))
@@ -721,6 +792,48 @@ def test_orchestration_binding_invalid_contexts_emit_rejection_receipts():
         assert rejected.value.receipt.stage is ReceiptStage.ORCHESTRATION
         assert rejected.value.receipt.task_id is None
         assert rejected.value.receipt.bound_receipt_ids == ()
+
+
+@pytest.mark.parametrize(
+    "field_name",
+    tuple(item.name for item in dataclass_fields(AdmissionReceipt)),
+)
+def test_orchestration_binding_rejects_every_slot_damaged_admission_receipt(
+    field_name: str,
+):
+    _, wrapper, task, governance, admission, orchestration, *_ = _context()
+    object.__delattr__(admission, field_name)
+
+    with pytest.raises(GovernanceRejected) as rejected:
+        wrapper.bind_orchestration(
+            task,
+            governance,
+            admission,
+            orchestration.tool_admissions,
+        )
+    assert (
+        rejected.value.receipt.reason
+        is GovernanceRejectionReason.INVALID_BOUND_RECEIPT
+    )
+    assert rejected.value.receipt.stage is ReceiptStage.ORCHESTRATION
+
+
+def test_orchestration_binding_snapshots_v02_receipts():
+    _, wrapper, task, governance, admission, orchestration, *_ = _context()
+    original_tool_admission = orchestration.tool_admissions[0]
+    receipt = wrapper.bind_orchestration(
+        task,
+        governance,
+        admission,
+        (original_tool_admission,),
+    )
+    expected = receipt.canonical_record()
+    assert receipt.admission_receipt is not admission
+    assert receipt.tool_admissions[0] is not original_tool_admission
+
+    object.__setattr__(admission, "batch_id", _id("forged-batch"))
+    object.__setattr__(original_tool_admission, "tool_name", "read.forged")
+    assert receipt.canonical_record() == expected
 
 
 def test_execution_binding_invalid_contexts_emit_rejection_receipts():
@@ -1836,6 +1949,33 @@ def test_missing_bound_layer_receipts_produce_structural_partial_state():
         missing_execution.value.receipt.reason
         is GovernanceRejectionReason.INVALID_BOUND_RECEIPT
     )
+
+
+def test_partial_finalization_never_discards_later_layer_inputs():
+    _, wrapper, task, governance, _, orchestration, _, execution = _context()
+    cases = (
+        (None, execution, None),
+        (None, None, object()),
+        (None, execution, object()),
+        (orchestration, None, object()),
+        (orchestration, execution, object()),
+    )
+    for candidate_orchestration, candidate_execution, candidate_evidence in cases:
+        with pytest.raises(GovernanceRejected) as rejected:
+            wrapper.finalize(
+                task,
+                governance,
+                candidate_orchestration,
+                candidate_execution,
+                candidate_evidence,
+                (),
+                requester=PrincipalAuthority.OPENAI_SUPERVISOR,
+            )
+        assert (
+            rejected.value.receipt.reason
+            is GovernanceRejectionReason.INVALID_BOUND_RECEIPT
+        )
+        assert rejected.value.receipt.stage is ReceiptStage.FINALIZATION
 
 
 @pytest.mark.parametrize(

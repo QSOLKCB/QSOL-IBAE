@@ -30,6 +30,7 @@ from .orchestration import (
     AdmissionDecision,
     AdmissionReceipt,
     AuthorityLayer,
+    BatchRejection,
     BatchStatus,
     Capability,
     DecisionStatus,
@@ -167,6 +168,112 @@ def _canonical_mapping(name: str, value: Mapping[str, Any]) -> CanonicalValue:
     if not isinstance(value, Mapping):
         raise TypeError(f"{name} must be a mapping")
     return CanonicalValue.from_value(value)
+
+
+def _validated_admission_decision_copy(
+    value: AdmissionDecision,
+) -> AdmissionDecision:
+    if type(value) is not AdmissionDecision:
+        raise TypeError("admission_decision must be an exact AdmissionDecision")
+    validated = AdmissionDecision(
+        proposal_id=value.proposal_id,
+        proposal_key=value.proposal_key,
+        status=value.status,
+        logical_tick=value.logical_tick,
+        authority_layer=value.authority_layer,
+        invariant_ids=value.invariant_ids,
+        action_id=value.action_id,
+        equivalent_proposal_id=value.equivalent_proposal_id,
+        rejection_reason=value.rejection_reason,
+        recovery_actions=value.recovery_actions,
+        blocking_obligation_ids=value.blocking_obligation_ids,
+        dependency_state_keys=value.dependency_state_keys,
+        unresolved_state_keys=value.unresolved_state_keys,
+    )
+    if value.canonical_record() != validated.canonical_record():
+        raise ValueError("admission_decision is not canonically valid")
+    return validated
+
+
+def _validated_batch_rejection_copy(
+    value: BatchRejection | None,
+) -> BatchRejection | None:
+    if value is None:
+        return None
+    if type(value) is not BatchRejection:
+        raise TypeError("batch_rejection must be an exact BatchRejection")
+    validated = BatchRejection(
+        reason=value.reason,
+        recovery_actions=value.recovery_actions,
+        logical_tick=value.logical_tick,
+        authority_layer=value.authority_layer,
+        invariant_ids=value.invariant_ids,
+    )
+    if value.canonical_record() != validated.canonical_record():
+        raise ValueError("batch_rejection is not canonically valid")
+    return validated
+
+
+def _validated_admission_receipt_copy(value: AdmissionReceipt) -> AdmissionReceipt:
+    if type(value) is not AdmissionReceipt:
+        raise TypeError("admission_receipt must be an exact AdmissionReceipt")
+    decisions = materialize_bounded_iterable(
+        "admission receipt decisions",
+        value.decisions,
+        limit=MAX_PROPOSALS_PER_BATCH,
+    )
+    validated = AdmissionReceipt(
+        batch_id=value.batch_id,
+        strategy_id=value.strategy_id,
+        prior_state_id=value.prior_state_id,
+        next_state_id=value.next_state_id,
+        status=value.status,
+        proposal_ordering=value.proposal_ordering,
+        logical_tick_start=value.logical_tick_start,
+        logical_tick_end=value.logical_tick_end,
+        decisions=tuple(
+            _validated_admission_decision_copy(item) for item in decisions
+        ),
+        batch_rejection=_validated_batch_rejection_copy(value.batch_rejection),
+    )
+    if value.canonical_record() != validated.canonical_record():
+        raise ValueError("admission_receipt is not canonically valid")
+    return validated
+
+
+def _validated_action_proposal_copy(value: ActionProposal) -> ActionProposal:
+    if type(value) is not ActionProposal:
+        raise TypeError("proposal must be an exact ActionProposal")
+    validated = ActionProposal(
+        value.proposal_key,
+        value.capability,
+        value.arguments,
+        target_obligation_ids=value.target_obligation_ids,
+        required_state_keys=value.required_state_keys,
+        occurrence_key=value.occurrence_key,
+        observational_metadata=value.observational_metadata,
+    )
+    if value.agent_record() != validated.agent_record():
+        raise ValueError("proposal is not canonically valid")
+    return validated
+
+
+def _validated_capability_copy(value: Capability) -> Capability:
+    if type(value) is not Capability:
+        raise TypeError("capability must be an exact Capability")
+    validated = Capability(
+        name=value.name,
+        replay_safety=value.replay_safety,
+        description=value.description,
+        available=value.available,
+        contract_version=value.contract_version,
+        required_state_keys=value.required_state_keys,
+        semantic_argument_keys=value.semantic_argument_keys,
+        replay_evidence_id=value.replay_evidence_id,
+    )
+    if value.canonical_record() != validated.canonical_record():
+        raise ValueError("capability is not canonically valid")
+    return validated
 
 
 def _bounded_unique_symbols(
@@ -679,12 +786,9 @@ class ToolAdmissionReceipt:
             raise ValueError("tool permission is not owned by the active policy")
         if requester is not PrincipalAuthority.DETERMINISTIC_ORCHESTRATOR:
             raise ValueError("only the deterministic orchestrator may admit a tool")
-        if type(admission_decision) is not AdmissionDecision:
-            raise TypeError("admission_decision must be an AdmissionDecision")
-        if type(proposal) is not ActionProposal:
-            raise TypeError("proposal must be an ActionProposal")
-        if type(capability) is not Capability:
-            raise TypeError("capability must be a Capability")
+        admission_decision = _validated_admission_decision_copy(admission_decision)
+        proposal = _validated_action_proposal_copy(proposal)
+        capability = _validated_capability_copy(capability)
         if admission_decision.status is not DecisionStatus.ADMITTED:
             raise ValueError("tool governance requires a v0.2 admitted decision")
         if admission_decision.authority_layer is not AuthorityLayer.ORCHESTRATION:
@@ -868,8 +972,7 @@ class OrchestrationReceipt:
         tool_admissions: Iterable[ToolAdmissionReceipt],
     ) -> None:
         _require_governance_binding(policy, task, governance)
-        if type(admission_receipt) is not AdmissionReceipt:
-            raise TypeError("admission_receipt must be an AdmissionReceipt")
+        admission_receipt = _validated_admission_receipt_copy(admission_receipt)
         if admission_receipt.status is not BatchStatus.PROCESSED:
             raise ValueError("a rejected batch cannot become accepted orchestration")
         supplied_admissions = materialize_bounded_iterable(
@@ -877,23 +980,21 @@ class OrchestrationReceipt:
             tool_admissions,
             limit=MAX_TOOL_ADMISSIONS,
         )
-        if any(type(item) is not ToolAdmissionReceipt for item in supplied_admissions):
-            raise TypeError("tool_admissions must contain ToolAdmissionReceipt records")
-        if any(type(item) is not AdmissionDecision for item in admission_receipt.decisions):
-            raise TypeError("admission receipt must contain exact AdmissionDecision records")
-        normalized_admissions = tuple(
-            sorted(supplied_admissions, key=lambda item: item.action_id)
-        )
-        action_ids = tuple(item.action_id for item in normalized_admissions)
-        if len(action_ids) != len(set(action_ids)):
-            raise ValueError("tool admissions must bind unique v0.2 action ids")
-        for tool_admission in normalized_admissions:
+        validated_admissions = tuple(
             _require_tool_admission_binding(
                 policy,
                 task,
                 governance,
-                tool_admission,
+                item,
             )
+            for item in supplied_admissions
+        )
+        normalized_admissions = tuple(
+            sorted(validated_admissions, key=lambda item: item.action_id)
+        )
+        action_ids = tuple(item.action_id for item in normalized_admissions)
+        if len(action_ids) != len(set(action_ids)):
+            raise ValueError("tool admissions must bind unique v0.2 action ids")
         admitted_by_proposal: dict[str, str] = {}
         admitted_by_action: dict[str, AdmissionDecision] = {}
         seen_proposal_ids: set[str] = set()
@@ -1825,11 +1926,13 @@ class GovernanceWrapper:
                 invariant_ids=("IBAE-GOV-003", "IBAE-LAY-002"),
                 details={"requested_operation": "admit_tool"},
             )
-        if (
-            not isinstance(admission_decision, AdmissionDecision)
-            or not isinstance(proposal, ActionProposal)
-            or not isinstance(capability, Capability)
-        ):
+        try:
+            admission_decision = _validated_admission_decision_copy(
+                admission_decision
+            )
+            proposal = _validated_action_proposal_copy(proposal)
+            capability = _validated_capability_copy(capability)
+        except (AttributeError, TypeError, ValueError, OverflowError, RecursionError):
             self._reject(
                 ReceiptStage.GOVERNANCE,
                 GovernanceRejectionReason.MALFORMED_ACTION,
@@ -1933,7 +2036,13 @@ class GovernanceWrapper:
                 capability,
                 dependency_state_id,
             )
-        except (TypeError, ValueError, OverflowError, RecursionError) as exc:
+        except (
+            AttributeError,
+            TypeError,
+            ValueError,
+            OverflowError,
+            RecursionError,
+        ) as exc:
             self._reject(
                 ReceiptStage.GOVERNANCE,
                 GovernanceRejectionReason.MALFORMED_ACTION,
@@ -2192,6 +2301,15 @@ class GovernanceWrapper:
                 raise AssertionError("unreachable") from exc
 
         if orchestration is None:
+            if execution is not None or compact_evidence is not None:
+                self._reject(
+                    ReceiptStage.FINALIZATION,
+                    GovernanceRejectionReason.INVALID_BOUND_RECEIPT,
+                    task=task,
+                    governance=governance,
+                    invariant_ids=("IBAE-GOV-006", "IBAE-GOV-007"),
+                    details={"record_type": "partial_dependency_order"},
+                )
             return partial_receipt(
                 PartialReason.MISSING_ORCHESTRATION_RECEIPT,
                 bound_orchestration=None,
@@ -2211,6 +2329,15 @@ class GovernanceWrapper:
                 details={"record_type": "orchestration"},
             )
         if execution is None:
+            if compact_evidence is not None:
+                self._reject(
+                    ReceiptStage.FINALIZATION,
+                    GovernanceRejectionReason.INVALID_BOUND_RECEIPT,
+                    task=task,
+                    governance=governance,
+                    invariant_ids=("IBAE-GOV-006", "IBAE-GOV-007"),
+                    details={"record_type": "partial_dependency_order"},
+                )
             return partial_receipt(
                 PartialReason.MISSING_EXECUTION_RECEIPT,
                 bound_orchestration=orchestration,
@@ -2230,6 +2357,15 @@ class GovernanceWrapper:
                 details={"record_type": "execution"},
             )
         if missing:
+            if compact_evidence is not None:
+                self._reject(
+                    ReceiptStage.FINALIZATION,
+                    GovernanceRejectionReason.INVALID_BOUND_RECEIPT,
+                    task=task,
+                    governance=governance,
+                    invariant_ids=("IBAE-GOV-006", "IBAE-GOV-007"),
+                    details={"record_type": "partial_compact_evidence"},
+                )
             return partial_receipt(
                 PartialReason.UNSATISFIED_ACCEPTANCE_GATES,
                 bound_orchestration=orchestration,
@@ -2640,7 +2776,7 @@ def _require_tool_admission_binding(
     task: TaskReceipt,
     governance: GovernanceReceipt,
     tool_admission: ToolAdmissionReceipt,
-) -> None:
+) -> ToolAdmissionReceipt:
     _require_governance_binding(policy, task, governance)
     if type(tool_admission) is not ToolAdmissionReceipt:
         raise TypeError("tool admission must be a ToolAdmissionReceipt")
@@ -2660,6 +2796,7 @@ def _require_tool_admission_binding(
     )
     if tool_admission.canonical_record() != expected.canonical_record():
         raise ValueError("tool admission receipt is not canonically valid")
+    return expected
 
 
 def _require_orchestration_binding(
