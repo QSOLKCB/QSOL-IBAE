@@ -25,6 +25,30 @@ def materialize_iterable(name: str, values: Iterable[_T]) -> tuple[_T, ...]:
         raise TypeError(f"{name} must be iterable") from exc
 
 
+def materialize_bounded_iterable(
+    name: str,
+    values: Iterable[_T],
+    *,
+    limit: int,
+) -> tuple[_T, ...]:
+    """Materialize at most ``limit`` records without exhausting an iterable."""
+
+    require_positive_int("iterable limit", limit)
+    if isinstance(values, (str, bytes, bytearray)):
+        raise TypeError(f"{name} must be an iterable of records, not text")
+    try:
+        iterator = iter(values)
+    except TypeError as exc:
+        raise TypeError(f"{name} must be iterable") from exc
+
+    materialized: list[_T] = []
+    for item in iterator:
+        if len(materialized) == limit:
+            raise ValueError(f"{name} exceeds the hard limit of {limit}")
+        materialized.append(item)
+    return tuple(materialized)
+
+
 def require_symbol(name: str, value: str) -> str:
     if not isinstance(value, str) or not _SYMBOL_PATTERN.fullmatch(value):
         raise ValueError(f"{name} must match {_SYMBOL_PATTERN.pattern!r}")

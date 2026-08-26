@@ -15,6 +15,7 @@ from .orchestration import (
     Capability,
     OrchestrationState,
     ProposalBatch,
+    ProposalOrdering,
     ReplaySafety,
     Strategy,
     admit_batch,
@@ -171,9 +172,10 @@ def v0_2_reference_fixture() -> dict[str, object]:
         "reference-batch",
         Strategy(
             "repair-reference",
-            {"ordering": "canonical", "version": 1},
+            {"ordering": "declared_sequence", "version": 1},
         ),
         proposals,
+        ordering=ProposalOrdering.DECLARED_SEQUENCE,
     )
     transition = admit_batch(state, batch)
     return {

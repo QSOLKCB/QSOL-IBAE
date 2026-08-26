@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+import re
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, replace
 from enum import Enum
 from typing import Any
 
 from ._records import (
     CanonicalValue,
+    materialize_bounded_iterable,
     materialize_iterable,
     require_fingerprint,
     require_invariant_id,
@@ -27,6 +29,8 @@ from .obligations import (
 
 AGENT_PROTOCOL = "IBAE-AGENT-PROTOCOL-V1"
 LOGICAL_CLOCK_PROFILE = "IBAE-LOGICAL-CLOCK-V1"
+STRATEGY_PARAMETER_SCHEMA = "IBAE-STRATEGY-PARAMETERS-V1"
+MAX_PROPOSALS_PER_BATCH = 64
 
 CAPABILITY_ID_DOMAIN = "ibae.capability-id.v1"
 STRATEGY_ID_DOMAIN = "ibae.strategy-id.v1"
@@ -42,6 +46,11 @@ class ReplaySafety(str, Enum):
     CACHEABLE_READ = "cacheable_read"
     PROVEN_REPLAY_SAFE = "proven_replay_safe"
     OCCURRENCE_SENSITIVE = "occurrence_sensitive"
+
+
+class ProposalOrdering(str, Enum):
+    CANONICAL_INDEPENDENT = "canonical_independent"
+    DECLARED_SEQUENCE = "declared_sequence"
 
 
 class AuthorityLayer(str, Enum):
@@ -74,6 +83,8 @@ class RejectionReason(str, Enum):
     OCCURRENCE_KEY_REQUIRED = "IBAE-REJECT-OCCURRENCE-KEY-REQUIRED"
     UNEXPECTED_OCCURRENCE_KEY = "IBAE-REJECT-UNEXPECTED-OCCURRENCE-KEY"
     DUPLICATE_OCCURRENCE = "IBAE-REJECT-DUPLICATE-OCCURRENCE"
+    OCCURRENCE_REGISTRY_FULL = "IBAE-REJECT-OCCURRENCE-REGISTRY-FULL"
+    ORDERING_CONTRACT_REQUIRED = "IBAE-REJECT-ORDERING-CONTRACT-REQUIRED"
 
 
 class RecoveryAction(str, Enum):
@@ -87,6 +98,8 @@ class RecoveryAction(str, Enum):
     ADD_OCCURRENCE_KEY = "IBAE-RECOVERY-ADD-OCCURRENCE-KEY"
     REMOVE_OCCURRENCE_KEY = "IBAE-RECOVERY-REMOVE-OCCURRENCE-KEY"
     USE_DISTINCT_OCCURRENCE_KEY = "IBAE-RECOVERY-USE-DISTINCT-OCCURRENCE-KEY"
+    REQUEST_NEW_BOUNDED_SCOPE = "IBAE-RECOVERY-REQUEST-NEW-BOUNDED-SCOPE"
+    USE_DECLARED_SEQUENCE = "IBAE-RECOVERY-USE-DECLARED-SEQUENCE"
 
 
 _REJECTION_INVARIANTS: dict[RejectionReason, tuple[str, ...]] = {
@@ -107,7 +120,64 @@ _REJECTION_INVARIANTS: dict[RejectionReason, tuple[str, ...]] = {
     RejectionReason.OCCURRENCE_KEY_REQUIRED: ("IBAE-ORCH-007",),
     RejectionReason.UNEXPECTED_OCCURRENCE_KEY: ("IBAE-ORCH-003",),
     RejectionReason.DUPLICATE_OCCURRENCE: ("IBAE-ORCH-007",),
+    RejectionReason.OCCURRENCE_REGISTRY_FULL: (
+        "IBAE-BND-008",
+        "IBAE-ORCH-006",
+        "IBAE-ORCH-007",
+    ),
+    RejectionReason.ORDERING_CONTRACT_REQUIRED: (
+        "IBAE-DET-004",
+        "IBAE-ORCH-004",
+        "IBAE-ORCH-007",
+    ),
 }
+
+
+_OBSERVATIONAL_STRATEGY_TOKENS = frozenset(
+    {
+        "clock",
+        "date",
+        "deadline",
+        "duration",
+        "elapsed",
+        "latency",
+        "queue_delay",
+        "started_at",
+        "finished_at",
+        "throughput",
+        "time",
+        "timeout",
+        "timestamp",
+        "timing",
+        "wall_clock",
+        "wallclock",
+    }
+)
+
+
+def _validate_strategy_parameters(value: Any, *, path: str = "parameters") -> None:
+    """Reject observational/timing fields from semantic strategy identity."""
+
+    if isinstance(value, Mapping):
+        for key, nested in value.items():
+            if not isinstance(key, str):
+                raise TypeError("strategy parameter keys must be strings")
+            separated = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", key)
+            normalized = re.sub(r"[^a-z0-9]+", "_", separated.lower()).strip("_")
+            segments = frozenset(segment for segment in normalized.split("_") if segment)
+            collapsed = normalized.replace("_", "")
+            if (
+                normalized in _OBSERVATIONAL_STRATEGY_TOKENS
+                or segments & _OBSERVATIONAL_STRATEGY_TOKENS
+                or collapsed in {"wallclock", "queuedelay", "startedat", "finishedat"}
+            ):
+                raise ValueError(
+                    f"strategy {path}.{key} is observational metadata, not semantics"
+                )
+            _validate_strategy_parameters(nested, path=f"{path}.{key}")
+    elif isinstance(value, (list, tuple)):
+        for index, nested in enumerate(value):
+            _validate_strategy_parameters(nested, path=f"{path}[{index}]")
 
 
 @dataclass(frozen=True, slots=True)
@@ -197,6 +267,7 @@ class OrchestrationLimits:
     max_capabilities: int = 64
     max_batch_proposals: int = 64
     max_history: int = 256
+    max_occurrence_owners: int = 256
 
     def __post_init__(self) -> None:
         for name, value in (
@@ -205,8 +276,14 @@ class OrchestrationLimits:
             ("max_capabilities", self.max_capabilities),
             ("max_batch_proposals", self.max_batch_proposals),
             ("max_history", self.max_history),
+            ("max_occurrence_owners", self.max_occurrence_owners),
         ):
             require_positive_int(name, value)
+        if self.max_batch_proposals > MAX_PROPOSALS_PER_BATCH:
+            raise ValueError(
+                "max_batch_proposals exceeds the protocol hard limit of "
+                f"{MAX_PROPOSALS_PER_BATCH}"
+            )
 
     def canonical_record(self) -> dict[str, int]:
         return {
@@ -215,6 +292,7 @@ class OrchestrationLimits:
             "max_epistemic_records": self.max_epistemic_records,
             "max_history": self.max_history,
             "max_obligations": self.max_obligations,
+            "max_occurrence_owners": self.max_occurrence_owners,
         }
 
 
@@ -225,6 +303,9 @@ class Strategy:
 
     def __init__(self, key: str, parameters: Any) -> None:
         require_symbol("strategy key", key)
+        if not isinstance(parameters, Mapping):
+            raise TypeError("strategy parameters must be a semantic mapping")
+        _validate_strategy_parameters(parameters)
         object.__setattr__(self, "key", key)
         object.__setattr__(self, "_parameters", CanonicalValue.from_value(parameters))
 
@@ -237,7 +318,11 @@ class Strategy:
         return domain_fingerprint(STRATEGY_ID_DOMAIN, self.canonical_record())
 
     def canonical_record(self) -> dict[str, object]:
-        return {"key": self.key, "parameters": self._parameters.to_value()}
+        return {
+            "key": self.key,
+            "parameter_schema": STRATEGY_PARAMETER_SCHEMA,
+            "parameters": self._parameters.to_value(),
+        }
 
 
 @dataclass(frozen=True, slots=True, init=False)
@@ -317,12 +402,19 @@ class ProposalBatch:
     batch_key: str
     strategy: Strategy
     proposals: tuple[ActionProposal, ...]
+    ordering: ProposalOrdering = ProposalOrdering.CANONICAL_INDEPENDENT
 
     def __post_init__(self) -> None:
         require_symbol("batch key", self.batch_key)
         if not isinstance(self.strategy, Strategy):
             raise TypeError("strategy must be a Strategy")
-        proposals = materialize_iterable("proposals", self.proposals)
+        if not isinstance(self.ordering, ProposalOrdering):
+            raise TypeError("ordering must be a ProposalOrdering")
+        proposals = materialize_bounded_iterable(
+            "proposals",
+            self.proposals,
+            limit=MAX_PROPOSALS_PER_BATCH,
+        )
         if not proposals:
             raise ValueError("a proposal batch must not be empty")
         if any(not isinstance(item, ActionProposal) for item in proposals):
@@ -334,6 +426,8 @@ class ProposalBatch:
 
     @property
     def ordered_proposals(self) -> tuple[ActionProposal, ...]:
+        if self.ordering is ProposalOrdering.DECLARED_SEQUENCE:
+            return self.proposals
         return tuple(sorted(self.proposals, key=lambda item: item.proposal_id))
 
     @property
@@ -344,6 +438,7 @@ class ProposalBatch:
         return {
             "batch_key": self.batch_key,
             "epistemic_class": "model_proposed",
+            "ordering": self.ordering.value,
             "proposals": [
                 proposal.canonical_record() for proposal in self.ordered_proposals
             ],
@@ -540,12 +635,34 @@ class BatchRejection:
 
 
 @dataclass(frozen=True, slots=True)
+class OccurrenceOwnership:
+    """Persistent ownership of an admitted occurrence-sensitive action key."""
+
+    occurrence_key: str
+    action_id: str
+    proposal_id: str
+
+    def __post_init__(self) -> None:
+        require_symbol("occurrence key", self.occurrence_key)
+        require_fingerprint("occurrence action id", self.action_id)
+        require_fingerprint("occurrence proposal id", self.proposal_id)
+
+    def canonical_record(self) -> dict[str, str]:
+        return {
+            "action_id": self.action_id,
+            "occurrence_key": self.occurrence_key,
+            "proposal_id": self.proposal_id,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class AdmissionReceipt:
     batch_id: str
     strategy_id: str
     prior_state_id: str
     next_state_id: str
     status: BatchStatus
+    proposal_ordering: ProposalOrdering
     logical_tick_start: int
     logical_tick_end: int
     decisions: tuple[AdmissionDecision, ...] = ()
@@ -561,6 +678,8 @@ class AdmissionReceipt:
             require_fingerprint(name, value)
         if not isinstance(self.status, BatchStatus):
             raise TypeError("status must be a BatchStatus")
+        if not isinstance(self.proposal_ordering, ProposalOrdering):
+            raise TypeError("proposal_ordering must be a ProposalOrdering")
         require_nonnegative_int("logical_tick_start", self.logical_tick_start)
         require_nonnegative_int("logical_tick_end", self.logical_tick_end)
         if self.logical_tick_end < self.logical_tick_start:
@@ -590,8 +709,10 @@ class AdmissionReceipt:
                 raise ValueError(
                     "processed proposal decisions must consume contiguous logical ticks"
                 )
-            if tuple(item.proposal_id for item in decisions) != tuple(
-                sorted(item.proposal_id for item in decisions)
+            if (
+                self.proposal_ordering is ProposalOrdering.CANONICAL_INDEPENDENT
+                and tuple(item.proposal_id for item in decisions)
+                != tuple(sorted(item.proposal_id for item in decisions))
             ):
                 raise ValueError("proposal decisions must use canonical id ordering")
 
@@ -613,6 +734,7 @@ class AdmissionReceipt:
             "logical_tick_start": self.logical_tick_start,
             "next_state_id": self.next_state_id,
             "prior_state_id": self.prior_state_id,
+            "proposal_ordering": self.proposal_ordering.value,
             "protocol": AGENT_PROTOCOL,
             "status": self.status.value,
             "strategy_id": self.strategy_id,
@@ -627,6 +749,7 @@ class OrchestrationState:
     limits: OrchestrationLimits = OrchestrationLimits()
     logical_tick: int = 0
     history: tuple[str, ...] = ()
+    occurrence_owners: tuple[OccurrenceOwnership, ...] = ()
 
     def __post_init__(self) -> None:
         if not isinstance(self.obligations, ObligationRegistry):
@@ -659,6 +782,21 @@ class OrchestrationState:
         for event_id in history:
             require_fingerprint("history event id", event_id)
         object.__setattr__(self, "history", history)
+
+        supplied_owners = materialize_iterable(
+            "occurrence owners", self.occurrence_owners
+        )
+        if any(not isinstance(item, OccurrenceOwnership) for item in supplied_owners):
+            raise TypeError(
+                "occurrence_owners must contain OccurrenceOwnership records"
+            )
+        owners = tuple(sorted(supplied_owners, key=lambda item: item.occurrence_key))
+        if len(owners) > self.limits.max_occurrence_owners:
+            raise ValueError("occurrence ownership exceeds max_occurrence_owners")
+        occurrence_keys = [item.occurrence_key for item in owners]
+        if len(occurrence_keys) != len(set(occurrence_keys)):
+            raise ValueError("occurrence ownership keys must be unique")
+        object.__setattr__(self, "occurrence_owners", owners)
 
     @classmethod
     def create(
@@ -701,6 +839,9 @@ class OrchestrationState:
                 "tick": self.logical_tick,
             },
             "obligations": self.obligations.canonical_record(),
+            "occurrence_owners": [
+                item.canonical_record() for item in self.occurrence_owners
+            ],
             "protocol": AGENT_PROTOCOL,
         }
 
@@ -716,6 +857,8 @@ class OrchestrationState:
                 "blocking_dependency_ids": list(
                     self.obligations.blocking_dependency_ids(obligation.obligation_id)
                 ),
+                "block_reason": obligation.block_reason,
+                "description": obligation.description,
                 "key": obligation.key,
                 "obligation_id": obligation.obligation_id,
                 "readiness": readiness.value,
@@ -742,6 +885,9 @@ class OrchestrationState:
                 "obligation_slots_remaining": (
                     self.limits.max_obligations - len(self.obligations.obligations)
                 ),
+                "occurrence_owner_slots_remaining": (
+                    self.limits.max_occurrence_owners - len(self.occurrence_owners)
+                ),
             },
             "canonical_state_identity": self.state_id,
             "epistemic_state": self.epistemic_state.projection(),
@@ -750,6 +896,9 @@ class OrchestrationState:
                 "tick": self.logical_tick,
             },
             "obligations": obligation_groups,
+            "occurrence_owners": [
+                item.canonical_record() for item in self.occurrence_owners
+            ],
             "protocol": AGENT_PROTOCOL,
         }
 
@@ -758,6 +907,7 @@ class OrchestrationState:
         *,
         logical_tick: int,
         event_ids: Iterable[str],
+        occurrence_owners: Iterable[OccurrenceOwnership] | None = None,
     ) -> OrchestrationState:
         require_nonnegative_int("logical_tick", logical_tick)
         if logical_tick < self.logical_tick:
@@ -768,7 +918,17 @@ class OrchestrationState:
         if logical_tick - self.logical_tick != len(additions):
             raise ValueError("each orchestration event must consume one logical tick")
         history = (*self.history, *additions)[-self.limits.max_history :]
-        return replace(self, logical_tick=logical_tick, history=history)
+        next_occurrence_owners = (
+            self.occurrence_owners
+            if occurrence_owners is None
+            else materialize_iterable("occurrence owners", occurrence_owners)
+        )
+        return replace(
+            self,
+            logical_tick=logical_tick,
+            history=history,
+            occurrence_owners=next_occurrence_owners,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -949,6 +1109,7 @@ def admit_batch(
             prior_state_id=prior_state_id,
             next_state_id=next_state.state_id,
             status=BatchStatus.REJECTED,
+            proposal_ordering=batch.ordering,
             logical_tick_start=state.logical_tick,
             logical_tick_end=logical_tick,
             batch_rejection=rejection,
@@ -958,7 +1119,9 @@ def admit_batch(
     decisions: list[AdmissionDecision] = []
     event_ids: list[str] = []
     replay_safe_actions: dict[str, str] = {}
-    occurrence_owners: dict[str, str] = {}
+    occurrence_owners = {
+        item.occurrence_key: item for item in state.occurrence_owners
+    }
     logical_tick = state.logical_tick
 
     for proposal in batch.ordered_proposals:
@@ -994,12 +1157,24 @@ def admit_batch(
                     | set(proposal.required_state_keys)
                 )
             )
-            decision = _validate_targets(
-                state,
-                proposal,
-                logical_tick=logical_tick,
-                dependency_state_keys=dependency_state_keys,
-            )
+            if (
+                capability.replay_safety is not ReplaySafety.CACHEABLE_READ
+                and batch.ordering is not ProposalOrdering.DECLARED_SEQUENCE
+            ):
+                decision = _rejected_decision(
+                    proposal,
+                    logical_tick=logical_tick,
+                    reason=RejectionReason.ORDERING_CONTRACT_REQUIRED,
+                    recovery_actions=(RecoveryAction.USE_DECLARED_SEQUENCE,),
+                    dependency_state_keys=dependency_state_keys,
+                )
+            else:
+                decision = _validate_targets(
+                    state,
+                    proposal,
+                    logical_tick=logical_tick,
+                    dependency_state_keys=dependency_state_keys,
+                )
 
         if decision is None:
             unresolved = state.epistemic_state.unresolved_keys(dependency_state_keys)
@@ -1072,8 +1247,23 @@ def admit_batch(
                         recovery_actions=(RecoveryAction.USE_DISTINCT_OCCURRENCE_KEY,),
                         dependency_state_keys=dependency_state_keys,
                     )
+                elif (
+                    len(occurrence_owners)
+                    == state.limits.max_occurrence_owners
+                ):
+                    decision = _rejected_decision(
+                        proposal,
+                        logical_tick=logical_tick,
+                        reason=RejectionReason.OCCURRENCE_REGISTRY_FULL,
+                        recovery_actions=(RecoveryAction.REQUEST_NEW_BOUNDED_SCOPE,),
+                        dependency_state_keys=dependency_state_keys,
+                    )
                 else:
-                    occurrence_owners[proposal.occurrence_key] = proposal.proposal_id
+                    occurrence_owners[proposal.occurrence_key] = OccurrenceOwnership(
+                        occurrence_key=proposal.occurrence_key,
+                        action_id=action_id,
+                        proposal_id=proposal.proposal_id,
+                    )
                     decision = AdmissionDecision(
                         proposal_id=proposal.proposal_id,
                         proposal_key=proposal.proposal_key,
@@ -1095,13 +1285,18 @@ def admit_batch(
             )
         )
 
-    next_state = state.advance(logical_tick=logical_tick, event_ids=event_ids)
+    next_state = state.advance(
+        logical_tick=logical_tick,
+        event_ids=event_ids,
+        occurrence_owners=occurrence_owners.values(),
+    )
     receipt = AdmissionReceipt(
         batch_id=batch.batch_id,
         strategy_id=batch.strategy.strategy_id,
         prior_state_id=prior_state_id,
         next_state_id=next_state.state_id,
         status=BatchStatus.PROCESSED,
+        proposal_ordering=batch.ordering,
         logical_tick_start=state.logical_tick,
         logical_tick_end=logical_tick,
         decisions=tuple(decisions),

@@ -120,6 +120,15 @@ class EpistemicRecord:
         return self.epistemic_class is not EpistemicClass.UNKNOWN
 
     @property
+    def is_resolved(self) -> bool:
+        """Whether the record may satisfy an admitted action dependency."""
+
+        return self.epistemic_class in {
+            EpistemicClass.OBSERVED,
+            EpistemicClass.DERIVED,
+        }
+
+    @property
     def value(self) -> Any:
         if self._value is None:
             raise ValueError("unknown epistemic records have no value")
@@ -174,11 +183,11 @@ class EpistemicState:
             unresolved = [
                 dependency
                 for dependency in record.dependencies
-                if not by_key[dependency].is_known
+                if not by_key[dependency].is_resolved
             ]
             if unresolved:
                 raise ValueError(
-                    f"derived record {record.key} has unknown dependencies: "
+                    f"derived record {record.key} has unresolved dependencies: "
                     + ",".join(unresolved)
                 )
 
@@ -227,7 +236,9 @@ class EpistemicState:
         by_key = self._by_key()
         normalized = materialize_iterable("epistemic keys", keys)
         unresolved = {
-            key for key in normalized if key not in by_key or not by_key[key].is_known
+            key
+            for key in normalized
+            if key not in by_key or not by_key[key].is_resolved
         }
         return tuple(sorted(unresolved))
 

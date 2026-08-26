@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from ibae import (
+    MAX_PROPOSALS_PER_BATCH,
     ActionProposal,
     AuthorityLayer,
     BatchStatus,
@@ -22,6 +23,7 @@ from ibae import (
     OrchestrationLimits,
     OrchestrationState,
     ProposalBatch,
+    ProposalOrdering,
     RecoveryAction,
     RejectionReason,
     ReplaySafety,
@@ -72,8 +74,17 @@ def _ready_state(
     return state, obligation
 
 
-def _batch(*proposals: ActionProposal, key: str = "batch") -> ProposalBatch:
-    return ProposalBatch(key, Strategy("default", {"version": 1}), proposals)
+def _batch(
+    *proposals: ActionProposal,
+    key: str = "batch",
+    ordering: ProposalOrdering = ProposalOrdering.CANONICAL_INDEPENDENT,
+) -> ProposalBatch:
+    return ProposalBatch(
+        key,
+        Strategy("default", {"version": 1}),
+        proposals,
+        ordering=ordering,
+    )
 
 
 def _proposal(
@@ -248,7 +259,7 @@ def test_epistemic_dependency_digest_includes_transitive_state() -> None:
 
 
 def test_derived_state_cannot_claim_known_value_from_unknown_input() -> None:
-    with pytest.raises(ValueError, match="unknown dependencies"):
+    with pytest.raises(ValueError, match="unresolved dependencies"):
         EpistemicState.from_iterable(
             (
                 EpistemicRecord("source", EpistemicClass.UNKNOWN),
@@ -257,6 +268,36 @@ def test_derived_state_cannot_claim_known_value_from_unknown_input() -> None:
                     EpistemicClass.DERIVED,
                     1,
                     dependencies=("source",),
+                ),
+            )
+        )
+
+
+def test_model_proposed_state_cannot_resolve_admission_dependencies() -> None:
+    epistemic = EpistemicState.from_iterable(
+        (
+            EpistemicRecord(
+                "candidate", EpistemicClass.MODEL_PROPOSED, {"approved": True}
+            ),
+        )
+    )
+    state, obligation = _ready_state(epistemic_state=epistemic)
+    proposal = _proposal(obligation, required_state_keys=("candidate",))
+    decision = admit_batch(state, _batch(proposal)).receipt.decisions[0]
+    assert decision.rejection_reason is RejectionReason.UNKNOWN_STATE
+    assert decision.unresolved_state_keys == ("candidate",)
+
+    with pytest.raises(ValueError, match="unresolved dependencies"):
+        EpistemicState.from_iterable(
+            (
+                EpistemicRecord(
+                    "candidate", EpistemicClass.MODEL_PROPOSED, {"approved": True}
+                ),
+                EpistemicRecord(
+                    "derived-from-candidate",
+                    EpistemicClass.DERIVED,
+                    True,
+                    dependencies=("candidate",),
                 ),
             )
         )
@@ -282,6 +323,27 @@ def test_strategy_and_proposal_payloads_are_mutation_isolated() -> None:
     assert state.logical_tick == 0
 
 
+@pytest.mark.parametrize(
+    "parameters",
+    (
+        {"elapsed": 1.5},
+        {"runtime": {"wall_clock": "2026-08-26T10:00:00Z"}},
+        {"started-at": "2026-08-26T10:00:00Z"},
+        {"elapsedSeconds": 3},
+    ),
+)
+def test_strategy_identity_rejects_observational_timing_metadata(
+    parameters: object,
+) -> None:
+    with pytest.raises(ValueError, match="observational metadata"):
+        Strategy("invalid-timing", parameters)
+
+    strategy = Strategy("semantic", {"algorithm": "stable", "version": 1})
+    assert strategy.canonical_record()["parameter_schema"] == (
+        "IBAE-STRATEGY-PARAMETERS-V1"
+    )
+
+
 def test_proposal_batch_normalizes_caller_owned_sequence() -> None:
     _, obligation = _ready_state()
     first = _proposal(obligation, key="first")
@@ -289,6 +351,28 @@ def test_proposal_batch_normalizes_caller_owned_sequence() -> None:
     batch = ProposalBatch("isolated-batch", Strategy("stable", {}), proposals)
     proposals.append(_proposal(obligation, key="second", arguments={"n": 2}))
     assert batch.proposals == (first,)
+
+
+def test_proposal_batch_stops_consuming_at_the_protocol_hard_limit() -> None:
+    _, obligation = _ready_state()
+    consumed = 0
+
+    def proposals() -> object:
+        nonlocal consumed
+        for index in range(MAX_PROPOSALS_PER_BATCH + 100):
+            consumed += 1
+            yield _proposal(
+                obligation,
+                key=f"bounded-{index}",
+                arguments={"index": index},
+            )
+
+    with pytest.raises(ValueError, match="hard limit"):
+        ProposalBatch("bounded", Strategy("stable", {}), proposals())
+    assert consumed == MAX_PROPOSALS_PER_BATCH + 1
+
+    with pytest.raises(ValueError, match="protocol hard limit"):
+        OrchestrationLimits(max_batch_proposals=MAX_PROPOSALS_PER_BATCH + 1)
 
 
 def test_admission_is_byte_identical_across_input_orderings() -> None:
@@ -414,9 +498,67 @@ def test_effectful_occurrences_are_never_content_deduplicated() -> None:
         arguments={"payload": "same"},
         occurrence_key="effect-occurrence-b",
     )
-    decisions = admit_batch(state, _batch(first, second)).receipt.decisions
+    decisions = admit_batch(
+        state,
+        _batch(
+            first,
+            second,
+            ordering=ProposalOrdering.DECLARED_SEQUENCE,
+        ),
+    ).receipt.decisions
     assert all(item.status is DecisionStatus.ADMITTED for item in decisions)
     assert len({item.action_id for item in decisions}) == 2
+
+
+def test_effectful_batch_requires_an_explicit_declared_sequence() -> None:
+    state, obligation = _ready_state()
+    proposal = _proposal(
+        obligation,
+        capability="write",
+        occurrence_key="ordered-effect",
+    )
+    decision = admit_batch(state, _batch(proposal)).receipt.decisions[0]
+    assert decision.rejection_reason is RejectionReason.ORDERING_CONTRACT_REQUIRED
+    assert decision.recovery_actions == (RecoveryAction.USE_DECLARED_SEQUENCE,)
+    assert state.occurrence_owners == ()
+
+
+def test_declared_effect_order_is_identity_bearing_and_preserved() -> None:
+    state, obligation = _ready_state()
+    first = _proposal(
+        obligation,
+        key="ordered-first",
+        capability="write",
+        occurrence_key="ordered-occurrence-first",
+    )
+    second = _proposal(
+        obligation,
+        key="ordered-second",
+        capability="write",
+        occurrence_key="ordered-occurrence-second",
+    )
+    declared = (first, second)
+    if first.proposal_id < second.proposal_id:
+        declared = (second, first)
+
+    batch = _batch(
+        *declared,
+        key="declared-order",
+        ordering=ProposalOrdering.DECLARED_SEQUENCE,
+    )
+    reversed_batch = _batch(
+        *reversed(declared),
+        key="declared-order",
+        ordering=ProposalOrdering.DECLARED_SEQUENCE,
+    )
+    transition = admit_batch(state, batch)
+    assert [item.proposal_key for item in transition.receipt.decisions] == [
+        item.proposal_key for item in declared
+    ]
+    assert batch.batch_id != reversed_batch.batch_id
+    assert transition.receipt.proposal_ordering is (
+        ProposalOrdering.DECLARED_SEQUENCE
+    )
 
 
 def test_duplicate_effect_occurrence_is_rejected_not_deduplicated() -> None:
@@ -433,13 +575,81 @@ def test_duplicate_effect_occurrence_is_rejected_not_deduplicated() -> None:
         capability="write",
         occurrence_key="same-occurrence",
     )
-    decisions = admit_batch(state, _batch(first, second)).receipt.decisions
+    decisions = admit_batch(
+        state,
+        _batch(
+            first,
+            second,
+            ordering=ProposalOrdering.DECLARED_SEQUENCE,
+        ),
+    ).receipt.decisions
     assert [item.status for item in decisions].count(DecisionStatus.ADMITTED) == 1
     rejected = next(
         item for item in decisions if item.status is DecisionStatus.REJECTED
     )
     assert rejected.rejection_reason is RejectionReason.DUPLICATE_OCCURRENCE
     assert RecoveryAction.USE_DISTINCT_OCCURRENCE_KEY in rejected.recovery_actions
+
+
+def test_effect_occurrence_ownership_persists_across_batches() -> None:
+    state, obligation = _ready_state()
+    first = _proposal(
+        obligation,
+        key="cross-batch-first",
+        capability="write",
+        occurrence_key="cross-batch-occurrence",
+    )
+    first_transition = admit_batch(
+        state,
+        _batch(first, ordering=ProposalOrdering.DECLARED_SEQUENCE),
+    )
+    assert len(first_transition.next_state.occurrence_owners) == 1
+
+    repeated = _proposal(
+        obligation,
+        key="cross-batch-repeat",
+        capability="write",
+        arguments={"changed": True},
+        occurrence_key="cross-batch-occurrence",
+    )
+    second_transition = admit_batch(
+        first_transition.next_state,
+        _batch(repeated, ordering=ProposalOrdering.DECLARED_SEQUENCE),
+    )
+    decision = second_transition.receipt.decisions[0]
+    assert decision.rejection_reason is RejectionReason.DUPLICATE_OCCURRENCE
+    assert second_transition.next_state.occurrence_owners == (
+        first_transition.next_state.occurrence_owners
+    )
+
+
+def test_occurrence_registry_fails_closed_at_its_bound() -> None:
+    limits = OrchestrationLimits(max_occurrence_owners=1)
+    state, obligation = _ready_state(limits=limits)
+    first = _proposal(
+        obligation,
+        key="capacity-first",
+        capability="write",
+        occurrence_key="capacity-occurrence-first",
+    )
+    first_transition = admit_batch(
+        state,
+        _batch(first, ordering=ProposalOrdering.DECLARED_SEQUENCE),
+    )
+    second = _proposal(
+        obligation,
+        key="capacity-second",
+        capability="write",
+        occurrence_key="capacity-occurrence-second",
+    )
+    second_transition = admit_batch(
+        first_transition.next_state,
+        _batch(second, ordering=ProposalOrdering.DECLARED_SEQUENCE),
+    )
+    decision = second_transition.receipt.decisions[0]
+    assert decision.rejection_reason is RejectionReason.OCCURRENCE_REGISTRY_FULL
+    assert decision.recovery_actions == (RecoveryAction.REQUEST_NEW_BOUNDED_SCOPE,)
+    assert len(second_transition.next_state.occurrence_owners) == 1
 
 
 @pytest.mark.parametrize(
@@ -471,7 +681,10 @@ def test_occurrence_contract_rejections_are_structural(
         capability=capability,
         occurrence_key=occurrence_key,
     )
-    decision = admit_batch(state, _batch(proposal)).receipt.decisions[0]
+    decision = admit_batch(
+        state,
+        _batch(proposal, ordering=ProposalOrdering.DECLARED_SEQUENCE),
+    ).receipt.decisions[0]
     assert decision.rejection_reason is reason
     assert recovery in decision.recovery_actions
 
@@ -674,13 +887,19 @@ def test_oversized_batch_is_rejected_once_and_exposes_split_recovery() -> None:
 
 def test_compact_state_projection_exposes_ready_blocked_and_capabilities() -> None:
     root = Obligation("projection-root", "Projection root.")
-    blocked = Obligation(
+    dependency_blocked = Obligation(
         "projection-child",
         "Projection child.",
         dependency_ids=(root.obligation_id,),
     )
+    explicitly_blocked = Obligation(
+        "projection-external",
+        "Wait for external approval.",
+        status=ObligationStatus.BLOCKED,
+        block_reason="approval has not arrived",
+    )
     state = OrchestrationState.create(
-        (blocked, root),
+        (dependency_blocked, explicitly_blocked, root),
         capabilities=(Capability("read", ReplaySafety.CACHEABLE_READ, "Read state."),),
     )
     projection = state.compact_projection()
@@ -689,11 +908,21 @@ def test_compact_state_projection_exposes_ready_blocked_and_capabilities() -> No
     assert projection["obligations"]["ready"][0]["obligation_id"] == (
         root.obligation_id
     )
-    assert projection["obligations"]["blocked"][0]["blocking_dependency_ids"] == [
-        root.obligation_id
-    ]
+    blocked_records = projection["obligations"]["blocked"]
+    dependency_record = next(
+        item for item in blocked_records if item["key"] == "projection-child"
+    )
+    explicit_record = next(
+        item for item in blocked_records if item["key"] == "projection-external"
+    )
+    assert dependency_record["blocking_dependency_ids"] == [root.obligation_id]
+    assert dependency_record["description"] == "Projection child."
+    assert dependency_record["block_reason"] is None
+    assert explicit_record["description"] == "Wait for external approval."
+    assert explicit_record["block_reason"] == "approval has not arrived"
     assert projection["capabilities"][0]["name"] == "read"
-    assert projection["capacity"]["obligation_slots_remaining"] == 126
+    assert projection["capacity"]["obligation_slots_remaining"] == 125
+    assert projection["capacity"]["occurrence_owner_slots_remaining"] == 256
 
 
 def test_state_identity_changes_with_authoritative_transition_state() -> None:

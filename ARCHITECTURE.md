@@ -451,13 +451,13 @@ The merged v0.1 Python kernel implements the deterministic execution foundation:
 The v0.2 Python reference implements deterministic orchestration semantics for:
 
 - stable obligation identities and validated dependency DAGs;
-- canonical ready sets and proposal ordering;
+- canonical ready sets, canonical ordering for independent reads, and preserved declared sequencing for effectful batches;
 - model proposal versus admitted-action separation;
 - orchestrator-owned replay classification;
 - within-batch deduplication only for replay-safe actions;
-- distinct occurrence identity for mutations/non-idempotent effects;
+- distinct bounded occurrence identity/ownership for mutations and non-idempotent effects, persisted across batches;
 - explicit epistemic state classes and dependency-bound state identity;
-- bounded proposal/state/history containers;
+- bounded proposal/state/history/occurrence containers, including bounded iterable consumption;
 - canonical rejection codes, recovery actions, compact state projection, and logical orchestration ticks;
 - byte-stable, model-free conformance fixtures.
 

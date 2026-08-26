@@ -314,7 +314,7 @@ Goal: prove orchestration semantics before moving authority into Rust.
 
 ### v0.2 gate
 
-Identical canonical task state + identical proposal set + identical policy must yield identical admitted orchestration decisions.
+Identical canonical task state + identical proposal set with the same explicit ordering contract + identical policy must yield identical admitted orchestration decisions. Canonically independent read batches are order-normalized; effectful batches preserve their identity-bearing declared sequence.
 
 Gate evidence: unit/regression coverage plus `fixtures/v0.2/orchestration-reference.json`, regenerated under multiple `PYTHONHASHSEED` values and byte-compared in CI. v0.3 remains blocked until this PR is reviewed and the v0.2 gate is accepted.
 

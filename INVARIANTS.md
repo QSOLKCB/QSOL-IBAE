@@ -98,7 +98,7 @@ Current enforcement: the pure v0.2 `admit_batch` transition and checked-in model
 
 When multiple actions are equally ready under the same policy and dependency state, the deterministic orchestrator must use a canonical ordering/admission rule rather than process/hash iteration accidents.
 
-Current enforcement: obligations are ordered by canonical obligation ID, proposal batches are ordered by canonical proposal ID, and the determinism workflow repeats the fixture under distinct `PYTHONHASHSEED` values.
+Current enforcement: obligations are ordered by canonical obligation ID; explicitly independent/read-only proposal batches are ordered by canonical proposal ID; effectful batches require an identity-bearing declared sequence and preserve it. The determinism workflow repeats the fixture under distinct `PYTHONHASHSEED` values.
 
 ## IBAE-DET-005 — Domain-separated identities
 
@@ -126,7 +126,7 @@ Current v0.2 reference implementation: `IBAE-LOGICAL-CLOCK-V1` consumes one exac
 
 Elapsed time, throughput, queue delay, and tool latency are benchmark/environment observations and cannot enter correctness identity unless a separately reviewed protocol explicitly makes timing itself the subject of the task.
 
-Current enforcement: the v0.2 canonical orchestration state, events, action identities, and receipts expose no wall-clock field or arbitrary metadata insertion surface.
+Current enforcement: the v0.2 canonical orchestration state, events, action identities, and receipts expose no wall-clock field. Strategy identity uses `IBAE-STRATEGY-PARAMETERS-V1` and rejects observational/timing parameter fields rather than hashing them as semantics.
 
 ## IBAE-CLK-003 — Wall-clock watchdog is failsafe only
 
@@ -192,7 +192,7 @@ Requests, executions, retries, mutations, logical ticks, lease counters, executi
 
 Batch proposal size, ready queue size, worker count, and other resident execution structures must have explicit finite bounds or deterministic streaming rules.
 
-Current enforcement: v0.2 bounds obligations, epistemic records, capabilities, proposal batches, and retained orchestration history. No worker queue exists yet; any later worker phase inherits this invariant.
+Current enforcement: v0.2 bounds obligations, epistemic records, capabilities, proposal batches, persistent occurrence ownership, and retained orchestration history. Proposal construction stops after the protocol hard limit instead of fully materializing an over-size/infinite iterable. No worker queue exists yet; any later worker phase inherits this invariant.
 
 ---
 
@@ -380,7 +380,7 @@ Current enforcement: replay classification is read from the orchestrator-owned v
 
 Batching/parallelizing independent actions may alter execution-plan identity and performance, but cannot alter correctness identity or result semantics for an admitted deterministic case.
 
-Current v0.2 enforcement proves admission equivalence across proposal input order. Physical parallel execution and execution-plan receipts remain later-phase contracts.
+Current v0.2 enforcement proves admission equivalence across input order only for batches that explicitly declare canonical independence. Batches containing effectful capabilities require an identity-bearing declared sequence, which admission preserves. Physical parallel execution and execution-plan receipts remain later-phase contracts.
 
 ## IBAE-ORCH-005 — Dependency barriers are explicit
 
@@ -388,7 +388,7 @@ Current v0.2 enforcement proves admission equivalence across proposal input orde
 
 An action that depends on an unsatisfied obligation/observation cannot be made ready merely by scheduling preference or model request.
 
-Current enforcement: unknown, satisfied, explicitly blocked, dependency-blocked, and epistemically unknown inputs produce distinct canonical rejections and recovery actions.
+Current enforcement: unknown, satisfied, explicitly blocked, dependency-blocked, epistemically unknown, and unadmitted model-proposed inputs produce canonical rejections and recovery actions. Only observed or valid derived epistemic records satisfy action dependencies.
 
 ## IBAE-ORCH-006 — Orchestration state is bounded
 
@@ -396,7 +396,7 @@ Current enforcement: unknown, satisfied, explicitly blocked, dependency-blocked,
 
 Obligation graphs, ready sets, pending proposals, and retained orchestration history require explicit bounds or deterministic streaming/compaction policies.
 
-Current enforcement: `OrchestrationLimits` provides positive finite caps; over-size proposal batches fail closed; retained history uses deterministic bounded truncation.
+Current enforcement: `OrchestrationLimits` provides positive finite caps; over-size proposal construction/admission fails closed; retained history uses deterministic bounded truncation; and persistent occurrence ownership rejects new effects when its exact registry reaches capacity.
 
 ## IBAE-ORCH-007 — Occurrence identity is preserved for effectful actions
 
@@ -404,7 +404,7 @@ Current enforcement: `OrchestrationLimits` provides positive finite caps; over-s
 
 Each admitted mutation or non-idempotent action has occurrence identity distinct from content equivalence. An orchestrator may reorder an effectful action only when its dependency/ordering contract permits it, and may never merge two required occurrences into one execution merely because their payloads match.
 
-Current enforcement: occurrence-sensitive capabilities require a unique occurrence key, bind it into action identity, never enter the replay-safe deduplication index, and reject occurrence-key reuse rather than treating it as a cache hit.
+Current enforcement: occurrence-sensitive capabilities require a unique occurrence key, bind it into action identity, never enter the replay-safe deduplication index, and persist bounded occurrence ownership across batches so reuse is rejected rather than treated as a cache hit. Effectful batches also require and preserve an explicit declared sequence.
 
 ---
 
@@ -487,7 +487,7 @@ unknown
 
 A proposal cannot silently become an observation. Unknown/unqueried cannot silently become false.
 
-Current enforcement: v0.2 uses distinct immutable record classes, forbids values on `unknown`, requires provenance on `observed`, marks every proposal `model_proposed`, and exposes separate compact-projection collections.
+Current enforcement: v0.2 uses distinct immutable record classes, forbids values on `unknown`, requires provenance on `observed`, marks every proposal `model_proposed`, prevents model-proposed values from satisfying admitted dependencies, and exposes separate compact-projection collections.
 
 ## IBAE-AI-005 — Runtime bookkeeping belongs to runtime
 
@@ -501,7 +501,7 @@ Remaining budgets, logical ticks, cache-hit counts, obligation readiness, and ot
 
 The supervisor receives a deterministic compact state digest sufficient for safe next-action reasoning instead of an ever-growing replay of the full execution transcript.
 
-Current v0.2 implementation exposes a bounded compact projection containing canonical state identity, logical tick, ready/blocked/satisfied obligations, epistemic classes, capability state, and remaining resident-state capacity. Delivery to a live supervisor is deferred to v0.6.
+Current v0.2 implementation exposes a bounded compact projection containing canonical state identity, logical tick, ready/blocked/satisfied obligations with descriptions and explicit block reasons, epistemic classes, capability state, occurrence ownership, and remaining resident-state capacity. Delivery to a live supervisor is deferred to v0.6.
 
 ## IBAE-AI-007 — Cached observation validity is explicit
 

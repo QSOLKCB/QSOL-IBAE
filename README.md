@@ -28,15 +28,15 @@ The v0.1 kernel provides:
 The v0.2 Python orchestration reference adds:
 
 - canonical obligation IDs and a validated dependency DAG;
-- deterministic ready sets and proposal ordering;
+- deterministic ready sets, canonical independent-read ordering, and declared effect sequencing;
 - immutable model proposals separated from admitted actions;
 - orchestrator-owned replay classification and safe batch deduplication;
-- occurrence identity for mutations and other non-replay-safe effects;
+- persistent bounded occurrence ownership for mutations and other non-replay-safe effects;
 - explicit `observed`, `derived`, `model_proposed`, and `unknown` state;
 - versioned capability, strategy, action, state, event, and receipt identities;
 - `IBAE-LOGICAL-CLOCK-V1` transition accounting;
 - stable rejection reason codes and deterministic recovery actions;
-- a compact AI-facing state projection;
+- a compact AI-facing state projection with actionable obligation/blocker context;
 - a checked-in, byte-stable model-free conformance fixture.
 
 There are deliberately **no model calls yet**. OpenAI SDK integration comes only after the kernel invariants are independently testable.
