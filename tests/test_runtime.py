@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import dataclasses
 import time
+import tomllib
+from pathlib import Path
 
 import pytest
 
@@ -418,3 +420,9 @@ def test_legacy_executor_api_is_now_rust_backed() -> None:
     with pytest.raises(BudgetExceeded):
         executor.execute_read("read", {}, DEP_A, lambda: 3)
 
+
+def test_rust_crate_uses_the_authoritative_repository_license() -> None:
+    manifest = tomllib.loads(Path("rust/Cargo.toml").read_text(encoding="utf-8"))
+    package = manifest["package"]
+    assert package["license-file"] == "../LICENSE"
+    assert "license" not in package
