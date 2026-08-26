@@ -243,6 +243,20 @@ def test_maximum_admitted_observation_fits_complete_runtime_outcome() -> None:
     assert runtime.snapshot.executions == 1
 
 
+def test_maximum_admitted_depth_survives_runtime_envelope_wrapping() -> None:
+    observation: object = 0
+    for _ in range(32):
+        observation = [observation]
+    CanonicalValue.from_value(observation)
+    runtime = RustRuntimeSession("maximum-observation-depth")
+    transition = runtime.execute_read_transition(
+        "read", {"path": "deep"}, DEP_A, lambda: observation
+    )
+    assert transition.receipt.status == "accepted"
+    assert transition.observation == observation
+    assert runtime.snapshot.executions == 1
+
+
 def test_runtime_output_profile_represents_full_declared_history_shape() -> None:
     record = CanonicalRuntimeRecord.from_value(
         {"history": ["a" * 64] * 4_096}

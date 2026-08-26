@@ -29,6 +29,7 @@ MAX_RECORD_TEXT_BYTES = 4_096
 # while snapshots may contain every bounded cache identity and history entry.
 # These limits are deliberately separate from the arbitrary input-value profile.
 MAX_RUNTIME_RECORD_BYTES = 2_097_152
+MAX_RUNTIME_RECORD_DEPTH = 40
 MAX_RUNTIME_RECORD_NODES = 32_768
 MAX_RUNTIME_COLLECTION_ITEMS = 4_096
 
@@ -182,14 +183,15 @@ def _normalize_bounded_json(
     node_count: list[int] | None = None,
     byte_count: list[int] | None = None,
     max_bytes: int = MAX_CANONICAL_VALUE_BYTES,
+    max_depth: int = MAX_CANONICAL_VALUE_DEPTH,
     max_nodes: int = MAX_CANONICAL_VALUE_NODES,
     max_collection_items: int = MAX_CANONICAL_COLLECTION_ITEMS,
 ) -> Any:
     """Copy a JSON value while enforcing finite shape before serialization."""
 
-    if depth > MAX_CANONICAL_VALUE_DEPTH:
+    if depth > max_depth:
         raise ValueError(
-            f"canonical value exceeds maximum depth {MAX_CANONICAL_VALUE_DEPTH}"
+            f"canonical value exceeds maximum depth {max_depth}"
         )
     active_count = [0] if node_count is None else node_count
     active_bytes = [0] if byte_count is None else byte_count
@@ -251,6 +253,7 @@ def _normalize_bounded_json(
                 node_count=active_count,
                 byte_count=active_bytes,
                 max_bytes=max_bytes,
+                max_depth=max_depth,
                 max_nodes=max_nodes,
                 max_collection_items=max_collection_items,
             )
@@ -269,6 +272,7 @@ def _normalize_bounded_json(
                 node_count=active_count,
                 byte_count=active_bytes,
                 max_bytes=max_bytes,
+                max_depth=max_depth,
                 max_nodes=max_nodes,
                 max_collection_items=max_collection_items,
             )
@@ -336,6 +340,7 @@ class CanonicalRuntimeRecord:
         normalized = _normalize_bounded_json(
             decoded,
             max_bytes=MAX_RUNTIME_RECORD_BYTES,
+            max_depth=MAX_RUNTIME_RECORD_DEPTH,
             max_nodes=MAX_RUNTIME_RECORD_NODES,
             max_collection_items=MAX_RUNTIME_COLLECTION_ITEMS,
         )
@@ -347,6 +352,7 @@ class CanonicalRuntimeRecord:
         normalized = _normalize_bounded_json(
             value,
             max_bytes=MAX_RUNTIME_RECORD_BYTES,
+            max_depth=MAX_RUNTIME_RECORD_DEPTH,
             max_nodes=MAX_RUNTIME_RECORD_NODES,
             max_collection_items=MAX_RUNTIME_COLLECTION_ITEMS,
         )

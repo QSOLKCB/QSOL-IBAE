@@ -32,7 +32,7 @@ The admitted domain is bounded by:
 | Integer magnitude | 256 bits |
 | Session/tool/dependency text | 4,096 UTF-8 bytes |
 
-Runtime-emitted outcomes and snapshots use a distinct bounded envelope of 2,097,152 UTF-8 bytes, 32,768 nodes, and 4,096 items in one mapping/sequence. This output allowance reserves space for one fully admitted observation plus its receipt and for every identity in the declared 4,096-entry cache/history bounds; it does not enlarge the arbitrary command, argument, or observation domain.
+Runtime-emitted outcomes and snapshots use a distinct bounded envelope of 2,097,152 UTF-8 bytes, depth 40, 32,768 nodes, and 4,096 items in one mapping/sequence. This output allowance reserves wrapper depth/space for one fully admitted observation plus its receipt and for every identity in the declared 4,096-entry cache/history bounds; it does not enlarge the arbitrary command, argument, or observation domain.
 
 Mappings require unique string keys. NaN, infinities, non-canonical number spellings, duplicate keys, non-canonical mapping order/spacing, over-size values, and unsupported Python object forms are rejected. Runtime observations additionally require exact JSON Python forms (`None`, exact booleans/integers/floats/strings, exact lists, and exact dictionaries already in canonical key order). Tuples, mapping/scalar subclasses, and non-canonical insertion order reject before cache insertion because JSON cannot preserve their frozen Python reference semantics.
 

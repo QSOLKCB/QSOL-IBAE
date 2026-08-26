@@ -24,6 +24,7 @@ const MAX_CANONICAL_VALUE_NODES: usize = 4_096;
 const MAX_CANONICAL_COLLECTION_ITEMS: usize = 1_024;
 const MAX_CANONICAL_STRING_BYTES: usize = 65_536;
 const MAX_RUNTIME_RECORD_BYTES: usize = 2_097_152;
+const MAX_RUNTIME_RECORD_DEPTH: usize = 40;
 const MAX_RUNTIME_RECORD_NODES: usize = 32_768;
 const MAX_RUNTIME_COLLECTION_ITEMS: usize = 4_096;
 const MAX_RECORD_TEXT_BYTES: usize = 4_096;
@@ -233,10 +234,11 @@ fn render_canonical(
     value: &Value,
     depth: usize,
     stats: &mut CanonicalStats,
+    max_depth: usize,
     max_nodes: usize,
     max_collection_items: usize,
 ) -> Result<String, CanonicalError> {
-    if depth > MAX_CANONICAL_VALUE_DEPTH {
+    if depth > max_depth {
         return Err(CanonicalError);
     }
     stats.nodes = stats.nodes.checked_add(1).ok_or(CanonicalError)?;
@@ -267,6 +269,7 @@ fn render_canonical(
                     item,
                     depth + 1,
                     stats,
+                    max_depth,
                     max_nodes,
                     max_collection_items,
                 )?);
@@ -294,6 +297,7 @@ fn render_canonical(
                     nested,
                     depth + 1,
                     stats,
+                    max_depth,
                     max_nodes,
                     max_collection_items,
                 )?);
@@ -307,11 +311,19 @@ fn render_canonical(
 fn canonical_value_with_limits(
     value: &Value,
     max_bytes: usize,
+    max_depth: usize,
     max_nodes: usize,
     max_collection_items: usize,
 ) -> Result<String, CanonicalError> {
     let mut stats = CanonicalStats::default();
-    let output = render_canonical(value, 0, &mut stats, max_nodes, max_collection_items)?;
+    let output = render_canonical(
+        value,
+        0,
+        &mut stats,
+        max_depth,
+        max_nodes,
+        max_collection_items,
+    )?;
     if output.len() > max_bytes {
         return Err(CanonicalError);
     }
@@ -322,6 +334,7 @@ fn canonical_value(value: &Value) -> Result<String, CanonicalError> {
     canonical_value_with_limits(
         value,
         MAX_CANONICAL_VALUE_BYTES,
+        MAX_CANONICAL_VALUE_DEPTH,
         MAX_CANONICAL_VALUE_NODES,
         MAX_CANONICAL_COLLECTION_ITEMS,
     )
@@ -331,6 +344,7 @@ fn canonical_runtime_value(value: &Value) -> Result<String, CanonicalError> {
     canonical_value_with_limits(
         value,
         MAX_RUNTIME_RECORD_BYTES,
+        MAX_RUNTIME_RECORD_DEPTH,
         MAX_RUNTIME_RECORD_NODES,
         MAX_RUNTIME_COLLECTION_ITEMS,
     )
@@ -1548,6 +1562,23 @@ mod tests {
         assert!(outcome.len() < MAX_RUNTIME_RECORD_BYTES);
         assert_eq!(outcome_receipt(&outcome)["status"], "accepted");
         assert_eq!(runtime.counters.requests, 1);
+        assert_eq!(runtime.counters.executions, 1);
+        assert_eq!(runtime.cache.len(), 1);
+    }
+
+    #[test]
+    fn maximum_observation_depth_remains_representable_when_wrapped() {
+        let mut runtime = core(2, 2, 1, 2);
+        let mut observation = json!(0);
+        for _ in 0..MAX_CANONICAL_VALUE_DEPTH {
+            observation = Value::Array(vec![observation]);
+        }
+        let canonical = canonical_value(&observation).unwrap();
+        let outcome = run(&mut runtime, &read_command("deep", "c"), || {
+            Invocation::Observation(canonical)
+        });
+        assert_eq!(outcome_receipt(&outcome)["status"], "accepted");
+        assert!(parse_runtime_canonical(&outcome).is_ok());
         assert_eq!(runtime.counters.executions, 1);
         assert_eq!(runtime.cache.len(), 1);
     }
