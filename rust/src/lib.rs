@@ -63,9 +63,7 @@ impl Reason {
 
     fn invariant_ids(self) -> &'static [&'static str] {
         match self {
-            Self::InvalidCanonicalCommand | Self::InvalidCommand => {
-                &["IBAE-RT-002", "IBAE-RT-005"]
-            }
+            Self::InvalidCanonicalCommand | Self::InvalidCommand => &["IBAE-RT-002", "IBAE-RT-005"],
             Self::UnsupportedCommand | Self::ProtocolVersionMismatch => &["IBAE-RT-002"],
             Self::RequestBudgetExhausted => &["IBAE-BND-001", "IBAE-CLK-004"],
             Self::ExecutionBudgetExhausted => &["IBAE-BND-002", "IBAE-DET-003"],
@@ -453,7 +451,10 @@ fn parse_command(command_json: &str) -> Result<(Command, Value), Reason> {
                 .filter(|item| is_fingerprint(item))
                 .ok_or(Reason::InvalidCommand)?
                 .to_owned();
-            let arguments = mapping.get("arguments").cloned().ok_or(Reason::InvalidCommand)?;
+            let arguments = mapping
+                .get("arguments")
+                .cloned()
+                .ok_or(Reason::InvalidCommand)?;
             let arguments_canonical =
                 canonical_value(&arguments).map_err(|_| Reason::InvalidCommand)?;
             let dependency_fingerprint = mapping
@@ -511,9 +512,7 @@ fn parse_invocation_envelope(envelope: &str) -> Invocation {
         return Invocation::InvalidObservation;
     };
     match mapping.get("status").and_then(Value::as_str) {
-        Some("ok")
-            if object_has_exact_keys(mapping, &["observation", "status"]) =>
-        {
+        Some("ok") if object_has_exact_keys(mapping, &["observation", "status"]) => {
             let Some(observation) = mapping.get("observation") else {
                 return Invocation::InvalidObservation;
             };
@@ -522,9 +521,7 @@ fn parse_invocation_envelope(envelope: &str) -> Invocation {
                 Err(_) => Invocation::InvalidObservation,
             }
         }
-        Some("rejected")
-            if object_has_exact_keys(mapping, &["reason_code", "status"]) =>
-        {
+        Some("rejected") if object_has_exact_keys(mapping, &["reason_code", "status"]) => {
             match mapping.get("reason_code").and_then(Value::as_str) {
                 Some("invalid_observation") => Invocation::InvalidObservation,
                 Some("operation_failed") => Invocation::OperationFailed,
@@ -836,7 +833,12 @@ impl RuntimeCore {
         .expect("the internally constructed outcome is canonicalizable")
     }
 
-    fn rejected_unparsed(&self, before: Counters, prior_state_id: String, reason: Reason) -> String {
+    fn rejected_unparsed(
+        &self,
+        before: Counters,
+        prior_state_id: String,
+        reason: Reason,
+    ) -> String {
         self.outcome(
             before,
             prior_state_id,
@@ -1050,11 +1052,7 @@ impl RuntimeCore {
     }
 }
 
-fn exact_u64(
-    value: Option<&Bound<'_, PyAny>>,
-    default: u64,
-    name: &str,
-) -> PyResult<u64> {
+fn exact_u64(value: Option<&Bound<'_, PyAny>>, default: u64, name: &str) -> PyResult<u64> {
     let Some(value) = value else {
         return Ok(default);
     };
@@ -1063,9 +1061,9 @@ fn exact_u64(
             "{name} must be an exact positive integer"
         )));
     }
-    value.extract::<u64>().map_err(|_| {
-        PyValueError::new_err(format!("{name} must be an exact positive integer"))
-    })
+    value
+        .extract::<u64>()
+        .map_err(|_| PyValueError::new_err(format!("{name} must be an exact positive integer")))
 }
 
 /// Opaque Python-owned handle whose authoritative fields remain Rust-private.
@@ -1155,8 +1153,7 @@ fn _runtime(module: &Bound<'_, PyModule>) -> PyResult<()> {
 mod tests {
     use super::*;
 
-    const ADMISSION: &str =
-        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const ADMISSION: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
     fn core(requests: u64, executions: u64, retries: u64, history: u64) -> RuntimeCore {
         RuntimeCore::new(
