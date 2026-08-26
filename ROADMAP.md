@@ -1,56 +1,472 @@
-# Roadmap
+# QSOL-IBAE Roadmap
+
+Status: architecture-contract planning after merged v0.1 kernel.
+
+QSOL-IBAE is intentionally developed **invariant-first**. The next implementation PR MUST NOT begin until the architecture, authority boundaries, identity model, logical execution clock, and Python/Rust protocol have been reviewed as contracts.
+
+The project goal is not to create another generic agent framework. It is to create a small OpenAI-exclusive governed execution substrate that reduces redundant work, makes bounded continuation auditable, and moves deterministic bookkeeping out of the model's cognitive workload.
+
+---
+
+## Core architectural thesis
+
+```text
+                    USER
+                      |
+                      v
+              OPENAI SUPERVISOR
+                      |
+                      v
++--------------------------------------------------+
+|               GOVERNANCE WRAPPER                 |
+| provider policy | authority | lease ceilings     |
+| tool permissions | receipt admission | audit     |
+|                                                  |
+|  +--------------------------------------------+  |
+|  |       DETERMINISTIC ORCHESTRATION          |  |
+|  | obligations | DAG | canonical scheduling   |  |
+|  | dedup | progress | leases | work admission |  |
+|  |                                            |  |
+|  |  +--------------------------------------+  |  |
+|  |  |          EXECUTION RUNTIME           |  |  |
+|  |  | canonical state | cache | budgets    |  |  |
+|  |  | logical clock | cycles | receipts    |  |  |
+|  |  | CPU reference | future accelerators |  |  |
+|  |  +--------------------------------------+  |  |
+|  +--------------------------------------------+  |
++--------------------------------------------------+
+                      |
+                      v
+                 FINAL RECEIPT
+```
+
+The intended implementation split is:
+
+```text
+Python logic core
+    governance policy
+    orchestration semantics
+    obligation/DAG construction
+    OpenAI integration
+    AI-facing state projection
+    future local-worker adapters
+
+        | versioned narrow protocol
+        v
+
+Rust runtime
+    exact state transitions
+    integer budget accounting
+    canonical identity
+    observation cache
+    cycle detection
+    logical execution clock
+    receipts
+    deterministic CPU execution
+    future accelerator adapters
+```
+
+**Python decides what should be attempted. Rust proves what was admitted and executed.**
+
+Rust MUST NOT directly own remote model-provider integration. OpenAI integration remains above the runtime boundary so model/API changes cannot destabilize the deterministic execution substrate.
+
+---
+
+# Completed foundation
 
 ## v0.1 — Deterministic Execution Kernel
+
+Merged in PR #1.
 
 - [x] Canonical JSON serialization.
 - [x] SHA-256 content fingerprints.
 - [x] Canonical read-tool identity.
+- [x] Reject non-string JSON mapping keys before canonical hashing.
 - [x] Dependency-sensitive observation cache.
 - [x] Cache mutation isolation.
+- [x] Reject invalid/non-canonical observations before cache insertion.
 - [x] Finite request/execution/retry/history budgets.
 - [x] Deterministic period-1/2/3 cycle detection.
-- [x] OpenAI-only remote provider policy.
-- [x] Unit tests.
+- [x] Cache-hit/cold-execution transition equivalence for cycle history.
+- [x] OpenAI-only remote-provider policy.
+- [x] Unit tests and review-hardening regressions.
 - [x] Deterministic micro-benchmark.
 - [x] CI and byte-repeat determinism workflow.
 - [ ] Establish benchmark corpus beyond micro-fixtures.
-- [ ] Freeze v0.1 semantics after external review.
+- [ ] Freeze v0.1 behavioral semantics after architecture review.
 
-## v0.2 — Progress Semantics
+The current Python kernel is a reference prototype. Future Rust implementation must preserve its admitted semantics unless a versioned contract explicitly changes them.
 
-- [ ] Define measurable progress records.
-- [ ] Distinguish progress from activity.
-- [ ] Add strategy identity.
-- [ ] Require progress or strategy change before continuation.
+---
 
-## v0.3 — Bounded Continuation Leases
+# Architecture contract gate — BEFORE the next implementation PR
 
-- [ ] Explicit finite lease extension.
-- [ ] Extension denial on cycles/non-progress.
-- [ ] Deterministic continuation checkpoint schema.
+## A0 — Layer and authority freeze
 
-## v0.4 — Execution DAG
+- [ ] Freeze the three-layer model: governance, orchestration, execution.
+- [ ] Require `governance != orchestration != execution != benchmark`.
+- [ ] Forbid upward authority promotion by lower layers.
+- [ ] Define the OpenAI supervisor as the only model-level completion authority.
+- [ ] Define future local open-weight workers as candidate-only subordinate workers.
+- [ ] Keep proprietary remote inference structurally OpenAI-only.
+- [ ] Define fail-closed behavior for unknown policy, unknown authority, malformed receipts, and unsupported provider state.
 
-- [ ] Dependency graph for independent observations.
-- [ ] Safe batching/parallel-read eligibility.
-- [ ] Selective cache invalidation by dependency.
+### Gate
 
-## v0.5 — OpenAI Supervisor Integration
+No implementation may allow a runtime, worker, benchmark result, or orchestration strategy to modify governance authority.
 
-- [ ] OpenAI Agents SDK adapter.
-- [ ] Supervisor-only completion authority.
-- [ ] Trace OpenAI model turns separately from tool executions.
+## A1 — Identity taxonomy freeze
 
-## v0.6 — Local Worker Protocol
+Define separate canonical identities for:
 
-- [ ] Local open-weight worker request/result schema.
+- [ ] **Task identity** — what is being attempted.
+- [ ] **Governance identity** — policy/version/authority under which execution is admitted.
+- [ ] **Orchestration identity** — obligation graph and admitted orchestration decisions.
+- [ ] **Execution identity** — canonical admitted actions/observations/transitions.
+- [ ] **Execution-plan identity** — worker/chunk/device/scheduling arrangement where relevant.
+- [ ] **Benchmark receipt** — elapsed time, throughput, token/tool counts, device observations, and other non-correctness performance data.
+
+Correctness identity MUST remain independent of elapsed wall-clock time. Where semantics are unchanged, correctness identity SHOULD remain independent of worker count, chunking, locality, and device assignment.
+
+### Gate
+
+No benchmark observation may silently become correctness evidence.
+
+## A2 — Deterministic logical execution clock
+
+- [ ] Define `IBAE-LOGICAL-CLOCK-V1`.
+- [ ] Increment the logical clock from canonical admitted transitions, not elapsed seconds.
+- [ ] Define which events consume request quanta, execution quanta, retry quanta, mutation quanta, and lease quanta.
+- [ ] Ensure cache hits still advance canonical request/transition history while consuming zero actual-execution quanta.
+- [ ] Keep wall-clock timing as an observational benchmark field only.
+- [ ] Retain a separate absolute wall-clock watchdog solely as a catastrophic-hang failsafe.
+- [ ] Prove watchdog expiry cannot be mistaken for normal task-completion semantics.
+
+### Gate
+
+Normal boundedness must be enforceable without consulting elapsed wall-clock time.
+
+## A3 — Execution budget vector
+
+Define a bounded resource vector rather than one scalar timeout:
+
+```text
+requests
+actual_executions
+retries
+mutations
+retained_history
+continuation_leases
+optional model_turn observations
+```
+
+- [ ] Every authority-bearing budget field uses exact integer accounting.
+- [ ] No model, local worker, tool backend, or accelerator may extend its own budget.
+- [ ] Establish initial named deterministic task profiles for experiments (`tiny`, `standard`, `extended`, `repository`) without claiming the initial numeric values are optimal.
+- [ ] Treat profile tuning as benchmark-driven research.
+- [ ] Keep task-profile selection/version inside governance/orchestration identity.
+
+## A4 — Progress and obligation semantics
+
+- [ ] Define an explicit obligation record and obligation DAG.
+- [ ] Distinguish **progress** from mere **activity**.
+- [ ] Define objective progress signals such as satisfied obligations, reduced failing tests, reduced unresolved review threads, or reduced unsatisfied acceptance gates.
+- [ ] Do not use model self-reported confidence/completion percentage as sole progress authority.
+- [ ] Define canonical strategy identity.
+- [ ] Define stalled-progress and changed-strategy states.
+- [ ] Define completion preconditions separately from model statements.
+
+### Gate
+
+The runtime/orchestrator must never grant additional work merely because the model says it is making progress.
+
+## A5 — Bounded continuation leases
+
+- [ ] Define `IBAE-CONTINUATION-LEASE-V1`.
+- [ ] A supervisor may request another lease; it may not grant one to itself.
+- [ ] Governance/orchestration decides lease admission deterministically from canonical state.
+- [ ] Require task incompleteness, no blocking invariant violation, available lease count, and either measurable progress or an explicitly admitted non-cyclic strategy change.
+- [ ] Deny extension on detected execution cycles unless governance explicitly classifies a safe recovery transition.
+- [ ] Evaluate geometrically decreasing lease sizes as the default bounded schedule, e.g. `B`, `B/2`, `B/4`, without freezing numeric values before benchmarks.
+- [ ] Persist deterministic continuation checkpoints.
+- [ ] Permit deterministic partial-finalization when no further lease is available.
+
+### Gate
+
+The sum of all possible leases must remain finitely bounded by policy before execution begins.
+
+## A6 — Python/Rust boundary freeze
+
+- [ ] Keep Python as the logic/orchestration layer.
+- [ ] Establish Rust as the exact runtime/accounting/reference execution layer.
+- [ ] Use PyO3 + maturin as the initial in-process bridge unless conformance work proves a smaller interface is preferable.
+- [ ] Do not introduce RPC, daemon, socket, or distributed infrastructure during the initial runtime port.
+- [ ] Define a tiny versioned command/receipt protocol rather than exposing many Rust internals to Python.
+- [ ] Candidate command set: `ADMIT`, `EXECUTE`, `RECORD_OBSERVATION`, `RECORD_RETRY`, `REQUEST_LEASE`, `FINALIZE`.
+- [ ] Require Python/Rust conformance fixtures for every authority-bearing state transition.
+- [ ] Prevent direct Python mutation of Rust-owned authoritative runtime state.
+- [ ] Keep arbitrary Python objects out of correctness identity; cross the boundary through declared canonical records.
+
+### Gate
+
+The runtime API must remain small enough that the complete authority surface can be audited and eventually formalized.
+
+## A7 — AI-facing protocol freeze
+
+Define `IBAE-AGENT-PROTOCOL-V1` around a small set of conceptual messages:
+
+```text
+STATE
+PROPOSAL
+ADMISSION
+RESULT
+LEASE
+FINALIZATION
+```
+
+The agent-facing surface SHOULD expose only the smallest sufficient canonical projection of runtime state.
+
+- [ ] AI need not reconstruct deterministic bookkeeping from prose.
+- [ ] Expose remaining budgets directly rather than requiring arithmetic by the model.
+- [ ] Expose obligation readiness/blocking directly.
+- [ ] Every rejection has a canonical reason code.
+- [ ] When safe recovery moves exist, return legal next actions.
+- [ ] Separate `observed`, `derived`, `model_proposed`, and `unknown` state classes.
+- [ ] Represent missing/unqueried state as `unknown`, not false.
+- [ ] Expose provenance and validity conditions on reused observations.
+- [ ] Provide a deterministic compact state digest instead of replaying the entire execution transcript every turn.
+- [ ] Expose tool/capability availability at session scope so the supervisor need not rediscover unavailable capabilities repeatedly.
+- [ ] Support batch proposals so independent work can be deduplicated, admitted, cached, and parallelized below the model round-trip boundary.
+
+### Gate
+
+No deterministic runtime fact required for safe next-action selection should exist only in natural-language transcript state.
+
+## A8 — Receipt and rejection model
+
+- [ ] Define versioned task/governance/orchestration/execution/final receipts.
+- [ ] Domain-separate all canonical hashes.
+- [ ] Preserve rejected or partial executions with stage/reason receipts rather than silently discarding them.
+- [ ] Bind final accepted state to the identities that actually determined correctness.
+- [ ] Keep benchmark/performance records separately labelled non-correctness observations.
+- [ ] Keep privacy-safe environment metadata and avoid raw machine identifiers unless explicitly required by a test protocol.
+
+## A9 — Donor-runtime boundaries from IGM / GLUBALL
+
+The following ideas are donor patterns, not inherited ontology.
+
+From IGM:
+
+- deterministic worker/chunk-independent correctness identity;
+- separate benchmark timing from correctness identity;
+- bounded memory/chunk planning;
+- exact execution addresses;
+- CPU/reference authority before accelerator authority;
+- 30 meaningful addresses in a 32-wide accelerator-friendly layout as an **experiment**, not a required IBAE semantic structure.
+
+From GLUBALL:
+
+- exact logical sampling/partition rules;
+- large logical spaces without allocation proportional to logical cardinality;
+- canonical receipts and worker-range determinism.
+
+Required non-promotion rule:
+
+> **Execution adjacency does not imply orchestration meaning.**
+
+- [ ] Any `C5 x K2 x C3`, CRT, 30/32 lane, toroidal, sampling, or other geometry must remain an execution/scheduling representation unless a separately reviewed IBAE contract gives it semantics.
+- [ ] Do not make two IGM padding lanes semantic metadata lanes by default.
+- [ ] Benchmark `30 work + 2 inactive padding + metadata sidecar` against alternatives such as `32 work + metadata sidecar` before freezing a GPU layout.
+
+### Architecture-contract exit gate
+
+Before the next implementation PR:
+
+- [ ] `ARCHITECTURE.md`, `INVARIANTS.md`, and this roadmap agree on layer authority.
+- [ ] Every planned MUST invariant has an ID and implementation phase.
+- [ ] Identity-bearing versus observational fields are explicitly classified.
+- [ ] Python/Rust authority boundary is explicit.
+- [ ] AI-facing protocol has explicit state classes and rejection semantics.
+- [ ] GPU geometry remains optional/deferred and cannot define correctness.
+
+---
+
+# Planned implementation phases
+
+## v0.2 — Deterministic Python Orchestration Reference
+
+Goal: prove orchestration semantics before moving authority into Rust.
+
+- [ ] Obligation registry and canonical obligation IDs.
+- [ ] Dependency DAG with deterministic ready-set calculation.
+- [ ] Canonical ordering/admission of equally ready actions.
+- [ ] Model proposal versus deterministic admission separation.
+- [ ] Canonical strategy identity.
+- [ ] Duplicate-action elimination by canonical identity.
+- [ ] Safe batch proposal representation.
+- [ ] Explicit observed/derived/proposed/unknown state separation.
+- [ ] Canonical state digest.
+- [ ] Canonical rejection reason codes and legal recovery moves.
+- [ ] Logical-clock reference semantics.
+- [ ] Deterministic orchestration fixtures with no model dependency.
+
+### v0.2 gate
+
+Identical canonical task state + identical proposal set + identical policy must yield identical admitted orchestration decisions.
+
+## v0.3 — Rust Deterministic Runtime
+
+Goal: move exact authority-bearing execution machinery below Python.
+
+- [ ] Rust crate for runtime state, budgets, canonical identities, cache, cycle detection, logical clock, and receipts.
+- [ ] Exact integer control-plane fields.
+- [ ] PyO3/maturin bridge.
+- [ ] Versioned narrow command/receipt protocol.
+- [ ] Rust-owned authoritative runtime state.
+- [ ] Python reference versus Rust implementation conformance suite.
+- [ ] Reproduce v0.1 safe-reuse and budget behavior.
+- [ ] Byte-stable fixture receipts where platform contract permits.
+- [ ] No OpenAI/network calls from the Rust runtime.
+
+### v0.3 gate
+
+No accepted Rust transition may disagree with the admitted reference semantics without a versioned contract change.
+
+## v0.4 — Governance Wrapper and Identity Receipts
+
+- [ ] Governance wrapper outside deterministic orchestration/runtime.
+- [ ] OpenAI-only remote-provider policy at governance authority.
+- [ ] Supervisor/worker/tool authority classes.
+- [ ] Tool-class permissions: pure read, snapshot read, volatile read, idempotent mutation, non-idempotent mutation.
+- [ ] Mutation admission rules.
+- [ ] Task/governance/orchestration/execution/execution-plan identity separation.
+- [ ] Final acceptance receipt.
+- [ ] Rejected/partial execution receipts.
+- [ ] Fail-closed malformed/unknown policy behavior.
+
+## v0.5 — Progress and Bounded Continuation
+
+- [ ] Objective progress predicates.
+- [ ] Strategy-change admission.
+- [ ] Continuation lease request/grant/deny protocol.
+- [ ] Finite total lease ceiling.
+- [ ] Deterministic checkpoint/resume receipt.
+- [ ] Cycle-aware extension denial.
+- [ ] Partial-finalization path.
+- [ ] Benchmark several initial/extension budget profiles rather than hard-coding one guessed timeout.
+
+## v0.6 — OpenAI Supervisor Integration
+
+- [ ] Python OpenAI adapter above the governance/orchestration boundary.
+- [ ] Evaluate Responses API direct-loop integration versus Agents SDK adapter while preserving the same IBAE contracts.
+- [ ] OpenAI supervisor proposes actions; deterministic orchestrator admits them.
+- [ ] Supervisor-only task-completion declaration.
+- [ ] Trace OpenAI model turns separately from requested/executed tool operations.
+- [ ] Batch proposal/admission path.
+- [ ] Compact canonical state digest returned to the supervisor.
+- [ ] Reused-observation provenance visible to the supervisor.
+- [ ] No generic proprietary-provider abstraction.
+
+## v0.7 — Baseline Agent Efficiency Corpus
+
+Before GPU work, prove whether the architecture actually helps.
+
+Compare equivalent OpenAI-supervised tasks with and without IBAE where possible.
+
+Measure:
+
+- [ ] task success rate;
+- [ ] OpenAI model turns;
+- [ ] requested tool calls;
+- [ ] actual tool executions;
+- [ ] cache hits;
+- [ ] duplicate proposals eliminated;
+- [ ] invalid/rejected proposals;
+- [ ] recovery success after rejection;
+- [ ] cycle incidence;
+- [ ] leases granted/denied;
+- [ ] tokens consumed;
+- [ ] elapsed wall-clock time as observation only;
+- [ ] semantic divergence, which must be zero for accepted deterministic cases.
+
+## v0.8 — Accelerator / GPU Research Profile
+
+GPU execution is an optimization profile, never correctness authority by speed alone.
+
+Reference order:
+
+```text
+Python semantics reference
+        -> Rust CPU authority
+        -> accelerator candidate
+        -> conformance/residual gate
+```
+
+- [ ] Begin on local NVIDIA RTX 5060 Ti.
+- [ ] Define explicit accelerator numerical/execution profile.
+- [ ] Keep governance-critical counters/addresses/flags integer/exact.
+- [ ] Permit `f32` only for explicitly non-authoritative heuristic/numeric accelerator fields.
+- [ ] Compare 30-of-32 padded execution cells against simpler full-32 layouts.
+- [ ] Keep metadata in a sidecar unless benchmarks and review justify another representation.
+- [ ] Measure warp divergence, memory locality, AoSoA/SoA behavior, and batched transition throughput.
+- [ ] Prove accelerator results against Rust CPU reference.
+- [ ] Only after local conformance, use Vast.ai for cross-device reproducibility across NVIDIA architectures/toolchains.
+- [ ] Device/worker/chunk differences remain execution-plan/benchmark information unless semantics actually change.
+
+### v0.8 gate
+
+A faster GPU result is not a more correct result. No GPU profile becomes authoritative without reference conformance.
+
+## v0.9 — Local Open-Weight Worker Protocol
+
+- [ ] Local workers receive bounded task packets, not the full governance surface.
+- [ ] Candidate-only outputs.
 - [ ] No supervisory authority.
-- [ ] No provider-selection authority.
+- [ ] No task-completion authority.
+- [ ] No proprietary-provider selection authority.
 - [ ] No budget-extension authority.
-- [ ] OpenAI verification of candidate outputs.
+- [ ] Minimum necessary context/permissions.
+- [ ] Structured result/evidence/confidence packet.
+- [ ] OpenAI supervisor verifies or rejects worker candidates.
+- [ ] Initial adapters may target local runtimes such as llama.cpp/Ollama/vLLM, but remote proprietary inference remains OpenAI-only.
 
-## v1.0 — Benchmark-backed Stable Runtime
+## v1.0 — Benchmark-Backed Stable Runtime
 
-- [ ] Reproducible baseline vs invariant-aware benchmark corpus.
+- [ ] Stable versioned Python/Rust protocol.
+- [ ] Stable governance/orchestration/runtime authority separation.
+- [ ] Reproducible benchmark corpus.
+- [ ] Cross-language conformance suite.
 - [ ] No semantic divergence in accepted deterministic cases.
-- [ ] Published efficiency and failure-mode report.
+- [ ] Documented efficiency/failure-mode report.
+- [ ] Formal review of the core invariant set.
+- [ ] Release candidate frozen to an exact commit before any formalization target is selected.
+
+---
+
+# Deferred / optional research
+
+These ideas may be valuable but are explicitly **not prerequisites** for the core runtime:
+
+- `C5 x K2 x C3` orchestration/execution address geometry;
+- CRT traversal/addressing;
+- 30-meaningful/32-wide GPU mapping;
+- GLUBALL-style exact sampling over very large logical candidate-action spaces;
+- GPU-side candidate scoring;
+- alternate deterministic scheduling strategies;
+- persistent/distributed caches;
+- multi-process or distributed execution;
+- formal Lean specification of frozen stable contracts.
+
+Every optional optimization must earn admission by preserving the core invariants and demonstrating measurable benefit.
+
+---
+
+# Permanent non-goals
+
+- General proprietary multi-provider orchestration.
+- Allowing local workers to become supervisory peers.
+- Treating elapsed time as correctness identity.
+- Treating benchmark speed as authority.
+- Allowing an executor/worker to self-extend execution indefinitely.
+- Requiring the OpenAI supervisor to perform deterministic bookkeeping that the runtime can compute exactly.
+- Importing donor-repository geometry or ontology without an explicit IBAE-specific contract and benchmark justification.
