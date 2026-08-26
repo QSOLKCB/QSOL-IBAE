@@ -1,6 +1,7 @@
 # QSOL-IBAE Invariant Registry
 
-Status: frozen architecture contract with v0.3 enforcement annotations.
+Status: frozen architecture contract with accepted v0.3 and v0.4 candidate
+enforcement annotations.
 
 Violation of an **ENFORCED MUST** invariant is a system defect in the current implementation.
 Violation of an **ARCHITECTURE MUST** invariant is a design defect in any future implementation.
@@ -108,7 +109,16 @@ Current enforcement: obligations are ordered by canonical obligation ID; explici
 
 Task, governance, orchestration, execution, execution-plan, observation, and receipt hashes must be domain-separated so equal raw payloads from different identity classes cannot alias semantically.
 
-Current partial implementation domain-separates obligation, epistemic, capability, strategy, proposal, batch, action, orchestration-state, event, admission-receipt, runtime-session, runtime-command, runtime-state, and runtime-receipt identities. v0.3 preserves the frozen v0.1 plain SHA-256 tool/observation/transition identities for cross-language equivalence. The invariant remains architecture-only until task, governance, execution-plan, final-receipt, and frozen compatibility identity classes are covered by a complete versioned taxonomy.
+Current partial implementation domain-separates obligation, epistemic,
+capability, strategy, proposal, batch, action, orchestration-state, event,
+admission-receipt, runtime-session, runtime-command, runtime-state, and
+runtime-receipt identities. v0.4 adds separate task, governance, governed-action
+classification, tool-authorization manifest, orchestration, execution,
+execution-plan, benchmark, final, rejection, partial, compact-evidence,
+evidence-summary/expansion, admission aggregate, and gate-result domains. v0.3 still
+preserves the frozen v0.1 plain SHA-256 tool/observation/transition identities
+for cross-language equivalence, so the broad invariant remains architecture-only
+rather than overclaiming complete taxonomy coverage.
 
 ---
 
@@ -192,7 +202,13 @@ No model, local worker, tool backend, runtime, GPU kernel, or scheduler may gran
 
 Requests, executions, retries, mutations, logical ticks, lease counters, execution addresses, and authority flags use exact integer/enumerated representations. Floating point cannot be the sole authority for these values.
 
-Current v0.3 partial enforcement: all implemented runtime counters, limits, logical ticks, statuses, and command/rejection classes use checked exact integer or closed enumerated representations. Inputs are type-checked, booleans are not accepted as integers, and hard caps prevent unbounded resident runtime state. Mutation, lease, and execution-address counters do not exist yet and remain obligations for the phases that introduce them; therefore this invariant remains architecture-only rather than fully enforced.
+Current v0.4 partial enforcement: all implemented runtime/evidence counters,
+limits, logical ticks, statuses, authority classes, gate flags, and rejection
+classes use checked exact integer or closed enumerated representations. Inputs
+are type-checked, booleans are not accepted as integers, and hard caps prevent
+unbounded resident state. The evidence plane can exactly aggregate a declared
+mutation count, but mutation execution, lease, and execution-address counters do
+not exist yet; therefore this broad invariant remains architecture-only.
 
 ## IBAE-BND-008 — Bounded batches and queues
 
@@ -200,7 +216,7 @@ Current v0.3 partial enforcement: all implemented runtime counters, limits, logi
 
 Batch proposal size, ready queue size, worker count, and other resident execution structures must have explicit finite bounds or deterministic streaming rules.
 
-Current enforcement: v0.2 gives every model-facing collection boundary an explicit protocol/configuration cap, including obligation and epistemic registries/dependencies, capability semantic-argument keys and state keys, proposal targets/batches, admitted strategy schemas/parameters, persistent occurrence ownership, and retained history. Canonical model values additionally have explicit byte, depth, total-node, per-collection, string, and integer-size bounds enforced while copying the input before serialization. Free-text record fields have a 4,096-byte UTF-8 cap, identity-bearing integers have a 256-bit cap, and oversized strings are measured incrementally without allocating a full encoded copy. Bounded consumers stop at cap + 1 instead of fully materializing over-size/infinite iterables. v0.3 adds explicit hard caps for Rust requests, executions/cache entries, retries, history, canonical bytes/depth/nodes/items/strings, and tool/session text. No worker queue exists yet; any later worker phase inherits this invariant.
+Current enforcement: v0.2 gives every model-facing collection boundary an explicit protocol/configuration cap, including obligation and epistemic registries/dependencies, capability semantic-argument keys and state keys, proposal targets/batches, admitted strategy schemas/parameters, persistent occurrence ownership, and retained history. Canonical model values additionally have explicit byte, depth, total-node, per-collection, string, and integer-size bounds enforced while copying the input before serialization. Free-text record fields have a 4,096-byte UTF-8 cap, identity-bearing integers have a 256-bit cap, and oversized strings are measured incrementally without allocating a full encoded copy. Bounded consumers stop at cap + 1 instead of fully materializing over-size/infinite iterables. v0.3 adds explicit hard caps for Rust requests, executions/cache entries, retries, history, canonical bytes/depth/nodes/items/strings, and tool/session text. v0.4 adds finite policy/gate/receipt collections, one-million-case streaming evidence admission, a fixed compact receipt ceiling, and bounded failure retention/expansion. No worker queue exists yet; any later worker phase inherits this invariant.
 
 ---
 
@@ -324,35 +340,81 @@ This policy is implemented now and remains a continuing architectural obligation
 
 When model orchestration is introduced, only the OpenAI supervisor may declare overall task completion at the model-authority layer. Completion still remains subject to deterministic acceptance/gate checks.
 
+Current v0.4 partial enforcement: the deterministic governance API accepts
+task admission/finalization requests only from the closed OpenAI-supervisor
+principal and still requires receipt/gate validation. No live OpenAI model path
+exists, so the full integration invariant remains architecture-only.
+
 ## IBAE-GOV-003 — Local workers are candidate-only
 
 **ARCHITECTURE MUST**
 
 Future local open-weight workers may produce candidate analyses/artifacts only. They receive no provider-selection, governance, lease-grant, or final-completion authority.
 
+Current v0.4 partial enforcement: a future local candidate worker is a separate
+closed principal class and is rejected from task admission, tool admission, and
+finalization. No worker adapter exists yet.
+
 ## IBAE-GOV-004 — Tool authority classes are explicit
 
-**ARCHITECTURE MUST**
+**ENFORCED MUST**
 
 Tools/actions are classified before admission, at minimum distinguishing read/cacheable behavior from mutations and non-idempotent external side effects. Mutation authority cannot be inferred merely from tool availability.
 
+Current enforcement: the governance policy requires one of five closed classes
+(`pure_read`, `snapshot_read`, `volatile_read`, `idempotent_mutation`, or
+`non_idempotent_mutation`) plus explicit mutation and cache-reuse booleans.
+Snapshot reuse requires dependency identity, volatile reads/mutations cannot be
+cache-reusable, and volatile reads/mutations require occurrence identity in the
+conservative v1 profile. Each governed tool receipt binds and recomputes one
+exact typed v0.2 admitted decision, proposal, capability, dependency state, and
+action ID; the orchestration receipt requires exact bounded coverage and
+commits to an authorization manifest capped by the current 64-action governed
+batch limit, while the evidence reducer also enforces a defensive
+256-authorization ceiling. A finalizable sealed v0.3 read
+must match that manifest's action, tool, canonical arguments, dependency,
+command class, governed admission receipt, and cache-reuse policy before
+evidence-state mutation. A sealed retry must name a known admission, preserves
+exact continuity/accounting, and cannot satisfy read coverage alone. The
+accepted v0.2 replay class and v0.3 capability/action recomputation remain
+independently enforced. Effect execution is not claimed because the accepted
+runtime protocol remains read-only.
+
 ## IBAE-GOV-005 — Governance identity is versioned
 
-**ARCHITECTURE MUST**
+**ENFORCED MUST**
 
 Accepted execution is bound to a canonical governance/policy identity so a policy change cannot silently masquerade as the same governed run.
 
+Current enforcement: `IBAE-GOVERNANCE-PROTOCOL-V1` hashes the complete bounded
+policy key/version, OpenAI provider class, task profile/version, gate set, and
+tool permissions in a dedicated governance domain. Policy-version changes alter
+the governance identity and all downstream bindings.
+
 ## IBAE-GOV-006 — Fail closed on unknown authority
 
-**ARCHITECTURE MUST**
+**ENFORCED MUST**
 
 Unknown provider, unknown authority class, malformed policy, unsupported command class, or invalid governance receipt is rejected rather than guessed into an allowed state.
 
+Current enforcement: policy/receipt parsers require exact fields and closed
+enums, all authority APIs fail closed, and rejections carry immutable canonical
+reason/invariant records. Existing Rust unsupported-command rejection remains
+unchanged.
+
 ## IBAE-GOV-007 — Receipt admission precedes accepted finalization
 
-**ARCHITECTURE MUST**
+**ENFORCED MUST**
 
 No final execution may be labelled accepted without the required governance/orchestration/execution receipts validating under the current contract.
+
+Current enforcement: finalization reconstructs and binds the exact task,
+governance, accepted v0.2 admission plus governed authorization manifest,
+fixed-shape execution with typed first/last runtime receipts, direct-case native-
+sealed compact evidence, and the exact closed three-gate set bound to the
+corresponding receipt IDs. Missing elements produce immutable partial records;
+malformed/foreign bindings produce immutable rejection records. Structural
+hashes alone cannot finalize a task.
 
 ---
 
@@ -364,7 +426,13 @@ No final execution may be labelled accepted without the required governance/orch
 
 OpenAI supplies intelligence and proposed actions. The deterministic orchestrator canonicalizes, classifies action authority/replay safety, deduplicates only where replay-safe equivalence is proven, dependency-checks, budget-checks, and admits/rejects those actions.
 
-Current v0.2 partial implementation covers immutable proposal records, orchestrator-owned capability/replay and semantic-argument classification, observation-versus-correctness metadata separation, obligation and epistemic dependency checks, bounded batches, and structured admission/rejection. Governance authority and execution-budget admission remain later phases.
+Current partial implementation covers immutable v0.2 proposal records,
+orchestrator-owned capability/replay and semantic-argument classification,
+observation-versus-correctness metadata separation, obligation and epistemic
+dependency checks, bounded batches, and structured admission/rejection. v0.4
+adds governed authorization-manifest binding for admitted actions and the
+accepted v0.3 runtime owns exact execution-budget admission. Live supervisor
+proposal integration remains v0.6.
 
 ## IBAE-ORCH-002 — Ready-set calculation is deterministic
 
@@ -390,7 +458,11 @@ Current enforcement: replay classification and semantic argument-key allowlists 
 
 Batching/parallelizing independent actions may alter execution-plan identity and performance, but cannot alter correctness identity or result semantics for an admitted deterministic case.
 
-Current v0.2 enforcement proves admission equivalence across input order only for batches that explicitly declare canonical independence. Batches containing effectful capabilities require an identity-bearing declared sequence, which admission preserves. Physical parallel execution and execution-plan receipts remain later-phase contracts.
+Current enforcement proves v0.2 admission equivalence across input order only
+for batches that explicitly declare canonical independence. Batches containing
+effectful capabilities require an identity-bearing declared sequence, which
+admission preserves. v0.4 adds a separate non-correctness execution-plan
+receipt; physical parallel execution remains later-phase work.
 
 ## IBAE-ORCH-005 — Dependency barriers are explicit
 
@@ -484,7 +556,14 @@ If runtime state can be computed exactly by software, the supervisor must receiv
 
 Every governed rejection exposes a stable machine-readable reason code and relevant invariant/authority class.
 
-Current v0.2 partial implementation: every orchestration-admission rejection is represented by the closed `RejectionReason` enum and carries authority layer, relevant invariant IDs, and structured blocking/unresolved state where applicable. This includes strategy-policy drift and capability semantic-argument mismatch as well as batch, dependency, ordering, and occurrence failures. Converting all v0.1 runtime exceptions and future governance/execution rejections remains a later-phase obligation.
+Current v0.4 partial implementation: orchestration admissions, Rust runtime
+transitions, and governance/finalization decisions expose closed canonical
+reason codes with authority/invariant and bounded blocking state. This includes
+strategy/capability drift, batch/dependency/ordering/occurrence failures,
+runtime protocol/budget/observation failures, and authority/receipt/gate
+failures. Some local constructor/value errors and future lease/worker paths are
+not governed rejection receipts, so the broad interface invariant remains
+architecture-only.
 
 ## IBAE-AI-003 — Safe recovery actions are exposed when known
 
@@ -561,49 +640,171 @@ Current v0.2 implementation provides immutable canonical batch proposals and det
 
 ## IBAE-ID-001 — Task identity is distinct
 
-**ARCHITECTURE MUST**
+**ENFORCED MUST**
 
 Task identity states what problem/acceptance contract is being attempted and is not execution-plan identity.
 
+Current enforcement: an immutable task receipt hashes only its versioned task
+key, bounded canonical acceptance contract, contract version, and required gate
+set in task-specific identity and receipt domains.
+
 ## IBAE-ID-002 — Governance identity is distinct
 
-**ARCHITECTURE MUST**
+**ENFORCED MUST**
 
 Governance identity binds the authority/policy under which the task is admitted.
 
+Current enforcement: see `IBAE-GOV-005`; governance semantic identity and
+governance receipt identity use distinct domains.
+
 ## IBAE-ID-003 — Orchestration identity is distinct
 
-**ARCHITECTURE MUST**
+**ENFORCED MUST**
 
 Orchestration identity binds admitted obligations/dependencies/scheduling decisions relevant to orchestration semantics.
 
+Current enforcement: the v0.4 orchestration receipt binds the governed task to
+the exact accepted v0.2 admission receipt, batch, prior/final orchestration
+states, logical-tick interval, and bounded governed authorization manifest in
+orchestration-specific domains.
+
 ## IBAE-ID-004 — Execution correctness identity is distinct
 
-**ARCHITECTURE MUST**
+**ENFORCED MUST**
 
 Execution correctness identity binds the canonical actions/observations/results that determine the accepted deterministic outcome.
 
+Current enforcement: a fixed-shape execution receipt binds the governed
+orchestration and authorization manifest, one continuous runtime session and
+its initial/final states, typed first/last strict v0.3 runtime receipts, exact
+transition count, and ordered admission/input/result/runtime-receipt roots.
+Final native-sealed compact evidence must reproduce the manifest, boundary,
+counts, and roots.
+
 ## IBAE-ID-005 — Execution-plan identity is distinct
 
-**ARCHITECTURE MUST**
+**ENFORCED MUST**
 
 Worker count, chunking, locality, device assignment, accelerator layout, and other implementation-plan fields live outside correctness identity unless they change semantics.
 
+Current enforcement: execution-plan records have a separate identity/receipt
+domain and `correctness_authority: false`; plan changes do not alter task,
+governance, orchestration, execution, or final identity. Grouping-sensitive
+hierarchical evidence is consequently not admitted into the v0.4 final path.
+
 ## IBAE-ID-006 — Benchmark receipt is observational
 
-**ARCHITECTURE MUST**
+**ENFORCED MUST**
 
 Elapsed seconds, throughput, model turns, tokens, worker/device observations, and cache efficiency are benchmark data and cannot prove correctness by being fast.
 
+Current enforcement: benchmark observations live only in a dedicated benchmark
+record with `correctness_authority: false`. Benchmark records are excluded from
+execution and final-acceptance constructors and identities.
+
 ## IBAE-ID-007 — Rejected/partial state is preserved as rejected/partial
 
-**ARCHITECTURE MUST**
+**ENFORCED MUST**
 
 A rejected or partial run may be persisted for audit, but cannot later be relabelled accepted without satisfying the acceptance contract.
 
+Current enforcement: rejection, partial, and final acceptance are separate
+immutable record classes with fixed closed statuses and distinct receipt
+domains. A later accepted attempt creates a new final receipt rather than
+mutating earlier evidence.
+
 ---
 
-# 12. Accelerator and geometry boundary
+# 12. Compact evidence
+
+## IBAE-EVID-001 — Execution state is not evidence transport
+
+**ENFORCED MUST**
+
+Large internal execution state is not required to cross an authority boundary
+merely because it exists.
+
+Current enforcement: the opaque Rust reducer retains fixed aggregate state and
+only a bounded distinct authorization-observation set, with no successful
+per-case trace. Python receives a copied fixed-shape summary and compact receipt
+rather than Rust-owned resident execution/evidence state.
+
+## IBAE-EVID-002 — Routine evidence is bounded
+
+**ENFORCED MUST**
+
+For a declared compact-evidence profile, routine successful evidence has a
+fixed or explicitly bounded maximum size independent of underlying workload
+cardinality.
+
+Current enforcement: `IBAE-COMPACT-EVIDENCE-V1` rejects receipts larger than
+2,048 canonical UTF-8 bytes for up to 1,000,000 admitted cases. CI compares 1,
+1,000, and 100,000-case model-free reductions and verifies the same ceiling.
+
+## IBAE-EVID-003 — Authority-bearing aggregates are exact
+
+**ENFORCED MUST**
+
+Counts used as correctness/governance evidence use exact integer arithmetic.
+
+Current enforcement: case/status and request/execution/cache/retry/mutation/
+mismatch totals use checked Rust `u64` addition. Overflow, inconsistent child
+counts, oversize cases, and exhausted case bounds reject atomically.
+
+## IBAE-EVID-004 — Failure supports selective expansion
+
+**ENFORCED MUST**
+
+Detailed per-operation evidence is exceptional, explicitly requested,
+parent-bound, and bounded.
+
+Current enforcement: the compact receipt exposes only exact failure count,
+first index, detail availability, and truncation. At most 32 failure details of
+at most 4,096 canonical bytes each are retained; expansion requires the exact
+finalized parent identity and is capped by count and 262,144 output bytes.
+
+## IBAE-EVID-005 — Fast folds are not cryptographic authority
+
+**ENFORCED MUST**
+
+A fast XOR/fold/checksum may provide regression evidence but cannot replace
+canonical cryptographic receipt identity.
+
+Current enforcement: the optional FNV-1a-64 observation is emitted separately
+with `correctness_authority: false`. It is absent from the compact evidence,
+execution, and final receipt identities; enabling it cannot change those IDs.
+
+## IBAE-EVID-006 — Evidence sufficiency is versioned
+
+**ENFORCED MUST**
+
+Each compact evidence profile states exactly which claims/invariants it is
+sufficient to support.
+
+Current enforcement: the closed v1 counts-and-identities profile validates
+exact processed/classified counts, exact admitted counter sums, authorization-
+manifest coverage, continuous runtime boundaries, ordered admission/input/
+result/receipt commitments, reported verifier mismatches, and execution
+manifest/root/boundary/count correspondence. It explicitly does not claim
+producer authentication, external truth, durable availability, benchmark
+superiority, or semantics outside the declared verifier.
+
+## IBAE-EVID-007 — Underlying evidence remains auditable
+
+**ARCHITECTURE MUST**
+
+Compact transport must not destroy the ability to deterministically reproduce,
+locate, or selectively inspect underlying execution evidence when required.
+
+Current v0.4 partial enforcement: a bounded prefix of failure details can be
+located and expanded from a live parent-bound reducer, and aggregate commitments
+detect input/result/order changes. Successful leaves and details beyond the
+bounded prefix are not durably retained; arbitrary inclusion proofs, replay
+locators, and grouping-neutral hierarchical roots remain later versioned work.
+
+---
+
+# 13. Accelerator and geometry boundary
 
 ## IBAE-ACC-001 — CPU/reference authority precedes accelerator authority
 
@@ -643,7 +844,7 @@ Local RTX-class GPU testing may establish candidate conformance/performance. Wid
 
 ---
 
-# 13. Candidate research invariants
+# 14. Candidate research invariants
 
 These are intentionally non-normative until benchmarked/admitted.
 

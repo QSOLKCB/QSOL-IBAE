@@ -6,11 +6,39 @@ QSOL-IBAE is an invariant-bounded execution substrate intended to sit beneath an
 
 ## CURRENT PHASE
 
-Merged v0.1 deterministic kernel and architecture contract, the accepted **v0.2 deterministic Python orchestration reference**, and the **v0.3 Rust deterministic runtime implementation candidate**.
+Merged v0.1 deterministic kernel and architecture contract, the accepted
+**v0.2 deterministic Python orchestration reference**, the accepted **v0.3 Rust
+deterministic runtime**, and the **v0.4 deterministic governance/compact
+evidence implementation candidate**.
 
 v0.2 implements canonical obligations/DAG readiness, proposal/admission separation, replay-safe-only batch deduplication, persistent bounded effect occurrence ownership, explicit independent-versus-declared batch ordering, explicit epistemic state classes with reuse-path- and unadmitted-proposal-neutral correctness identity, admitted typed strategy-specific parameter allowlists, capability-owned semantic argument allowlists with non-correctness observational metadata, bounded model-facing collections/text/integers and canonical payload traversal, canonical state/receipt identities, structured rejection/recovery records, and `IBAE-LOGICAL-CLOCK-V1` reference semantics.
 
-PR #3 was merged after its exact reviewed head passed the v0.2 gate. The v0.3 candidate keeps orchestration semantics in Python and moves the implemented v0.1 read-execution mechanics into a private Rust session reached through PyO3/maturin and `IBAE-RUNTIME-PROTOCOL-V1`. The only admitted runtime commands are `execute_read` and `record_retry`; future lease/finalization commands are not implemented. No OpenAI SDK integration, GPU execution, continuation lease implementation, governance receipt layer, or local-worker integration is claimed.
+PR #4 merged exact reviewed head
+`a3009000998aba90375eceba7b0dfa2e8fba1551` at merge commit
+`de5239b8c7980f8211da109b42bdbc3449be83ba` after the v0.3 gate passed.
+The accepted runtime keeps orchestration semantics in Python and moves the
+implemented v0.1 read-execution mechanics into a private Rust session reached
+through PyO3/maturin and `IBAE-RUNTIME-PROTOCOL-V1`. Its only admitted runtime
+commands remain `execute_read` and `record_retry`; lease/finalization runtime
+commands remain unimplemented.
+
+v0.4 adds a Python governance wrapper with a closed OpenAI-only provider class,
+explicit tool authority, an exact bounded authorization manifest linking typed
+v0.2 admissions to matching v0.3 read receipts and cache policy, and
+separate canonical receipt classes. A Rust streaming reducer emits
+`IBAE-COMPACT-EVIDENCE-V1` records capped
+at 2,048 bytes for the declared profile, independent of admitted case
+cardinality. The current governed batch ceiling is 64 actions; the reducer's
+defensive authorization ceiling is 256. Bounded failure expansion is
+exceptional. Structural receipt
+validation proves canonical consistency only; non-constructible native seals
+bind exact live runtime, summary, and compact-receipt records for final
+acceptance, and neither mechanism authenticates a producer or proves external
+truth. The finalizable v1 execution profile is cacheable reads plus optional
+sealed known-admission retry-accounting transitions; retries cannot establish
+read coverage alone. No OpenAI
+SDK integration, effect execution, GPU execution, continuation lease
+implementation, or local-worker integration is claimed.
 
 ## ARCHITECTURAL AUTHORITY
 
@@ -30,6 +58,7 @@ OpenAI supervisor
     -> governance wrapper
         -> deterministic orchestration
             -> execution runtime
+                -> deterministic compact-evidence reduction
 
 benchmark/performance observations remain outside correctness authority
 ```
@@ -38,6 +67,8 @@ Normative boundary:
 
 ```text
 governance != orchestration != execution != benchmark
+
+execution state != evidence transport
 ```
 
 ## IMPLEMENTATION SPLIT
@@ -48,7 +79,7 @@ Python logic core
     orchestration semantics
     obligation/DAG construction
     AI-facing compact state
-    OpenAI integration
+    future OpenAI integration
     future local-worker adapters
 
         | narrow versioned protocol
@@ -63,6 +94,16 @@ Rust runtime
     receipts
     CPU reference execution
     future accelerator adapters
+
+Rust compact evidence reducer
+    exact checked aggregate counters
+    governed authorization-manifest checks
+    ordered admission/input/result/receipt identities
+    continuous first/last runtime boundary
+    opaque native source seals
+    fixed-ceiling routine receipt
+    bounded retained failure detail
+    no retained per-case success trace
 ```
 
 Python decides what should be attempted. Rust proves what was admitted and executed.
@@ -70,6 +111,13 @@ Python decides what should be attempted. Rust proves what was admitted and execu
 The Rust runtime must not directly call remote model providers.
 
 The v0.3 runtime owns exact counters, cache/history, logical runtime ticks, command/state/transition identities, and execution receipts. Python receives copies of observations and snapshots and has no supported setter or cache-insertion surface. The retained Python v0.1 executor exists only as an independent conformance oracle.
+
+The v0.4 governance wrapper interprets whether validated evidence satisfies the
+declared policy; the Rust evidence reducer cannot grant governance acceptance.
+Compact receipt identity, a self-consistent SHA-256 record, or a fast fold alone
+is insufficient for accepted finalization. The optional fast fold is an
+untrusted, non-cryptographic regression observation excluded from correctness
+identity.
 
 ## MUST PRESERVE
 
@@ -83,6 +131,10 @@ The v0.3 runtime owns exact counters, cache/history, logical runtime ticks, comm
 - layer/authority separation;
 - proposal versus admitted-state separation;
 - correctness identity separate from execution-plan and benchmark identity;
+- large execution state separate from bounded routine evidence transport;
+- exact streaming evidence aggregates and a declared evidence-sufficiency profile;
+- exact bounded governed-action manifest coverage before sealed runtime evidence admission;
+- first/last runtime receipt and state continuity within one session;
 - remote proprietary inference restricted to OpenAI;
 - no generic remote proprietary-provider abstraction;
 - local open-weight workers remain candidate-only subordinate workers;
@@ -133,6 +185,8 @@ Unknown is not false. A model proposal is not an observation and cannot satisfy 
 - creating a generic proprietary-provider abstraction;
 - allowing a local worker to declare final task completion, alter governance policy, or extend its own budget;
 - treating worker/chunk/device placement or benchmark timing as correctness evidence when semantics are unchanged;
+- using a compact hash or non-cryptographic fold as producer authentication or as proof of external truth;
+- returning an unbounded successful per-case trace through the normal evidence path;
 - promoting IGM/GLUBALL donor geometry into IBAE semantics without a separately reviewed contract.
 
 ## DONOR-PATTERN BOUNDARY

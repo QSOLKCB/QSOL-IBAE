@@ -39,3 +39,15 @@ jobs:
           PYTHONHASHSEED=8675309 python tools/render_v0_3_fixture.py > /tmp/runtime-b.json
           cmp /tmp/runtime-a.json /tmp/runtime-b.json
           cmp fixtures/v0.3/runtime-reference.json /tmp/runtime-a.json
+      - name: Repeat v0.4 governance/evidence fixture across hash seeds
+        run: |
+          PYTHONHASHSEED=1 python tools/render_v0_4_fixture.py > /tmp/governance-evidence-a.json
+          PYTHONHASHSEED=8675309 python tools/render_v0_4_fixture.py > /tmp/governance-evidence-b.json
+          cmp /tmp/governance-evidence-a.json /tmp/governance-evidence-b.json
+          cmp fixtures/v0.4/governance-evidence-reference.json /tmp/governance-evidence-a.json
+      - name: Repeat compact-evidence stress across hash seeds
+        run: |
+          PYTHONHASHSEED=1 python tools/stress_compact_evidence.py > /tmp/evidence-stress-a.json
+          PYTHONHASHSEED=8675309 python tools/stress_compact_evidence.py > /tmp/evidence-stress-b.json
+          cmp /tmp/evidence-stress-a.json /tmp/evidence-stress-b.json
+          cmp fixtures/v0.4/compact-evidence-stress.json /tmp/evidence-stress-a.json

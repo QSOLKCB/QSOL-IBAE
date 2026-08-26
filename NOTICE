@@ -6,3 +6,5 @@ This is an independent project. It is not affiliated with, endorsed by, sponsore
 The special license grant to OpenAI Parties in LICENSE is a unilateral grant of permission by the licensor. It does not imply acceptance, endorsement, partnership, or any obligation by OpenAI.
 
 The LICENSE is a custom source-available license and is not represented as OSI-approved open source. Parties relying on the license for commercial or patent-sensitive purposes should obtain appropriate legal advice.
+
+The v0.4 Compact Evidence Plane is an independent implementation inspired by the bounded evidence-reduction engineering pattern described for QEC/VE-24: keep large internal work local, transport compact deterministic aggregates, and expand detail only for failure or explicit audit. No QEC/VE-24 implementation code, GPU kernels, geometry, lane semantics, constants, assets, quantum-error-correction semantics, or physical/quantum claims are incorporated into QSOL-IBAE. QEC/VE-24 remains separately owned and licensed; this pattern-level acknowledgment does not relicense either project. QSOL-IBAE remains governed by QSOL-RSL-1.0 in LICENSE.

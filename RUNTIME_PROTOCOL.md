@@ -1,6 +1,6 @@
 # IBAE Runtime Protocol v1
 
-Status: v0.3 implementation contract.
+Status: accepted v0.3 implementation contract; unchanged by v0.4.
 
 `IBAE-RUNTIME-PROTOCOL-V1` is the narrow in-process boundary between Python orchestration and the Rust execution authority. It is transported as canonical UTF-8 JSON through one opaque PyO3 session. It is not an RPC or network protocol.
 
@@ -53,7 +53,18 @@ Only two closed command variants exist.
 }
 ```
 
-The Python orchestration adapter admits only `ReplaySafety.CACHEABLE_READ` actions to this path, recomputes the supplied capability contract plus dependency identity against the v0.2 action ID, and binds that verified action ID as `admission_id`. Occurrence-sensitive or effectful actions—and same-name capabilities whose contract identity differs—are rejected by the adapter rather than reclassified. The compatibility executor derives a deterministic admission ID for standalone v0.1 calls.
+The Python orchestration adapter admits only `ReplaySafety.CACHEABLE_READ`
+actions to this path, recomputes the supplied capability contract plus
+dependency identity against the v0.2 action ID, and binds that verified action
+ID as `admission_id`. Occurrence-sensitive or effectful actions, and a supplied
+capability contract that does not match its decision, are rejected rather than
+reclassified. The frozen v0.1/v0.3 `tool_key` does not contain that admission or
+capability identity, so v0.4 final evidence additionally requires an accepted
+cold receipt for the exact action ID before admitting any of its cache hits.
+That fail-closed rule prevents same-name contract-version cache collisions from
+becoming accepted governance evidence without changing v0.3 identities. The
+compatibility executor derives a deterministic admission ID for standalone
+v0.1 calls.
 
 For a cold read, Rust commits request admission, then actual-execution admission, before invoking the callback. The callback returns one canonical envelope:
 
@@ -138,6 +149,19 @@ Every dispatch returns a canonical outcome with a copied observation (or `null`)
 - domain-separated receipt ID.
 
 Rejections contain a stable reason code, `execution` authority layer, relevant invariant IDs, and a bounded blocking runtime-state projection. Full governance/task/final acceptance receipts are not part of v0.3.
+
+v0.4 wraps accepted runtime receipts in separately versioned execution and
+governance records and may stream their canonical identities through the
+Compact Evidence Plane. It does not add a runtime command, mutate this protocol,
+or make the evidence reducer a runtime/governance authority. See
+`GOVERNANCE_PROTOCOL.md` and `EVIDENCE_PROTOCOL.md`.
+
+For the in-process v0.4 source-binding path, native dispatch also returns a
+non-serialized, non-constructible seal for the exact canonical receipt it just
+emitted. The seal changes neither the v0.3 receipt bytes nor any v0.3 identity.
+It lets the evidence reducer reject a reconstructed or altered Python receipt
+before reducer mutation, but it is not a signature, producer authentication,
+remote attestation, or durable provenance.
 
 ## Rejection taxonomy
 

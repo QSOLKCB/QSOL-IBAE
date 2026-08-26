@@ -10,6 +10,27 @@ from .epistemic import (
     EpistemicState,
     ObservationProvenance,
 )
+from .evidence import (
+    MAX_COMPACT_EVIDENCE_BYTES,
+    EvidenceAccumulator,
+    EvidenceLimits,
+)
+from .governance import (
+    COMPACT_EVIDENCE_GATE_KEY,
+    EXECUTION_RECEIPT_GATE_KEY,
+    GOVERNANCE_PROTOCOL_VERSION,
+    ORCHESTRATION_RECEIPT_GATE_KEY,
+    AcceptanceGateResult,
+    BenchmarkReceipt,
+    ExecutionPlanReceipt,
+    GovernancePolicy,
+    GovernanceRejected,
+    GovernanceWrapper,
+    PrincipalAuthority,
+    ProviderAuthority,
+    ToolAuthorityClass,
+    ToolPermission,
+)
 from .obligations import Obligation, ObligationStatus
 from .orchestration import (
     ActionProposal,
@@ -406,5 +427,310 @@ def v0_3_reference_fixture() -> dict[str, object]:
                 "results": rust_results,
                 "rust": repeated_rust_projection,
             },
+        },
+    }
+
+
+def v0_4_reference_fixture() -> dict[str, object]:
+    """Build the byte-stable v0.4 governance and compact-evidence fixture.
+
+    The fixture deliberately uses the real v0.2 admission path, the real v0.3
+    Rust runtime, and the opaque native v0.4 evidence reducer.  Its benchmark
+    and execution-plan records are siblings of correctness identity, never
+    inputs to final acceptance.
+    """
+
+    obligation = Obligation(
+        "verify-governed-read",
+        "Execute and verify one admitted snapshot read.",
+    )
+    dependency = ObservationProvenance(
+        source="fixture.repository",
+        source_identity=domain_fingerprint(
+            "ibae.v0.4-fixture-source.v1", {"repository": "QSOL-IBAE"}
+        ),
+        dependency_identity=domain_fingerprint(
+            "ibae.v0.4-fixture-revision.v1", {"revision": "v0.4-reference"}
+        ),
+        reused=False,
+    )
+    epistemic_state = EpistemicState.from_iterable(
+        (
+            EpistemicRecord(
+                "repo-head",
+                EpistemicClass.OBSERVED,
+                {"revision": "v0.4-reference", "tree_valid": True},
+                provenance=dependency,
+            ),
+        )
+    )
+    capability = Capability(
+        "read.file",
+        ReplaySafety.CACHEABLE_READ,
+        "Read one file from an admitted repository revision.",
+        required_state_keys=("repo-head",),
+        semantic_argument_keys=("path",),
+    )
+    strategy_schema = StrategySchema("governed-reference")
+    orchestration_state = OrchestrationState.create(
+        (obligation,),
+        epistemic_state=epistemic_state,
+        capabilities=(capability,),
+        strategy_schemas=(strategy_schema,),
+    )
+    proposal = ActionProposal(
+        "read-reference",
+        capability.name,
+        {"path": "README.md"},
+        target_obligation_ids=(obligation.obligation_id,),
+        required_state_keys=("repo-head",),
+    )
+    batch = ProposalBatch(
+        "governed-reference",
+        Strategy("governed-reference", {}, schema=strategy_schema),
+        (proposal,),
+        ordering=ProposalOrdering.CANONICAL_INDEPENDENT,
+    )
+    admission = admit_batch(orchestration_state, batch)
+    decision = admission.receipt.decisions[0]
+    if decision.status.value != "admitted" or decision.action_id is None:
+        raise AssertionError("v0.4 fixture proposal must be admitted")
+    dependency_fingerprint = epistemic_state.dependency_digest(
+        decision.dependency_state_keys
+    )
+
+    policy = GovernancePolicy(
+        policy_key="v0.4.reference",
+        policy_version=1,
+        task_profile="deterministic-reference",
+        task_profile_version=1,
+        provider_authority=ProviderAuthority.OPENAI,
+        tool_permissions=(
+            ToolPermission(
+                capability.name,
+                ToolAuthorityClass.SNAPSHOT_READ,
+                False,
+                True,
+            ),
+        ),
+        required_gate_keys=(
+            COMPACT_EVIDENCE_GATE_KEY,
+            ORCHESTRATION_RECEIPT_GATE_KEY,
+            EXECUTION_RECEIPT_GATE_KEY,
+        ),
+    )
+    wrapper = GovernanceWrapper(policy)
+    task, governance = wrapper.admit_task(
+        "v0.4.reference-task",
+        {
+            "claim": "one admitted immutable read is exactly accounted",
+            "expected_actual_executions": 1,
+            "expected_cache_hits": 2,
+            "expected_requests": 3,
+        },
+        requester=PrincipalAuthority.OPENAI_SUPERVISOR,
+    )
+    tool_admission = wrapper.admit_tool(
+        task,
+        governance,
+        decision,
+        proposal,
+        capability,
+        ToolAuthorityClass.SNAPSHOT_READ,
+        dependency_state_id=dependency_fingerprint,
+        requester=PrincipalAuthority.DETERMINISTIC_ORCHESTRATOR,
+    )
+    orchestration = wrapper.bind_orchestration(
+        task,
+        governance,
+        admission.receipt,
+        (tool_admission,),
+    )
+
+    runtime = RustRuntimeSession("v0.4-governed-reference")
+    operation_calls = 0
+
+    def operation() -> dict[str, object]:
+        nonlocal operation_calls
+        operation_calls += 1
+        return {"content_id": "README.reference", "valid": True}
+
+    accumulator = EvidenceAccumulator(
+        task.task_id,
+        policy.governance_id,
+        orchestration.orchestration_id,
+        authorization_manifest=orchestration.authorization_manifest,
+        limits=EvidenceLimits(max_cases=3, max_failure_details=1),
+        enable_fast_fold=True,
+    )
+    runtime_receipts = []
+    observations = []
+    for _ in range(3):
+        runtime_transition = runtime.execute_admitted_read(
+            decision,
+            proposal,
+            capability,
+            dependency_fingerprint,
+            operation,
+        )
+        accumulator.record_runtime_case(runtime_transition.receipt)
+        runtime_receipts.append(runtime_transition.receipt.canonical_record())
+        observations.append(runtime_transition.observation)
+
+    evidence_summary = accumulator.aggregate_summary()
+    execution = wrapper.bind_execution(
+        task,
+        governance,
+        orchestration,
+        evidence_summary,
+    )
+    compact_evidence = accumulator.finalize(execution.execution_id)
+    gate_results = (
+        AcceptanceGateResult(
+            COMPACT_EVIDENCE_GATE_KEY,
+            True,
+            compact_evidence.receipt_id,
+        ),
+        AcceptanceGateResult(
+            ORCHESTRATION_RECEIPT_GATE_KEY,
+            True,
+            orchestration.receipt_id,
+        ),
+        AcceptanceGateResult(
+            EXECUTION_RECEIPT_GATE_KEY,
+            True,
+            execution.receipt_id,
+        ),
+    )
+    final_acceptance = wrapper.finalize(
+        task,
+        governance,
+        orchestration,
+        execution,
+        compact_evidence,
+        gate_results,
+        requester=PrincipalAuthority.OPENAI_SUPERVISOR,
+    )
+    partial = wrapper.finalize(
+        task,
+        governance,
+        None,
+        None,
+        None,
+        (),
+        requester=PrincipalAuthority.OPENAI_SUPERVISOR,
+    )
+    try:
+        wrapper.admit_tool(
+            task,
+            governance,
+            decision,
+            proposal,
+            capability,
+            ToolAuthorityClass.NON_IDEMPOTENT_MUTATION,
+            dependency_state_id=dependency_fingerprint,
+            requester=PrincipalAuthority.DETERMINISTIC_ORCHESTRATOR,
+        )
+    except GovernanceRejected as rejected:
+        rejection = rejected.receipt
+    else:  # pragma: no cover - this is a fail-closed fixture assertion
+        raise AssertionError("mismatched fixture mutation authority must be rejected")
+
+    execution_plan = ExecutionPlanReceipt(
+        policy,
+        task,
+        governance,
+        orchestration,
+        {
+            "implementation": "single_threaded_reference",
+            "parallelism": 1,
+            "transition_order": "declared_runtime_sequence",
+        },
+    )
+    benchmark = BenchmarkReceipt(
+        task,
+        execution,
+        {
+            "correctness_authority": False,
+            "measurement_kind": "fixture_observation",
+            "observed_transition_count": 3,
+        },
+    )
+    snapshot = runtime.snapshot
+    fast_fold = accumulator.fast_regression_observation()
+    actual_runtime_metrics = (
+        snapshot.requests,
+        snapshot.executions,
+        snapshot.cache_hits,
+        snapshot.retries,
+        operation_calls,
+    )
+    if actual_runtime_metrics != (3, 1, 2, 0, 1):
+        raise AssertionError("v0.4 fixture runtime accounting diverged")
+    if not compact_evidence.source_bound:
+        raise AssertionError("v0.4 fixture evidence must retain native source binding")
+    if len(compact_evidence.canonical_text.encode("utf-8")) > (
+        MAX_COMPACT_EVIDENCE_BYTES
+    ):
+        raise AssertionError("v0.4 fixture evidence exceeded its byte ceiling")
+    return {
+        "authority_receipts": {
+            "governance": governance.canonical_record(),
+            "policy": policy.canonical_record(),
+            "task": task.canonical_record(),
+            "tool_admission": tool_admission.canonical_record(),
+        },
+        "compact_evidence": {
+            "compact_bytes": len(compact_evidence.canonical_text.encode("utf-8")),
+            "receipt": compact_evidence.canonical_record(),
+            "source_bound": compact_evidence.source_bound,
+            "summary": evidence_summary.canonical_record(),
+            "verification_scope": compact_evidence.verification_scope,
+        },
+        "execution": {
+            "observations": observations,
+            "operation_calls": operation_calls,
+            "receipt": execution.canonical_record(),
+            "runtime_metrics": {
+                "actual_executions": snapshot.executions,
+                "cache_hits": snapshot.cache_hits,
+                "requests": snapshot.requests,
+                "retries": snapshot.retries,
+            },
+            "runtime_receipts": runtime_receipts,
+        },
+        "finalization": {
+            "acceptance": final_acceptance.canonical_record(),
+            "gate_results": [item.canonical_record() for item in gate_results],
+            "partial": partial.canonical_record(),
+            "rejection": rejection.canonical_record(),
+        },
+        "non_correctness_records": {
+            "benchmark": benchmark.canonical_record(),
+            "execution_plan": execution_plan.canonical_record(),
+            "fast_regression_observation": (
+                None
+                if fast_fold is None
+                else {
+                    "algorithm": fast_fold.algorithm,
+                    "correctness_authority": fast_fold.correctness_authority,
+                    "protocol_version": fast_fold.protocol_version,
+                    "value": fast_fold.value,
+                }
+            ),
+        },
+        "orchestration": {
+            "admission_receipt": admission.receipt.canonical_record(),
+            "receipt": orchestration.canonical_record(),
+        },
+        "protocols": {
+            "evidence": compact_evidence.canonical_record()["protocol_version"],
+            "governance": GOVERNANCE_PROTOCOL_VERSION,
+            "runtime": RUNTIME_PROTOCOL_VERSION,
+        },
+        "trust_scope": {
+            "external_truth_authenticated": False,
+            "performance_is_correctness_authority": False,
+            "producer_authenticated": False,
         },
     }

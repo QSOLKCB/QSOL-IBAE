@@ -1,6 +1,7 @@
 # QSOL-IBAE Roadmap
 
-Status: v0.2 accepted and merged; v0.3 Rust deterministic runtime implemented as the next gate candidate.
+Status: v0.3 accepted and merged; v0.4 governance and compact evidence
+implemented as the current gate candidate.
 
 QSOL-IBAE is intentionally developed **invariant-first**. The architecture-contract exit gate was accepted by merged PR #2. Each later phase remains blocked on the preceding phase gate.
 
@@ -33,6 +34,12 @@ The project goal is not to create another generic agent framework. It is to crea
 |  |  | logical clock | cycles | receipts    |  |  |
 |  |  | CPU reference | future accelerators |  |  |
 |  |  +--------------------------------------+  |  |
+|  |                     |                       |  |
+|  |                     v                       |  |
+|  |  +--------------------------------------+  |  |
+|  |  | COMPACT EVIDENCE REDUCER             |  |  |
+|  |  | exact aggregates | bounded transport |  |  |
+|  |  +--------------------------------------+  |  |
 |  +--------------------------------------------+  |
 +--------------------------------------------------+
                       |
@@ -62,6 +69,7 @@ Rust runtime
     cycle detection
     logical execution clock
     receipts
+    compact evidence reduction
     deterministic CPU execution
     future accelerator adapters
 ```
@@ -246,12 +254,12 @@ No deterministic runtime fact required for safe next-action selection should exi
 
 ## A8 — Receipt and rejection model
 
-- [ ] Define versioned task/governance/orchestration/execution/final receipts.
-- [ ] Domain-separate all canonical hashes.
-- [ ] Preserve rejected or partial executions with stage/reason receipts rather than silently discarding them.
-- [ ] Bind final accepted state to the identities that actually determined correctness.
-- [ ] Keep benchmark/performance records separately labelled non-correctness observations.
-- [ ] Keep privacy-safe environment metadata and avoid raw machine identifiers unless explicitly required by a test protocol.
+- [x] Define versioned task/governance/orchestration/execution/final receipts.
+- [x] Domain-separate the implemented v0.4 identity/receipt classes while preserving frozen v0.1 compatibility identities.
+- [x] Preserve rejected or partial executions with stage/reason receipts rather than silently discarding them.
+- [x] Bind final accepted state to the identities that actually determined correctness.
+- [x] Keep benchmark/performance records separately labelled non-correctness observations.
+- [x] Keep privacy-safe environment metadata and avoid raw machine identifiers unless explicitly required by a test protocol.
 
 ## A9 — Donor-runtime boundaries from IGM / GLUBALL
 
@@ -338,19 +346,61 @@ Goal: move exact authority-bearing execution machinery below Python.
 
 No accepted Rust transition may disagree with the admitted reference semantics without a versioned contract change.
 
-Candidate evidence: Rust unit tests, Python adversarial boundary tests, the checked-in `fixtures/v0.3/runtime-reference.json`, multi-`PYTHONHASHSEED` byte comparisons, preservation of the exact v0.2 fixture, and a fresh wheel build/install. Gate acceptance still requires green CI and Determinism plus review of the exact current PR head.
+Gate accepted in merged PR #4 at exact reviewed head
+`a3009000998aba90375eceba7b0dfa2e8fba1551` (merge commit
+`de5239b8c7980f8211da109b42bdbc3449be83ba`). Evidence includes Rust unit tests,
+Python adversarial boundary tests, checked-in
+`fixtures/v0.3/runtime-reference.json`, multi-`PYTHONHASHSEED` byte comparisons,
+preservation of the exact v0.2 fixture, fresh wheel build/install, green CI and
+Determinism, and a fresh Codex review of that exact head.
 
 ## v0.4 — Governance Wrapper and Identity Receipts
 
-- [ ] Governance wrapper outside deterministic orchestration/runtime.
-- [ ] OpenAI-only remote-provider policy at governance authority.
-- [ ] Supervisor/worker/tool authority classes.
-- [ ] Tool-class permissions: pure read, snapshot read, volatile read, idempotent mutation, non-idempotent mutation.
-- [ ] Mutation admission rules.
-- [ ] Task/governance/orchestration/execution/execution-plan identity separation.
-- [ ] Final acceptance receipt.
-- [ ] Rejected/partial execution receipts.
-- [ ] Fail-closed malformed/unknown policy behavior.
+- [x] Governance wrapper outside deterministic orchestration/runtime.
+- [x] OpenAI-only remote-provider policy at governance authority.
+- [x] Supervisor/worker/tool authority classes.
+- [x] Tool-class permissions: pure read, snapshot read, volatile read, idempotent mutation, non-idempotent mutation.
+- [x] Mutation admission rules with explicit occurrence identity.
+- [x] Exact bounded authorization-manifest binding from governed tool receipts to typed v0.2 decisions/proposals/capabilities and matching sealed v0.3 read receipts, including exact cache-reuse policy; current governed batches admit at most 64 actions and the reducer enforces a separate 256-authorization hard ceiling.
+- [x] Task/governance/orchestration/execution/execution-plan/benchmark identity separation.
+- [x] Final acceptance receipt bound to required gates and compact evidence.
+- [x] Immutable rejected/partial execution receipts.
+- [x] Fail-closed malformed/unknown policy and receipt behavior.
+- [x] Strict validation of nested v0.3 runtime receipts used by v0.4 execution evidence.
+- [x] Opaque Rust streaming compact-evidence reducer with checked exact counters.
+- [x] Fixed 2,048-byte routine receipt ceiling independent of admitted case cardinality.
+- [x] Non-constructible native runtime/summary/compact seals for source-bound direct-case finalization and structural-only serialized receipt validation.
+- [x] Continuous first/last runtime receipt, state, and session boundary binding without an O(N) success trace.
+- [x] Bounded parent-bound selective failure expansion.
+- [x] Optional non-cryptographic regression fold outside correctness identity.
+- [x] Deterministic child-before-parent validation/composition, retained as non-final grouping-sensitive transport in v1.
+- [x] Model-free 100,000-case evidence stress fixture and multi-hash-seed byte gate.
+- [x] Preserve the exact v0.2 and v0.3 fixtures.
+
+### v0.4 gate
+
+Governance authority, identity separation, final/rejected receipt semantics, and
+compact evidence scope must be deterministic, fail closed, and independently
+verifiable; routine evidence growth must remain bounded independently of
+admitted workload cardinality for the declared compact profile.
+
+Candidate evidence: Python governance/evidence adversarial tests, Rust reducer
+tests, strict runtime-receipt parsing regressions, a checked-in byte-stable v0.4
+fixture, a deterministic 100,000-case compact-evidence stress summary, preserved
+v0.2/v0.3 fixture bytes, Rust fmt/check/Clippy/tests, a fresh wheel install, and
+multi-`PYTHONHASHSEED` comparisons. Gate acceptance still requires green CI and
+Determinism plus fresh review of the exact current PR head.
+
+Deferred within the evidence architecture: arbitrary grouping-neutral
+hierarchical roots, durable successful-leaf audit/replay locators, signatures or
+producer authentication, and distributed/worker execution. These require a
+later versioned contract and are not v0.4 claims.
+
+The v0.4 finalizable runtime profile is cacheable reads with optional sealed
+known-admission `record_retry` accounting transitions. A retry alone never
+satisfies manifest action coverage. Volatile reads and mutations are governed
+classifications, but their execution remains deferred because
+`IBAE-RUNTIME-PROTOCOL-V1` intentionally has no effect command.
 
 ## v0.5 — Progress and Bounded Continuation
 
@@ -360,7 +410,7 @@ Candidate evidence: Rust unit tests, Python adversarial boundary tests, the chec
 - [ ] Finite total lease ceiling.
 - [ ] Deterministic checkpoint/resume receipt.
 - [ ] Cycle-aware extension denial.
-- [ ] Partial-finalization path.
+- [ ] Lease/progress-exhaustion partial-finalization path (distinct from the structural missing-receipt/gate partial records introduced in v0.4).
 - [ ] Benchmark several initial/extension budget profiles rather than hard-coding one guessed timeout.
 
 ## v0.6 — OpenAI Supervisor Integration

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import copy
 import dataclasses
 import time
 import tomllib
 from collections import OrderedDict
+from collections.abc import Iterator, Mapping
 from pathlib import Path
 
 import pytest
@@ -33,11 +35,159 @@ from ibae._records import (
     MAX_RUNTIME_RECORD_BYTES,
 )
 from ibae.reference_executor import PythonReferenceExecutor
-from ibae.runtime import RUNTIME_PROTOCOL_VERSION
+from ibae.runtime import (
+    RUNTIME_PROTOCOL_VERSION,
+    RUNTIME_RECEIPT_DOMAIN,
+    RuntimeReceipt,
+    RuntimeSnapshot,
+)
 
 DEP_A = canonical_fingerprint({"dependency": "a"})
 DEP_B = canonical_fingerprint({"dependency": "b"})
 ADMISSION = canonical_fingerprint({"admission": "test"})
+
+
+def _rehashed_runtime_receipt(record: dict[str, object]) -> dict[str, object]:
+    candidate = copy.deepcopy(record)
+    candidate.pop("receipt_id")
+    candidate["receipt_id"] = domain_fingerprint(
+        RUNTIME_RECEIPT_DOMAIN, candidate
+    )
+    return candidate
+
+
+def test_native_runtime_receipt_seal_binds_only_exact_live_receipt() -> None:
+    first_runtime = RustRuntimeSession("sealed-runtime-first")
+    first = first_runtime.execute_read_transition(
+        "read", {"path": "a"}, DEP_A, lambda: 1
+    ).receipt
+    assert first.source_bound
+    retry = first_runtime.record_retry_transition(
+        admission_id=first.canonical_record()["admission_id"]
+    ).receipt
+    assert retry.source_bound
+
+    parsed = RuntimeReceipt(first.canonical_record())
+    assert not parsed.source_bound
+    with pytest.raises(TypeError):
+        from ibae._runtime import NativeRuntimeReceiptSeal
+
+        NativeRuntimeReceiptSeal()
+
+    second_runtime = RustRuntimeSession("sealed-runtime-second")
+    second = second_runtime.execute_read_transition(
+        "read", {"path": "b"}, DEP_A, lambda: 2
+    ).receipt
+    with pytest.raises(ValueError, match="seal does not match"):
+        RuntimeReceipt(
+            second.canonical_record(),
+            _native_seal=first._native_source_seal(),
+        )
+
+
+def test_runtime_receipt_rejects_subclass_and_slot_forgery() -> None:
+    with pytest.raises(TypeError, match="cannot be subclassed"):
+
+        class _ForgedRuntimeReceipt(RuntimeReceipt):
+            pass
+
+    runtime = RustRuntimeSession("sealed-runtime-tampering")
+    receipt = runtime.execute_read_transition(
+        "read", {"path": "a"}, DEP_A, lambda: 1
+    ).receipt
+
+    class _FakeSeal:
+        def validates(self, _record: str) -> bool:
+            return True
+
+    object.__setattr__(receipt, "_native_seal", _FakeSeal())
+    assert receipt.source_bound is False
+    with pytest.raises(ValueError, match="source seal is not trusted"):
+        receipt.canonical_record()
+
+    other = runtime.execute_read_transition(
+        "read", {"path": "b"}, DEP_A, lambda: 2
+    ).receipt
+    sealed_text = other._record.text
+
+    class _FakeRecord:
+        text = sealed_text
+
+        def to_value(self) -> dict[str, object]:
+            return {"status": "accepted", "receipt_id": ADMISSION}
+
+    object.__setattr__(other, "_record", _FakeRecord())
+    assert other.source_bound is False
+    with pytest.raises(ValueError, match="canonical record is not trusted"):
+        other.canonical_record()
+
+
+class _OverlongMapping(Mapping[str, object]):
+    """Hostile mapping that fails if a validator reads beyond N + 1 keys."""
+
+    def __init__(self, record: dict[str, object]) -> None:
+        self.record = record
+        self.keys_yielded = 0
+
+    def __getitem__(self, key: str) -> object:
+        return self.record[key]
+
+    def __iter__(self) -> Iterator[str]:
+        for key in self.record:
+            self.keys_yielded += 1
+            yield key
+        self.keys_yielded += 1
+        yield "unbounded-extra-key"
+        raise AssertionError("closed-schema validation iterated past its hard cap")
+
+    def __len__(self) -> int:
+        raise AssertionError("closed-schema validation must not trust mapping length")
+
+
+def test_runtime_closed_records_bound_untrusted_mapping_key_enumeration() -> None:
+    runtime = RustRuntimeSession("bounded-untrusted-runtime-record")
+    receipt_record = runtime.execute_read_transition(
+        "read", {"path": "bounded"}, DEP_A, lambda: 1
+    ).receipt.canonical_record()
+    hostile_receipt = _OverlongMapping(receipt_record)
+    with pytest.raises(ValueError, match="receipt does not match"):
+        RuntimeReceipt(hostile_receipt)
+    assert hostile_receipt.keys_yielded == len(receipt_record) + 1
+
+    snapshot_record = runtime.snapshot.canonical_record()
+    hostile_snapshot = _OverlongMapping(snapshot_record)
+    with pytest.raises(ValueError, match="snapshot does not match"):
+        RuntimeSnapshot.from_record(hostile_snapshot)
+    assert hostile_snapshot.keys_yielded == len(snapshot_record) + 1
+
+
+def test_runtime_snapshot_bounds_nested_records_and_collections() -> None:
+    runtime = RustRuntimeSession(
+        "bounded-nested-runtime-snapshot",
+        RuntimeLimits(max_executions=1, max_history=1),
+    )
+    snapshot_record = runtime.snapshot.canonical_record()
+
+    hostile_counters = _OverlongMapping(snapshot_record["counters"])
+    counters_record = dict(snapshot_record)
+    counters_record["counters"] = hostile_counters
+    with pytest.raises(ValueError, match="snapshot counters"):
+        RuntimeSnapshot.from_record(counters_record)
+    assert hostile_counters.keys_yielded == len(snapshot_record["counters"]) + 1
+
+    yielded = 0
+
+    def unbounded_history() -> Iterator[str]:
+        nonlocal yielded
+        while True:
+            yielded += 1
+            yield ADMISSION
+
+    history_record = dict(snapshot_record)
+    history_record["history"] = unbounded_history()
+    with pytest.raises(ValueError, match="snapshot history"):
+        RuntimeSnapshot.from_record(history_record)
+    assert yielded == 2
 
 
 def _metrics(runtime: RustRuntimeSession) -> dict[str, int]:
@@ -403,6 +553,170 @@ def test_tool_and_transition_identities_match_python_v0_1() -> None:
     assert record["transition_id"] == transition_id
 
 
+def test_runtime_receipt_recomputes_identity_before_acceptance() -> None:
+    runtime = RustRuntimeSession("receipt-recompute")
+    record = runtime.execute_read_transition(
+        "read", {}, DEP_A, lambda: {"value": 1}
+    ).receipt.canonical_record()
+    record["receipt_id"] = "0" * 64
+    with pytest.raises(ValueError, match="identity does not match"):
+        RuntimeReceipt(record)
+
+
+def test_rehashed_malformed_accepted_runtime_receipts_are_rejected() -> None:
+    runtime = RustRuntimeSession("forged-accepted-receipt")
+    valid = runtime.execute_read_transition(
+        "read", {}, DEP_A, lambda: {"value": 1}
+    ).receipt.canonical_record()
+    mutations: tuple[tuple[str, object], ...] = (
+        ("status", "pending"),
+        ("command_type", "request_lease"),
+        ("cache_status", "warm"),
+        ("command_id", None),
+        ("admission_id", "not-a-fingerprint"),
+        ("arguments_id", True),
+        ("observation_id", "f" * 63),
+        ("tool_key", "A" * 64),
+        ("transition_id", []),
+        ("prior_state_id", None),
+        ("logical_tick", True),
+        ("logical_tick", (1 << 64) - 1),
+        ("logical_tick_delta", 2),
+        ("dependency_fingerprint", None),
+        ("tool_name", 7),
+        ("rejection", {}),
+        ("status", "rejected"),
+        ("resulting_state_id", valid["prior_state_id"]),
+    )
+    for field, value in mutations:
+        candidate = copy.deepcopy(valid)
+        candidate[field] = value
+        with pytest.raises(ValueError, match="runtime"):
+            RuntimeReceipt(_rehashed_runtime_receipt(candidate))
+
+    multiple_requests = copy.deepcopy(valid)
+    multiple_requests["budget_delta"]["requests"] = 2
+    with pytest.raises(ValueError, match="runtime"):
+        RuntimeReceipt(_rehashed_runtime_receipt(multiple_requests))
+
+    cache_delta_on_cold = copy.deepcopy(valid)
+    cache_delta_on_cold["budget_delta"] = {
+        "cache_hits": 1,
+        "executions": 0,
+        "requests": 1,
+        "retries": 0,
+    }
+    with pytest.raises(ValueError, match="accounting"):
+        RuntimeReceipt(_rehashed_runtime_receipt(cache_delta_on_cold))
+
+
+def test_rehashed_malformed_runtime_rejections_are_rejected() -> None:
+    runtime = RustRuntimeSession("forged-rejection-receipt")
+    valid = runtime.execute_read_transition(
+        "read", {}, DEP_A, lambda: float("nan")
+    ).receipt.canonical_record()
+
+    extra_rejection_field = copy.deepcopy(valid)
+    extra_rejection_field["rejection"]["message"] = "not identity safe"
+
+    unknown_reason = copy.deepcopy(valid)
+    unknown_reason["rejection"]["reason_code"] = "IBAE-RT-REJECT-FORGED"
+
+    wrong_invariants = copy.deepcopy(valid)
+    wrong_invariants["rejection"]["invariant_ids"] = ["IBAE-RT-005"]
+
+    extra_blocking_field = copy.deepcopy(valid)
+    extra_blocking_field["rejection"]["blocking_runtime_state"]["cache"] = []
+
+    wrong_blocking_state = copy.deepcopy(valid)
+    wrong_blocking_state["rejection"]["blocking_runtime_state"]["state_id"] = (
+        "0" * 64
+    )
+
+    wrong_blocking_tick = copy.deepcopy(valid)
+    wrong_blocking_tick["rejection"]["blocking_runtime_state"][
+        "logical_tick"
+    ] += 1
+
+    boolean_counter = copy.deepcopy(valid)
+    boolean_counter["rejection"]["blocking_runtime_state"]["counters"][
+        "executions"
+    ] = True
+
+    invalid_limit = copy.deepcopy(valid)
+    invalid_limit["rejection"]["blocking_runtime_state"]["limits"][
+        "max_executions"
+    ] = 0
+
+    result_on_rejection = copy.deepcopy(valid)
+    result_on_rejection["observation_id"] = "0" * 64
+
+    missing_rejection = copy.deepcopy(valid)
+    missing_rejection["rejection"] = None
+
+    accepted_label = copy.deepcopy(valid)
+    accepted_label["status"] = "accepted"
+
+    cache_accounting = copy.deepcopy(valid)
+    cache_accounting["budget_delta"]["cache_hits"] = 1
+
+    state_neutral_with_spend = copy.deepcopy(valid)
+    state_neutral_with_spend["resulting_state_id"] = state_neutral_with_spend[
+        "prior_state_id"
+    ]
+    state_neutral_with_spend["rejection"]["blocking_runtime_state"][
+        "state_id"
+    ] = state_neutral_with_spend["prior_state_id"]
+
+    for candidate in (
+        extra_rejection_field,
+        unknown_reason,
+        wrong_invariants,
+        extra_blocking_field,
+        wrong_blocking_state,
+        wrong_blocking_tick,
+        boolean_counter,
+        invalid_limit,
+        result_on_rejection,
+        missing_rejection,
+        accepted_label,
+        cache_accounting,
+        state_neutral_with_spend,
+    ):
+        with pytest.raises(ValueError):
+            RuntimeReceipt(_rehashed_runtime_receipt(candidate))
+
+
+def test_rejection_reason_must_match_boundary_and_command_shape() -> None:
+    runtime = RustRuntimeSession("forged-rejection-reason")
+    invalid = runtime.execute_read_transition(
+        "read", {}, DEP_A, lambda: float("nan")
+    ).receipt.canonical_record()
+    forged = copy.deepcopy(invalid)
+    forged["rejection"]["reason_code"] = "IBAE-RT-REJECT-REQUEST-BUDGET"
+    forged["rejection"]["invariant_ids"] = ["IBAE-BND-001", "IBAE-CLK-004"]
+    forged["budget_delta"] = {
+        "cache_hits": 0,
+        "executions": 0,
+        "requests": 0,
+        "retries": 0,
+    }
+    forged["logical_tick_delta"] = 0
+    with pytest.raises(ValueError, match="exhausted boundary"):
+        RuntimeReceipt(_rehashed_runtime_receipt(forged))
+
+
+def test_canonical_invalid_command_receipt_remains_admitted_by_validator() -> None:
+    runtime = RustRuntimeSession("invalid-command-receipt")
+    prior = runtime.snapshot
+    transition = runtime.dispatch_protocol(
+        {"protocol_version": RUNTIME_PROTOCOL_VERSION}
+    )
+    assert transition.receipt.rejection_reason == "IBAE-RT-REJECT-INVALID-COMMAND"
+    assert transition.receipt.canonical_record()["command_id"] is not None
+    assert runtime.snapshot == prior
+
+
 def test_unsupported_future_command_is_structured_and_state_neutral() -> None:
     runtime = RustRuntimeSession("unsupported")
     prior = runtime.snapshot
@@ -414,6 +728,24 @@ def test_unsupported_future_command_is_structured_and_state_neutral() -> None:
         }
     )
     assert transition.receipt.rejection_reason == "IBAE-RT-REJECT-UNSUPPORTED-COMMAND"
+    assert runtime.snapshot == prior
+
+
+def test_empty_unsupported_command_variant_remains_bound_and_state_neutral() -> None:
+    runtime = RustRuntimeSession("unsupported-empty")
+    prior = runtime.snapshot
+    transition = runtime.dispatch_protocol(
+        {
+            "admission_id": ADMISSION,
+            "command_type": "",
+            "protocol_version": RUNTIME_PROTOCOL_VERSION,
+        }
+    )
+    record = transition.receipt.canonical_record()
+    assert record["command_type"] == ""
+    assert record["rejection"]["reason_code"] == (
+        "IBAE-RT-REJECT-UNSUPPORTED-COMMAND"
+    )
     assert runtime.snapshot == prior
 
 

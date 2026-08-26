@@ -1,6 +1,8 @@
 # QSOL-IBAE Architecture
 
-Status: frozen architecture contract with accepted v0.2 Python orchestration reference and v0.3 Rust runtime implementation candidate.
+Status: frozen architecture contract with accepted v0.2 Python orchestration,
+accepted v0.3 Rust runtime, and v0.4 governance/compact-evidence implementation
+candidate.
 
 QSOL-IBAE is a small OpenAI-exclusive governed execution substrate, not a general-purpose proprietary multi-provider agent framework.
 
@@ -14,7 +16,8 @@ See `INVARIANTS.md` for normative invariant IDs and `ROADMAP.md` for implementat
 
 ## 1. Authority layers
 
-QSOL-IBAE separates three active layers and one observational layer:
+QSOL-IBAE separates three authority layers, one deterministic evidence plane,
+and one observational benchmark layer:
 
 ```text
                     USER
@@ -52,6 +55,13 @@ QSOL-IBAE separates three active layers and one observational layer:
 |  |  | cycle detection                      |  |  |
 |  |  | command/observation receipts         |  |  |
 |  |  +--------------------------------------+  |  |
+|  |                     |                       |  |
+|  |                     v                       |  |
+|  |  +--------------------------------------+  |  |
+|  |  |       COMPACT EVIDENCE REDUCER       |  |  |
+|  |  | exact streaming aggregates          |  |  |
+|  |  | bounded routine transport            |  |  |
+|  |  +--------------------------------------+  |  |
 |  +--------------------------------------------+  |
 +--------------------------------------------------+
                       |
@@ -66,6 +76,8 @@ Normative boundary:
 
 ```text
 governance != orchestration != execution != benchmark
+
+execution state != evidence transport
 ```
 
 Lower layers cannot promote themselves upward.
@@ -104,7 +116,7 @@ Future local open-weight models are workers, not peers. They return candidate re
 
 ## 3. Python logic core and Rust runtime
 
-The v0.3 modular implementation split is:
+The v0.4 modular implementation split is:
 
 ### Python logic core
 
@@ -115,7 +127,8 @@ Python owns change-friendly semantic logic:
 - deterministic orchestration reference semantics;
 - progress predicates and strategy representation;
 - AI-facing compact state projection;
-- OpenAI API/SDK integration;
+- governance receipt-chain validation and final-acceptance interpretation;
+- future OpenAI API/SDK integration;
 - future local-worker adapters;
 - benchmark/research harnesses.
 
@@ -134,7 +147,22 @@ Rust owns exact authority-bearing runtime mechanics:
 - deterministic CPU reference execution;
 - future SIMD/CUDA-facing runtime adapters.
 
-The bridge is in-process and narrow: PyO3 + maturin, with one opaque runtime session and one canonical command dispatcher. RPC, daemons, sockets, async runtimes, and distributed infrastructure are absent and deferred.
+### Rust compact-evidence plane
+
+The separate evidence-plane component owns:
+
+- opaque, checked streaming reduction of admitted runtime receipts;
+- bounded exact counter and canonical-identity aggregation;
+- bounded failure-detail retention and explicit expansion;
+- non-constructible in-process source seals for exact runtime receipts,
+  aggregate summaries, and compact receipts.
+
+The reducer does not own runtime transition authority or governance acceptance.
+
+The bridges are in-process and narrow: PyO3 + maturin, with one opaque runtime
+session, one canonical command dispatcher, and one opaque bounded evidence
+accumulator. RPC, daemons, sockets, async runtimes, and distributed
+infrastructure are absent and deferred.
 
 Conceptually:
 
@@ -148,7 +176,10 @@ Rust admission/transition
 Rust receipt record
         |
         v
-Python orchestration update
+Rust compact-evidence reducer
+        |
+        v
+Python governance interpretation / orchestration update
 ```
 
 Python must not mutate authoritative Rust runtime state directly.
@@ -156,6 +187,11 @@ Python must not mutate authoritative Rust runtime state directly.
 The Rust runtime must not directly call OpenAI or another model provider.
 
 The exact v0.3 record schemas, accounting deltas, identity domains, and rejection taxonomy are defined in `RUNTIME_PROTOCOL.md`.
+
+The v0.4 policy, receipt-chain, compact-evidence, trust-scope, and size
+contracts are defined in `GOVERNANCE_PROTOCOL.md` and `EVIDENCE_PROTOCOL.md`.
+The evidence reducer is an execution-support mechanism, not governance
+authority.
 
 ---
 
@@ -355,9 +391,73 @@ Correctness identity should be independent of worker/chunk/device assignment whe
 
 Rejected/partial executions may be persisted as evidence, but cannot be relabelled accepted without satisfying the acceptance contract.
 
+v0.4 implements each class as a distinct immutable canonical record with a
+separate semantic-identity domain and receipt-identity domain. Final acceptance
+binds the validated task, governance, orchestration, execution, and compact
+evidence records plus the exact gate-result set. It excludes execution-plan,
+benchmark, fast-fold, wall-clock, and device fields. Canonical hashes prove
+record integrity; finalization separately requires a live chain bound by
+non-constructible native seals. Those in-process seals are not signatures,
+remote attestation, or producer authentication.
+
 ---
 
-## 10. Donor patterns from IGM and GLUBALL
+## 10. Compact Evidence Plane
+
+The evidence plane reduces large bounded deterministic workloads without
+turning resident execution state into routine model/host transport:
+
+```text
+canonical case/runtime receipts
+        |
+        v
+opaque checked streaming reducer
+        |
+        v
+fixed-ceiling compact receipt
+        |
+        v
+governance scope validation
+```
+
+For the declared v1 profile, successful per-case records are not retained. The
+receipt carries exact counts; ordered SHA-256 admission, input, result, and
+runtime-receipt aggregates; the bounded governed authorization-manifest
+identity/count; initial/final receipt and state continuity for one runtime
+session; bounded failure-locator metadata; and separately bound
+task/governance/orchestration/execution identities. Its 2,048-byte ceiling does
+not grow with admitted case count. Failures may retain only a declared bounded
+detail prefix, exposed only through a parent-bound bounded expansion request.
+
+Structural receipt/SHA validation establishes canonical consistency, not
+producer authentication or external truth. Final governance additionally
+requires a live source-bound direct-case reducer result whose roots, manifest,
+runtime boundary, and counts agree with the execution receipt. Every sealed
+runtime case is checked against the governed manifest before reducer mutation.
+Cache-hit receipts additionally require the manifest's exact cache-reuse
+permission. A sealed `record_retry` for a known admission may preserve exact
+accounting and session/state continuity between reads, but it does not establish
+execute-read coverage for that admission.
+The first accepted evidence receipt for each action must be cold before its
+hits are admitted, preventing the frozen v0.3 cache key from carrying authority
+across distinct same-name capability contracts.
+A separate optional non-cryptographic fold has
+`correctness_authority: false` and is absent from every correctness identity.
+
+Live child receipts can be validated before deterministic bounded parent
+composition. The initial child transport root is grouping-sensitive, so child
+composition is not admitted into v0.4 final correctness identity. A future
+versioned indexed/range-proof profile is required before arbitrary chunking can
+claim plan-neutral final evidence. This is an explicit partial hierarchical
+contract, not distributed execution.
+
+The engineering pattern is independently derived from the bounded evidence
+reduction described by QEC/VE-24. QEC/VE-24 implementation code, GPU kernels,
+geometry, constants, assets, and domain/physical claims are not incorporated.
+
+---
+
+## 11. Donor patterns from IGM and GLUBALL
 
 IGM and GLUBALL contribute engineering patterns, not ontology.
 
@@ -387,7 +487,7 @@ The current preferred GPU experiment keeps two padding lanes inactive and metada
 
 ---
 
-## 11. CPU and accelerator authority
+## 12. CPU and accelerator authority
 
 Accelerator implementation comes only after Python/Rust semantics are frozen and benchmarked.
 
@@ -412,7 +512,7 @@ A fast result is not a more correct result.
 
 ---
 
-## 12. Modular extension rule
+## 13. Modular extension rule
 
 Future features must attach through explicit module/protocol boundaries rather than forcing core rewrites.
 
@@ -439,6 +539,7 @@ cycle
 clock
 receipt
 runtime
+evidence
 cpu
 future accelerator adapters
 ```
@@ -447,7 +548,7 @@ Optional features such as GPU scheduling geometry, local workers, alternative or
 
 ---
 
-## 13. Current implementation boundary
+## 14. Current implementation boundary
 
 The merged v0.1 Python kernel implements the deterministic execution foundation: canonicalization, observation reuse, finite request/execution/retry/history bounds, short-cycle detection, and provider policy.
 
@@ -467,8 +568,33 @@ The v0.2 Python reference implements deterministic orchestration semantics for:
 - canonical rejection codes (including strategy/argument policy drift), recovery actions, compact state projection, and logical orchestration ticks;
 - byte-stable, model-free conformance fixtures.
 
-v0.2 remains the Python orchestration semantic reference. It constructs/admit actions but does not grant continuation leases, own governance receipts, or call models.
+v0.2 remains the Python orchestration semantic reference. It constructs/admits
+actions but does not grant continuation leases or call models. v0.4 wraps its
+admission receipt rather than moving orchestration intelligence into governance
+or Rust.
 
-The v0.3 candidate moves the already admitted v0.1 cacheable-read execution semantics below Python. Rust owns exact counters, logical execution ticks, canonical cache/history, cycle detection, and runtime receipts. Python can request only versioned transitions and receives mutation-isolated observation/snapshot copies. The Rust crate has no network or model-provider dependency. The retained Python executor is conformance evidence, not an alternate production authority.
+The accepted v0.3 runtime moves the already admitted v0.1 cacheable-read
+execution semantics below Python. Rust owns exact counters, logical execution
+ticks, canonical cache/history, cycle detection, and runtime receipts. Python
+can request only versioned transitions and receives mutation-isolated
+observation/snapshot copies. The Rust crate has no network or model-provider
+dependency. The retained Python executor is conformance evidence, not an
+alternate production authority.
 
-The governance wrapper, logical lease system, OpenAI adapter, GPU path, distributed execution, and local workers described elsewhere are **later architecture targets, not current implementation claims**. They remain blocked on the v0.3 exact-head conformance/review gate.
+The v0.4 candidate implements the deterministic governance policy/receipt
+surface, separate task/governance/orchestration/execution/plan/benchmark/final
+identities, immutable rejection/partial receipts, and the bounded Compact
+Evidence Plane. Governed tool admissions are bound to v0.2 action identities;
+the finalizable v1 execution path additionally requires live sealed v0.3
+`execute_read` receipts matching the bounded authorization manifest; sealed
+`record_retry` receipts may appear only as exact known-admission accounting
+transitions and cannot cover a manifest action on their own. The
+wrapper may classify effect permissions, but v0.4 does not execute a mutation
+or volatile read. It does not authenticate a producer, call a model, or grant a
+continuation lease. The exact v0.2 and v0.3 fixtures remain
+frozen compatibility evidence.
+
+The logical lease system, live OpenAI adapter, GPU path, distributed execution,
+and local workers remain **later architecture targets, not current
+implementation claims**. They remain blocked until the exact v0.4 head passes
+CI, determinism, compact-evidence stress, and fresh review.
