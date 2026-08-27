@@ -15,6 +15,9 @@ All notable changes to QSOL-IBAE will be documented here.
   obligation contract counts both unsatisfied and blocked work, preventing a
   newly blocked obligation from being misclassified as progress, and context
   observation refreshes stalled/progressing/complete control state immediately.
+  Governed external values also form receipt-independent semantic endpoints;
+  each new prior endpoint must equal the live endpoint, preventing replay with
+  freshly rotated evidence receipts.
 - structured strategy-material and strategy-change receipts that bind admitted
   strategy identity, capability frontier, target obligations, dependency path,
   recovery mode, and period-1/2/3 cycle-breaking evidence. Receipts revalidate
@@ -23,7 +26,9 @@ All notable changes to QSOL-IBAE will be documented here.
 - `IBAE-CONTINUATION-LEASE-V1`, with governance-precommitted initial budgets,
   finite indexed lease schedules, exact cumulative ceilings, request caps,
   strategy-recovery caps, one task/session continuation ledger, and closed
-  grant/deny receipts.
+  grant/deny receipts. Initial history retains the complete six-transition
+  period-1/2/3 window, and every request cap reserves a terminal decision beyond
+  the lease schedule.
 - opt-in Rust `apply_lease` authority that independently validates complete
   governance grant/receipt identities, policy/session/state lineage, schedule,
   replay index, and checked ceiling before changing exact limits. Accepted
@@ -36,7 +41,11 @@ All notable changes to QSOL-IBAE will be documented here.
   authorized request and complete grant, and a duplicate session with equal
   canonical IDs cannot use its distinct native authority against the original
   session. There is no raw exported grant issuer or mutable Python capability
-  validator.
+  validator. Native integrity checks cover the captured callable code,
+  referenced globals and default/closure bindings, and reachable IBAE
+  helpers/classes at session
+  creation and every evaluator/observer entry. The initial zero-decision state
+  receives a one-shot native session seal before exposure.
 - single-use measurable-progress endpoints: one exact progress identity may
   justify at most one progress-based grant, after which another such grant
   requires freshly observed progress. External evidence is paired with
@@ -51,7 +60,9 @@ All notable changes to QSOL-IBAE will be documented here.
   endpoints, live evidence/checkpoint endpoints, actual partial-denial causes,
   evaluator-bound recovery counters, exact live strategy/status/evidence
   bindings, effective request/schedule capacity, and watchdog
-  orchestration/runtime/lease-exhaustion identity fail closed.
+  orchestration/runtime/lease-exhaustion identity fail closed. Semantic partial
+  reasons are validated against the actual denial and exhausted counters when
+  the checkpoint itself is constructed.
 - exact experimental `tiny`, `standard`, `extended`, and `repository`
   continuation profiles plus a model-free benchmark of fixed, front-loaded,
   geometric-candidate, and bounded-recovery schedules without a promoted

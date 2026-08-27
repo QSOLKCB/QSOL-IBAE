@@ -1337,6 +1337,22 @@ class RustRuntimeSession:
         authority = session.__native.take_continuation_request_authority()
         return session, authority
 
+    def _seal_initial_continuation_state(
+        self,
+        state: Any,
+        orchestration_state: Any,
+        progress: Any | None,
+        strategy: Any | None,
+    ) -> Any:
+        """Consume the native one-shot authority for initial state lineage."""
+
+        return self.__native.seal_initial_continuation_state(
+            state,
+            orchestration_state,
+            progress,
+            strategy,
+        )
+
     def _evaluate_continuation_request(
         self,
         request_authority: Any,

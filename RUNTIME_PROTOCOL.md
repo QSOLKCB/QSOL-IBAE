@@ -128,6 +128,12 @@ deterministic evaluator and context observer once in native storage and removes
 the bootstrap entrypoint. Continuation-session creation clones only those
 originals into a Rust-private per-instance binding and returns a separate
 once-issued, session-scoped supervisor request capability.
+The binding records the captured functions' code, referenced globals and
+default/closure bindings, and reachable IBAE helper/class definitions and
+rejects session creation,
+evaluation, or observation if any are mutated in place. It also seals the
+session's exact initial zero-decision continuation state once before that state
+is exposed; every later state must preserve native lineage.
 The dedicated continuation factory extracts it before returning the runtime;
 the generic constructor rejects continuation arguments, and the runtime facade
 does not expose its native handle. The requester label alone is not authority.
@@ -241,6 +247,10 @@ resulting grant and live per-instance native state. Canonical hash consistency
 alone cannot authorize a lease; a structural caller or equal-ID duplicate
 session cannot mint a usable seal, and a missing or mismatched binding is
 state-neutral.
+
+The native policy parser also requires at least six initial history entries and
+strictly more request decisions than scheduled leases. This preserves complete
+period-1/2/3 detection and one recordable terminal lease-ceiling decision.
 
 ## Rejection taxonomy
 

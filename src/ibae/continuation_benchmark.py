@@ -114,7 +114,7 @@ def benchmark_policies() -> tuple[ContinuationPolicy, ...]:
         ),
         _policy(
             "small_base_larger_recovery",
-            BudgetVector(4, 2, 1, 0, 4),
+            BudgetVector(4, 2, 1, 0, 6),
             (
                 BudgetVector(8, 4, 2, 0, 8),
                 BudgetVector(4, 2, 1, 0, 4),

@@ -890,6 +890,7 @@ def v0_5_reference_fixture() -> dict[str, object]:
     continuation_state = ContinuationState.create(
         policy=continuation_policy,
         policy_receipt=continuation_policy_receipt,
+        runtime_session=runtime,
         orchestration_state=current,
         runtime_snapshot=runtime.snapshot,
         strategy=prior_strategy,

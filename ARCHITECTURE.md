@@ -298,7 +298,9 @@ and completion from their bound sources. The built-in contract counts both
 unsatisfied and blocked obligations, so discovering a blocker cannot masquerade
 as satisfying work. Governed external counters require a source-bound native
 observation matched to its exact tool admission and are paired with dimensions
-in canonical key order. A measurable progress endpoint is consumed by its
+in canonical key order. Their semantic value/basis endpoint excludes evidence
+receipt identity and must continue from the live endpoint, preventing receipt
+rotation from replaying an interval. A measurable progress endpoint is consumed by its
 first progress-authorized grant; another such grant requires a fresh observed
 endpoint.
 Governance binds an exact initial budget, finite indexed resource schedule,
@@ -307,7 +309,11 @@ initialization captures the exact evaluator and observer once in native storage
 and removes the bootstrap entrypoint. Continuation-session creation clones only
 those originals into a non-serialized per-instance native authority and returns
 a separate once-issued, session-scoped supervisor
-request capability.
+request capability. Native integrity records cover their bound code,
+referenced globals and default/closure bindings, and reachable IBAE helper/class
+definitions; every
+authority entry fails closed on in-place mutation. The initial zero-decision
+state is sealed once by the native session before exposure.
 The public supervisor label cannot substitute for it. Exact request seals enter
 the pinned evaluator, and Rust independently validates the resulting full grant
 against the authorized request and live session before issuing a grant seal.
@@ -321,7 +327,9 @@ consuming no tool resource counter or execution history; rejected application
 is state-neutral.
 
 Period-1/2/3 cycle evidence is recomputed from the live native history rather
-than trusted as optional caller input. The compact projection exposes both
+than trusted as optional caller input. Policies retain the full six-transition
+two-period window and reserve at least one request decision beyond scheduled
+leases for the terminal ceiling denial. The compact projection exposes both
 remaining schedule slots and remaining request decisions, so exhausted request
 or schedule capacity cannot advertise an impossible recovery. Checkpoints use
 that same effective minimum and cannot bind a strategy absent from live state;
@@ -337,7 +345,9 @@ candidate, not an architectural law.
 Checkpoint/resume support is intentionally structural and in-process. It
 revalidates exact live task, governance, orchestration, native runtime,
 progress, strategy, policy, status, checkpoint-bound evidence IDs, and lease
-lineage. Semantic partials derive their evidence IDs from that checkpoint, and
+lineage. Checkpoint creation itself validates any semantic partial reason
+against the actual last denial and required exhaustion. Semantic partials
+derive their evidence IDs from that checkpoint, and
 watchdog identity includes its independently checked lease-exhaustion flag. A
 checkpoint does not authenticate a producer or reconstruct an opaque native
 runtime from serialized bytes in another process.
@@ -655,10 +665,13 @@ policy, state, and native context bind one exact progress contract; progress
 rebinds preserve both prior and current orchestration endpoints, derive their
 claims from bound sources, and require source-bound governed provenance for
 external counters. Strategy receipts revalidate their exact material and live
-cycle evidence is recomputed internally. A separate native supervisor
+cycle evidence is recomputed internally; external counter observations must
+continue from a receipt-independent semantic endpoint. A separate native supervisor
 capability seals an exact request for the evaluator captured at trusted module
 initialization; Rust then validates the authorized request and exact governance grant against
 the live per-instance session before issuing its non-constructible grant seal.
+The captured evaluator graph is integrity-checked at every authority entry, and
+the initial continuation state is sealed before exposure.
 A self-consistent reconstructed grant or equal-ID duplicate session cannot
 extend limits. Native decision lineage protects the strategy-recovery counter
 and decision/progress semantics, while each measurable progress identity is

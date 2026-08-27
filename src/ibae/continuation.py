@@ -71,6 +71,9 @@ CONTINUATION_POLICY_RECEIPT_ID_DOMAIN: Final = (
 PROGRESS_CONTRACT_ID_DOMAIN: Final = "ibae.progress-contract-id.v1"
 PROGRESS_EVIDENCE_ID_DOMAIN: Final = "ibae.progress-evidence-id.v1"
 PROGRESS_RECORD_ID_DOMAIN: Final = "ibae.progress-record-id.v1"
+PROGRESS_EXTERNAL_ENDPOINT_ID_DOMAIN: Final = (
+    "ibae.progress-external-endpoint-id.v1"
+)
 OBLIGATION_DEFINITION_ID_DOMAIN: Final = "ibae.obligation-definition-set-id.v1"
 STRATEGY_MATERIAL_ID_DOMAIN: Final = "ibae.strategy-material-id.v1"
 STRATEGY_CHANGE_ID_DOMAIN: Final = "ibae.strategy-change-id.v1"
@@ -106,6 +109,7 @@ MAX_STRATEGY_FRONTIER: Final = 128
 MAX_STRATEGY_TARGETS: Final = 128
 MAX_DEPENDENCY_PATH: Final = 128
 MAX_TRANSITION_PATTERN: Final = 12
+MIN_CYCLE_HISTORY: Final = 6
 MAX_CONTINUATION_EVIDENCE_BYTES: Final = 4_096
 
 
@@ -387,8 +391,10 @@ class ContinuationPolicy:
         _u64("max_lease_requests", self.max_lease_requests)
         if self.max_lease_requests == 0 or self.max_lease_requests > MAX_LEASE_REQUESTS:
             raise ValueError("max_lease_requests is outside the v1 hard bound")
-        if self.max_lease_requests < len(schedule):
-            raise ValueError("max_lease_requests cannot be smaller than lease count")
+        if self.max_lease_requests <= len(schedule):
+            raise ValueError(
+                "max_lease_requests must reserve one terminal decision beyond leases"
+            )
         require_fingerprint(
             "continuation progress contract id", self.progress_contract_id
         )
@@ -445,6 +451,10 @@ class ContinuationPolicy:
         ):
             if self.initial_budget.canonical_record()[name] == 0:
                 raise ValueError(f"initial {name} must be positive")
+        if self.initial_budget.history_delta < MIN_CYCLE_HISTORY:
+            raise ValueError(
+                "initial history must retain the six-transition cycle window"
+            )
 
     @property
     def max_leases(self) -> int:
@@ -1035,6 +1045,37 @@ class ProgressRecord:
     @property
     def progress_id(self) -> str:
         return domain_fingerprint(PROGRESS_RECORD_ID_DOMAIN, self.canonical_record())
+
+    def _external_endpoint_id(self, *, prior: bool) -> str | None:
+        measures = self.prior_measures if prior else self.current_measures
+        endpoint = [
+            {
+                "basis_identity": measure.basis_identity,
+                "dimension_key": measure.dimension_key,
+                "value": measure.value,
+            }
+            for dimension, measure in zip(
+                self.contract.dimensions, measures, strict=True
+            )
+            if dimension.source is ProgressSource.GOVERNED_EXTERNAL_COUNTER
+        ]
+        if not endpoint:
+            return None
+        return domain_fingerprint(
+            PROGRESS_EXTERNAL_ENDPOINT_ID_DOMAIN,
+            {
+                "measure_contract_id": self.contract.contract_id,
+                "measures": endpoint,
+            },
+        )
+
+    @property
+    def prior_external_endpoint_id(self) -> str | None:
+        return self._external_endpoint_id(prior=True)
+
+    @property
+    def current_external_endpoint_id(self) -> str | None:
+        return self._external_endpoint_id(prior=False)
 
     @property
     def evidence_ids(self) -> tuple[str, ...]:
@@ -1697,6 +1738,8 @@ class ContinuationState:
     current_strategy_material_id: str | None
     last_progress_id: str | None
     last_consumed_progress_id: str | None
+    last_external_progress_endpoint_id: str | None
+    last_consumed_external_progress_endpoint_id: str | None
     last_progress_classification: ProgressClassification | None
     last_decision: str
     last_denial_reason: LeaseDenialReason | None
@@ -1757,6 +1800,16 @@ class ContinuationState:
             require_fingerprint(
                 "last consumed progress id", self.last_consumed_progress_id
             )
+        if self.last_external_progress_endpoint_id is not None:
+            require_fingerprint(
+                "last external progress endpoint id",
+                self.last_external_progress_endpoint_id,
+            )
+        if self.last_consumed_external_progress_endpoint_id is not None:
+            require_fingerprint(
+                "last consumed external progress endpoint id",
+                self.last_consumed_external_progress_endpoint_id,
+            )
         if self.last_progress_classification is not None:
             _enum(
                 "last progress classification",
@@ -1789,6 +1842,20 @@ class ContinuationState:
             raise ValueError("a denied last decision requires a recorded denial")
         if self.last_consumed_progress_id is not None and self.leases_granted == 0:
             raise ValueError("consumed progress requires a recorded grant")
+        if (
+            self.last_consumed_external_progress_endpoint_id is not None
+            and self.leases_granted == 0
+        ):
+            raise ValueError(
+                "consumed external progress requires a recorded grant"
+            )
+        if (
+            self.last_consumed_external_progress_endpoint_id is not None
+            and self.last_external_progress_endpoint_id is None
+        ):
+            raise ValueError(
+                "consumed external progress requires a live external endpoint"
+            )
         if self.strategy_recoveries > self.leases_granted:
             raise ValueError("strategy recoveries cannot exceed recorded grants")
         if self._decision_lineage_capability is not None:
@@ -1809,6 +1876,7 @@ class ContinuationState:
         *,
         policy: ContinuationPolicy,
         policy_receipt: ContinuationPolicyReceipt,
+        runtime_session: RustRuntimeSession,
         orchestration_state: OrchestrationState,
         runtime_snapshot: RuntimeSnapshot,
         strategy: StrategyMaterialization | None = None,
@@ -1818,6 +1886,8 @@ class ContinuationState:
             raise TypeError("policy must be an exact ContinuationPolicy")
         if type(policy_receipt) is not ContinuationPolicyReceipt:
             raise TypeError("policy_receipt must be an exact policy receipt")
+        if type(runtime_session) is not RustRuntimeSession:
+            raise TypeError("runtime_session must be an exact RustRuntimeSession")
         if policy_receipt.continuation_policy_id != policy.continuation_policy_id:
             raise ValueError("continuation policy receipt identity mismatch")
         if policy_receipt.progress_contract_id != policy.progress_contract_id:
@@ -1826,6 +1896,12 @@ class ContinuationState:
             raise TypeError("orchestration_state must be exact OrchestrationState")
         if not isinstance(runtime_snapshot, RuntimeSnapshot):
             raise TypeError("runtime_snapshot must be a RuntimeSnapshot")
+        live_runtime_snapshot = runtime_session.snapshot
+        if (
+            live_runtime_snapshot.session_id != runtime_snapshot.session_id
+            or live_runtime_snapshot.state_id != runtime_snapshot.state_id
+        ):
+            raise ValueError("initial runtime snapshot is not the live session state")
         native_continuation = runtime_snapshot.continuation
         if native_continuation is None:
             raise ValueError("continuation state requires an opt-in native runtime")
@@ -1874,7 +1950,7 @@ class ContinuationState:
                 != orchestration_state.state_id
             ):
                 raise ValueError("initial progress does not bind continuation context")
-        return cls(
+        initial = cls(
             task_id=policy_receipt.task_id,
             governance_id=policy_receipt.governance_id,
             governance_receipt_id=policy_receipt.governance_receipt_id,
@@ -1903,6 +1979,12 @@ class ContinuationState:
                 None if progress is None else progress.progress_id
             ),
             last_consumed_progress_id=None,
+            last_external_progress_endpoint_id=(
+                None
+                if progress is None
+                else progress.current_external_endpoint_id
+            ),
+            last_consumed_external_progress_endpoint_id=None,
             last_progress_classification=(
                 None if progress is None else progress.classification
             ),
@@ -1923,6 +2005,15 @@ class ContinuationState:
                 )
             ),
         )
+        sealed = runtime_session._seal_initial_continuation_state(
+            initial,
+            orchestration_state,
+            progress,
+            strategy,
+        )
+        if type(sealed) is not cls:
+            raise TypeError("native runtime returned an invalid continuation state")
+        return sealed
 
     @property
     def continuation_state_id(self) -> str:
@@ -2027,6 +2118,9 @@ class ContinuationState:
             "governance_id": self.governance_id,
             "governance_receipt_id": self.governance_receipt_id,
             "last_consumed_progress_id": self.last_consumed_progress_id,
+            "last_consumed_external_progress_endpoint_id": (
+                self.last_consumed_external_progress_endpoint_id
+            ),
             "last_decision": self.last_decision,
             "last_denial_reason": (
                 None
@@ -2039,6 +2133,9 @@ class ContinuationState:
                 else self.last_progress_classification.value
             ),
             "last_progress_id": self.last_progress_id,
+            "last_external_progress_endpoint_id": (
+                self.last_external_progress_endpoint_id
+            ),
             "lease_requests": self.lease_requests,
             "leases_denied": self.leases_denied,
             "leases_granted": self.leases_granted,
@@ -2070,9 +2167,6 @@ class ContinuationState:
 
     def _require_decision_lineage(self) -> None:
         capability = self._decision_lineage_capability
-        if self.lease_requests == 0 and self.strategy_recoveries == 0:
-            if capability is None:
-                return
         from ._runtime import NativeContinuationStateSeal
 
         if type(capability) is not NativeContinuationStateSeal:
@@ -2108,7 +2202,13 @@ class ContinuationState:
                 else self.last_progress_classification.value
             ),
             "last_consumed_progress_id": self.last_consumed_progress_id,
+            "last_consumed_external_progress_endpoint_id": (
+                self.last_consumed_external_progress_endpoint_id
+            ),
             "last_progress_id": self.last_progress_id,
+            "last_external_progress_endpoint_id": (
+                self.last_external_progress_endpoint_id
+            ),
             "lease_requests": self.lease_requests,
             "leases_denied": self.leases_denied,
             "leases_granted": self.leases_granted,
@@ -2187,6 +2287,14 @@ def _observe_continuation_context(
             or progress.current_orchestration_state_id != orchestration_state.state_id
         ):
             raise ValueError("progress does not bind the observed context")
+        if (
+            state.last_external_progress_endpoint_id is not None
+            and progress.prior_external_endpoint_id
+            != state.last_external_progress_endpoint_id
+        ):
+            raise ValueError(
+                "external progress does not continue from the live endpoint"
+            )
     elif orchestration_state.state_id != state.orchestration_state_id:
         raise ValueError(
             "orchestration state cannot advance without exact progress lineage"
@@ -2205,6 +2313,11 @@ def _observe_continuation_context(
         ),
         last_progress_id=(
             state.last_progress_id if progress is None else progress.progress_id
+        ),
+        last_external_progress_endpoint_id=(
+            state.last_external_progress_endpoint_id
+            if progress is None
+            else progress.current_external_endpoint_id
         ),
         last_progress_classification=(
             state.last_progress_classification
@@ -3105,6 +3218,11 @@ def _evaluate_continuation(
             if progress_admitted
             else state.last_consumed_progress_id
         ),
+        last_consumed_external_progress_endpoint_id=(
+            progress.current_external_endpoint_id
+            if progress_admitted
+            else state.last_consumed_external_progress_endpoint_id
+        ),
         last_progress_classification=progress.classification,
         last_decision="granted",
         last_denial_reason=None,
@@ -3170,6 +3288,63 @@ def evaluate_continuation(
     if type(decision) is not ContinuationDecision:
         raise TypeError("native evaluator returned an invalid continuation decision")
     return decision
+
+
+def _validate_semantic_partial_reason(
+    state: ContinuationState,
+    reason: ContinuationPartialReason,
+    *,
+    leases_remaining: int,
+    strategy_recoveries_remaining: int,
+) -> None:
+    """Require a semantic partial reason to describe the live decision ledger."""
+
+    if reason is ContinuationPartialReason.WATCHDOG_EXPIRED:
+        return
+    required_state = {
+        ContinuationPartialReason.LEASE_CEILING_EXHAUSTED: (
+            ProgressState.LEASE_EXHAUSTED
+        ),
+        ContinuationPartialReason.NO_PROGRESS: ProgressState.STALLED,
+        ContinuationPartialReason.TERMINAL_CYCLE: ProgressState.CYCLE_BLOCKED,
+        ContinuationPartialReason.STRATEGY_RECOVERY_EXHAUSTED: (
+            ProgressState.STALLED
+        ),
+    }[reason]
+    if state.progress_state is not required_state:
+        raise ValueError("partial reason does not match continuation progress state")
+    required_denials = {
+        ContinuationPartialReason.LEASE_CEILING_EXHAUSTED: (
+            LeaseDenialReason.LEASE_CEILING_REACHED,
+        ),
+        ContinuationPartialReason.NO_PROGRESS: (
+            LeaseDenialReason.NO_MEASURABLE_PROGRESS,
+        ),
+        ContinuationPartialReason.TERMINAL_CYCLE: (
+            LeaseDenialReason.TERMINAL_CYCLE,
+            LeaseDenialReason.STRATEGY_CHANGE_CYCLE_EQUIVALENT,
+        ),
+        ContinuationPartialReason.STRATEGY_RECOVERY_EXHAUSTED: (
+            LeaseDenialReason.STRATEGY_RECOVERY_EXHAUSTED,
+        ),
+    }[reason]
+    if (
+        state.last_decision != "denied"
+        or state.last_denial_reason not in required_denials
+    ):
+        raise ValueError("partial reason does not match the actual lease denial")
+    if (
+        reason is ContinuationPartialReason.LEASE_CEILING_EXHAUSTED
+        and leases_remaining != 0
+    ):
+        raise ValueError("lease-ceiling partial requires exhausted lease capacity")
+    if (
+        reason is ContinuationPartialReason.STRATEGY_RECOVERY_EXHAUSTED
+        and strategy_recoveries_remaining != 0
+    ):
+        raise ValueError(
+            "strategy-recovery partial requires exhausted recovery capacity"
+        )
 
 
 @dataclass(frozen=True, slots=True, init=False)
@@ -3298,6 +3473,20 @@ class ContinuationCheckpoint:
             _enum("checkpoint partial reason", partial_reason, ContinuationPartialReason)
         if status is ProgressState.COMPLETE and partial_reason is not None:
             raise ValueError("complete checkpoints cannot carry a partial reason")
+        effective_leases_remaining = min(
+            policy.max_lease_requests - state.lease_requests,
+            state.leases_remaining(policy),
+        )
+        strategy_recoveries_remaining = (
+            policy.max_strategy_recoveries - state.strategy_recoveries
+        )
+        if partial_reason is not None:
+            _validate_semantic_partial_reason(
+                state,
+                partial_reason,
+                leases_remaining=effective_leases_remaining,
+                strategy_recoveries_remaining=strategy_recoveries_remaining,
+            )
 
         values: dict[str, Any] = {
             "task_id": state.task_id,
@@ -3321,16 +3510,11 @@ class ContinuationCheckpoint:
                 else strategy.strategy_material_id
             ),
             "leases_used": state.leases_granted,
-            "leases_remaining": min(
-                policy.max_lease_requests - state.lease_requests,
-                state.leases_remaining(policy),
-            ),
+            "leases_remaining": effective_leases_remaining,
             "lease_requests": state.lease_requests,
             "leases_denied": state.leases_denied,
             "strategy_recoveries_used": state.strategy_recoveries,
-            "strategy_recoveries_remaining": (
-                policy.max_strategy_recoveries - state.strategy_recoveries
-            ),
+            "strategy_recoveries_remaining": strategy_recoveries_remaining,
             "cumulative_granted": state.cumulative_granted,
             "remaining_capacity": state.remaining_capacity(policy),
             "compact_evidence_receipt_id": compact_evidence_receipt_id,
@@ -3661,50 +3845,14 @@ class ContinuationPartialReceipt:
             raise ValueError("partial checkpoint reason does not match finalization")
         if state.progress_state is ProgressState.COMPLETE:
             raise ValueError("a complete task cannot be finalized as partial")
-        required_state = {
-            ContinuationPartialReason.LEASE_CEILING_EXHAUSTED: (
-                ProgressState.LEASE_EXHAUSTED
+        _validate_semantic_partial_reason(
+            state,
+            reason=reason,
+            leases_remaining=checkpoint.leases_remaining,
+            strategy_recoveries_remaining=(
+                checkpoint.strategy_recoveries_remaining
             ),
-            ContinuationPartialReason.NO_PROGRESS: ProgressState.STALLED,
-            ContinuationPartialReason.TERMINAL_CYCLE: ProgressState.CYCLE_BLOCKED,
-            ContinuationPartialReason.STRATEGY_RECOVERY_EXHAUSTED: (
-                ProgressState.STALLED
-            ),
-        }.get(reason)
-        if required_state is not None and state.progress_state is not required_state:
-            raise ValueError("partial reason does not match continuation progress state")
-        required_denial = {
-            ContinuationPartialReason.LEASE_CEILING_EXHAUSTED: (
-                LeaseDenialReason.LEASE_CEILING_REACHED,
-            ),
-            ContinuationPartialReason.NO_PROGRESS: (
-                LeaseDenialReason.NO_MEASURABLE_PROGRESS,
-            ),
-            ContinuationPartialReason.TERMINAL_CYCLE: (
-                LeaseDenialReason.TERMINAL_CYCLE,
-                LeaseDenialReason.STRATEGY_CHANGE_CYCLE_EQUIVALENT,
-            ),
-            ContinuationPartialReason.STRATEGY_RECOVERY_EXHAUSTED: (
-                LeaseDenialReason.STRATEGY_RECOVERY_EXHAUSTED,
-            ),
-        }.get(reason)
-        if required_denial is not None and (
-            state.last_decision != "denied"
-            or state.last_denial_reason not in required_denial
-        ):
-            raise ValueError("partial reason does not match the actual lease denial")
-        if (
-            reason is ContinuationPartialReason.LEASE_CEILING_EXHAUSTED
-            and checkpoint.leases_remaining != 0
-        ):
-            raise ValueError("lease-ceiling partial requires exhausted lease capacity")
-        if (
-            reason is ContinuationPartialReason.STRATEGY_RECOVERY_EXHAUSTED
-            and checkpoint.strategy_recoveries_remaining != 0
-        ):
-            raise ValueError(
-                "strategy-recovery partial requires exhausted recovery capacity"
-            )
+        )
         for name, supplied, bound in (
             (
                 "partial compact evidence receipt id",
@@ -3801,6 +3949,7 @@ from . import _runtime as _native_runtime
 _native_runtime._register_continuation_engine(
     _evaluate_continuation,
     _observe_continuation_context,
+    ContinuationState,
 )
 delattr(_native_runtime, "_register_continuation_engine")
 del _native_runtime

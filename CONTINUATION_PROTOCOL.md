@@ -39,7 +39,11 @@ Trusted module initialization captures the exact deterministic evaluator and
 context observer once in native storage and removes the one-shot bootstrap
 entrypoint. Session creation clones only those originals into a Rust-private,
 non-serialized per-instance authority binding; later reassignment of Python
-module attributes cannot replace them. The supervisor capability can seal an
+module attributes cannot replace them. Native integrity records also bind the
+captured functions' code, referenced globals and default/closure bindings, and
+reachable IBAE
+helper/class definitions; session creation and every evaluator/observer entry
+fail closed if any bound object has been mutated in place. The supervisor capability can seal an
 exact canonical request but cannot select those functions. The request seal is
 likewise non-constructible and is the only entry to the pinned evaluator. Its
 native binding uses live object capability identity solely for in-process authorization; memory identity never
@@ -132,6 +136,13 @@ requires a newly observed progress endpoint with a different identity. A
 separately admitted strategy recovery remains governed by its own finite cap
 and does not relabel the consumed endpoint as progress.
 
+For governed external dimensions, the continuation ledger additionally binds
+a semantic endpoint derived from the ordered dimension key, exact integer
+value, comparison basis, and progress-contract identity. Evidence receipt IDs
+are deliberately excluded. Every later external observation must start at the
+live semantic endpoint before advancing it, so fresh receipts for an already
+used `10 -> 9` interval cannot manufacture a new grant.
+
 ## Strategy materiality and cycles
 
 `StrategyMaterialization` binds:
@@ -172,6 +183,10 @@ request binds an admitted cycle-breaking strategy receipt. Such a grant
 consumes the finite precommitted strategy-recovery allowance whether or not the
 caller redundantly supplied the cycle record.
 
+Every policy retains at least six initial history entries, which is the full
+two-period window required to detect periods one through three before any
+lease extension is applied.
+
 ## Finite continuation policy
 
 The exact resource vector is:
@@ -203,7 +218,9 @@ The hard protocol limits are 64 scheduled leases and 128 lease requests. Every
 resource ceiling must also fit the Rust runtime hard caps. A requested vector
 may be smaller than its indexed scheduled vector, but cannot exceed it in any
 component. Cumulative grants cannot exceed the precommitted continuation
-capacity or total ceiling.
+capacity or total ceiling. The request cap must be strictly greater than the
+number of scheduled leases, reserving at least one decision for the terminal
+lease-ceiling denial and its auditable partial checkpoint.
 
 ### Experimental named profiles
 
@@ -266,7 +283,9 @@ The native decision-lineage seal binds the exact task/governance/policy
 identity; request, grant, denial, and recovery accounting; cumulative grant and
 decision receipt aggregate; current strategy material; last decision and
 denial; last progress identity and classification; progress control state; and
-last consumed progress identity. Erasing or changing any of those public fields
+last consumed progress and external semantic endpoint identities. The initial
+zero-decision state is sealed once by its native session before it is returned;
+there is no unsealed initial-state exemption. Erasing or changing any of those public fields
 cannot mint another valid state. Legitimate context observation enters the
 observer pinned during trusted module initialization and receives a new native
 seal for the resulting exact lineage. The issuer is not held in a Python closure or exposed
@@ -376,7 +395,10 @@ evidence/relevant receipt IDs, all three logical ticks, status, and optional
 partial reason. Checkpoint status is derived from or required to equal the live
 continuation state's status. A supplied strategy must equal the live state's
 strategy even when that live identity is `null`, and checkpoint
-`leases_remaining` is the minimum of request decisions and schedule slots.
+`leases_remaining` is the minimum of request decisions and schedule slots. If
+a semantic partial reason is supplied, checkpoint construction itself requires
+the matching last denial and any required lease/recovery exhaustion; a false
+reason can never become a structurally valid checkpoint.
 
 Resume reconstructs the expected checkpoint from the exact live in-process
 objects and requires byte-equivalent canonical content and checkpoint identity.

@@ -9,7 +9,7 @@
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::sync::GILOnceCell;
-use pyo3::types::{PyAny, PyBool, PyDict, PyModule};
+use pyo3::types::{PyAny, PyBool, PyDict, PyModule, PyTuple, PyType};
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -64,6 +64,7 @@ const MAX_RETRIES: u64 = 1_000_000;
 const MAX_HISTORY: u64 = 4_096;
 const MAX_CONTINUATION_LEASES: usize = 64;
 const MAX_CONTINUATION_REQUESTS: u64 = 128;
+const MIN_CONTINUATION_CYCLE_HISTORY: u64 = 6;
 
 const MAX_EVIDENCE_CASES: u64 = 1_000_000;
 const MAX_EVIDENCE_FAILURE_DETAILS: u64 = 32;
@@ -711,7 +712,7 @@ impl ContinuationPolicySpec {
         if initial.requests == 0
             || initial.executions == 0
             || initial.retries == 0
-            || initial.history == 0
+            || initial.history < MIN_CONTINUATION_CYCLE_HISTORY
             || initial.mutations != 0
         {
             return Err("continuation initial budget is invalid");
@@ -744,7 +745,7 @@ impl ContinuationPolicySpec {
             .ok_or("continuation max_lease_requests must be an exact integer")?;
         if max_requests == 0
             || max_requests > MAX_CONTINUATION_REQUESTS
-            || max_requests < max_leases
+            || max_requests <= max_leases
         {
             return Err("continuation max_lease_requests is outside its hard bound");
         }
@@ -1150,10 +1151,16 @@ impl NativeLeaseGrantSeal {
 struct ContinuationAuthorityBinding {
     task_id: String,
     governance_id: String,
+    governance_receipt_id: String,
     continuation_policy_id: String,
+    continuation_policy_receipt_id: String,
+    progress_contract_id: String,
     runtime_session_id: String,
+    continuation_state_type: Py<PyAny>,
     evaluator: Py<PyAny>,
     observer: Py<PyAny>,
+    evaluator_integrity: Arc<PythonFunctionIntegrity>,
+    observer_integrity: Arc<PythonFunctionIntegrity>,
 }
 
 /// Process-local trusted continuation engine captured exactly once while the
@@ -1163,9 +1170,252 @@ struct ContinuationAuthorityBinding {
 struct ContinuationEngine {
     evaluator: Py<PyAny>,
     observer: Py<PyAny>,
+    continuation_state_type: Py<PyAny>,
+    evaluator_integrity: Arc<PythonFunctionIntegrity>,
+    observer_integrity: Arc<PythonFunctionIntegrity>,
 }
 
 static CONTINUATION_ENGINE: GILOnceCell<ContinuationEngine> = GILOnceCell::new();
+
+struct PythonIdentityBinding {
+    name: String,
+    value: Py<PyAny>,
+    nested: Option<Box<PythonIntegrityNode>>,
+}
+
+struct PythonDictIntegrity {
+    object: Py<PyAny>,
+    entries: Vec<(String, Py<PyAny>)>,
+}
+
+struct PythonFunctionIntegrity {
+    function: Py<PyAny>,
+    code: Py<PyAny>,
+    globals: Py<PyDict>,
+    defaults: Py<PyAny>,
+    keyword_defaults: PythonDictIntegrity,
+    closure: Py<PyAny>,
+    dependencies: Vec<PythonIdentityBinding>,
+}
+
+struct PythonClassIntegrity {
+    class: Py<PyAny>,
+    entries: Vec<PythonIdentityBinding>,
+}
+
+enum PythonIntegrityNode {
+    Function(PythonFunctionIntegrity),
+    Class(PythonClassIntegrity),
+}
+
+fn continuation_integrity_error() -> PyErr {
+    PyValueError::new_err("trusted continuation engine integrity check failed")
+}
+
+fn is_ibae_python_object(value: &Bound<'_, PyAny>) -> bool {
+    value
+        .getattr("__module__")
+        .and_then(|item| item.extract::<String>())
+        .is_ok_and(|module| module.starts_with("ibae."))
+}
+
+fn capture_dict_integrity(value: &Bound<'_, PyAny>) -> PyResult<PythonDictIntegrity> {
+    if value.is_none() {
+        return Ok(PythonDictIntegrity {
+            object: value.clone().unbind(),
+            entries: Vec::new(),
+        });
+    }
+    let mapping = value.downcast::<PyDict>().map_err(|_| {
+        PyValueError::new_err("continuation function keyword defaults must be a dictionary")
+    })?;
+    let mut entries = Vec::with_capacity(mapping.len());
+    for (key, item) in mapping.iter() {
+        entries.push((key.extract::<String>()?, item.unbind()));
+    }
+    entries.sort_by(|left, right| left.0.cmp(&right.0));
+    Ok(PythonDictIntegrity {
+        object: value.clone().unbind(),
+        entries,
+    })
+}
+
+fn capture_integrity_node(
+    py: Python<'_>,
+    value: &Bound<'_, PyAny>,
+    visited: &mut BTreeSet<usize>,
+) -> PyResult<Option<Box<PythonIntegrityNode>>> {
+    if !is_ibae_python_object(value) || !visited.insert(value.as_ptr() as usize) {
+        return Ok(None);
+    }
+    if value.hasattr("__code__")? && value.hasattr("__globals__")? {
+        return Ok(Some(Box::new(PythonIntegrityNode::Function(
+            PythonFunctionIntegrity::capture(py, value, visited)?,
+        ))));
+    }
+    if value.downcast::<PyType>().is_ok() {
+        return Ok(Some(Box::new(PythonIntegrityNode::Class(
+            PythonClassIntegrity::capture(py, value, visited)?,
+        ))));
+    }
+    Ok(None)
+}
+
+impl PythonFunctionIntegrity {
+    fn root(py: Python<'_>, function: &Bound<'_, PyAny>) -> PyResult<Self> {
+        let mut visited = BTreeSet::new();
+        visited.insert(function.as_ptr() as usize);
+        Self::capture(py, function, &mut visited)
+    }
+
+    fn capture(
+        py: Python<'_>,
+        function: &Bound<'_, PyAny>,
+        visited: &mut BTreeSet<usize>,
+    ) -> PyResult<Self> {
+        let code = function.getattr("__code__")?;
+        let globals_value = function.getattr("__globals__")?;
+        let globals = globals_value.downcast::<PyDict>().map_err(|_| {
+            PyValueError::new_err("continuation function globals must be a dictionary")
+        })?;
+        let mut names: Vec<String> = code.getattr("co_names")?.extract()?;
+        names.sort();
+        names.dedup();
+        let mut dependencies = Vec::new();
+        for name in names {
+            let Some(value) = globals.get_item(name.as_str())? else {
+                continue;
+            };
+            let nested = capture_integrity_node(py, &value, visited)?;
+            dependencies.push(PythonIdentityBinding {
+                name,
+                value: value.unbind(),
+                nested,
+            });
+        }
+        Ok(Self {
+            function: function.clone().unbind(),
+            code: code.unbind(),
+            globals: globals.clone().unbind(),
+            defaults: function.getattr("__defaults__")?.unbind(),
+            keyword_defaults: capture_dict_integrity(&function.getattr("__kwdefaults__")?)?,
+            closure: function.getattr("__closure__")?.unbind(),
+            dependencies,
+        })
+    }
+
+    fn validate(&self, py: Python<'_>) -> PyResult<()> {
+        let function = self.function.bind(py);
+        if !function.getattr("__code__")?.is(self.code.bind(py))
+            || !function.getattr("__globals__")?.is(self.globals.bind(py))
+            || !function.getattr("__defaults__")?.is(self.defaults.bind(py))
+            || !function.getattr("__closure__")?.is(self.closure.bind(py))
+        {
+            return Err(continuation_integrity_error());
+        }
+        self.keyword_defaults
+            .validate(py, &function.getattr("__kwdefaults__")?)?;
+        let globals = self.globals.bind(py);
+        for dependency in &self.dependencies {
+            let current = globals
+                .get_item(dependency.name.as_str())?
+                .ok_or_else(continuation_integrity_error)?;
+            if !current.is(dependency.value.bind(py)) {
+                return Err(continuation_integrity_error());
+            }
+            if let Some(nested) = &dependency.nested {
+                nested.validate(py)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+impl PythonDictIntegrity {
+    fn validate(&self, py: Python<'_>, current: &Bound<'_, PyAny>) -> PyResult<()> {
+        if !current.is(self.object.bind(py)) {
+            return Err(continuation_integrity_error());
+        }
+        if current.is_none() {
+            return Ok(());
+        }
+        let mapping = current
+            .downcast::<PyDict>()
+            .map_err(|_| continuation_integrity_error())?;
+        if mapping.len() != self.entries.len() {
+            return Err(continuation_integrity_error());
+        }
+        for (name, value) in &self.entries {
+            let supplied = mapping
+                .get_item(name.as_str())?
+                .ok_or_else(continuation_integrity_error)?;
+            if !supplied.is(value.bind(py)) {
+                return Err(continuation_integrity_error());
+            }
+        }
+        Ok(())
+    }
+}
+
+impl PythonClassIntegrity {
+    fn capture(
+        py: Python<'_>,
+        class: &Bound<'_, PyAny>,
+        visited: &mut BTreeSet<usize>,
+    ) -> PyResult<Self> {
+        let class_dict = class.getattr("__dict__")?;
+        let items = class_dict.call_method0("items")?;
+        let mut entries = Vec::new();
+        for item in items.iter()? {
+            let item = item?;
+            let pair = item.downcast::<PyTuple>().map_err(|_| {
+                PyValueError::new_err("continuation class dictionary item is invalid")
+            })?;
+            let name: String = pair.get_item(0)?.extract()?;
+            let value = pair.get_item(1)?;
+            let nested = capture_integrity_node(py, &value, visited)?;
+            entries.push(PythonIdentityBinding {
+                name,
+                value: value.unbind(),
+                nested,
+            });
+        }
+        entries.sort_by(|left, right| left.name.cmp(&right.name));
+        Ok(Self {
+            class: class.clone().unbind(),
+            entries,
+        })
+    }
+
+    fn validate(&self, py: Python<'_>) -> PyResult<()> {
+        let class = self.class.bind(py);
+        let class_dict = class.getattr("__dict__")?;
+        if class_dict.len()? != self.entries.len() {
+            return Err(continuation_integrity_error());
+        }
+        for entry in &self.entries {
+            let current = class_dict
+                .call_method1("__getitem__", (entry.name.as_str(),))
+                .map_err(|_| continuation_integrity_error())?;
+            if !current.is(entry.value.bind(py)) {
+                return Err(continuation_integrity_error());
+            }
+            if let Some(nested) = &entry.nested {
+                nested.validate(py)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+impl PythonIntegrityNode {
+    fn validate(&self, py: Python<'_>) -> PyResult<()> {
+        match self {
+            Self::Function(value) => value.validate(py),
+            Self::Class(value) => value.validate(py),
+        }
+    }
+}
 
 impl ContinuationAuthorityBinding {
     fn authorize_request(&self, canonical_request: &str) -> Result<String, &'static str> {
@@ -1324,6 +1574,7 @@ impl NativeContinuationRequestSeal {
         blocking_governance_violation_id: Option<&str>,
         benchmark_observation: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Py<PyAny>> {
+        self.binding.evaluator_integrity.validate(py)?;
         let canonical_request: String = request.call_method0("_canonical_text")?.extract()?;
         if canonical_request != self.canonical_request.as_ref() {
             return Err(PyValueError::new_err(
@@ -1451,6 +1702,7 @@ impl NativeContinuationStateSeal {
         progress: Option<&Bound<'_, PyAny>>,
         strategy: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Py<PyAny>> {
+        self.binding.observer_integrity.validate(py)?;
         let current_lineage: String = state.call_method0("_decision_lineage_text")?.extract()?;
         if current_lineage != self.canonical_lineage.as_ref() {
             return Err(PyValueError::new_err(
@@ -4269,6 +4521,7 @@ struct NativeRuntimeSession {
     core: RuntimeCore,
     continuation_authority: Option<Arc<ContinuationAuthorityBinding>>,
     supervisor_authority_issued: bool,
+    initial_state_authority_issued: bool,
 }
 
 #[pymethods]
@@ -4314,13 +4567,21 @@ impl NativeRuntimeSession {
                 let engine = CONTINUATION_ENGINE.get(py).ok_or_else(|| {
                     PyValueError::new_err("trusted continuation engine is not initialized")
                 })?;
+                engine.evaluator_integrity.validate(py)?;
+                engine.observer_integrity.validate(py)?;
                 Some(Arc::new(ContinuationAuthorityBinding {
                     task_id: active.context.task_id.clone(),
                     governance_id: active.context.governance_id.clone(),
+                    governance_receipt_id: active.context.governance_receipt_id.clone(),
                     continuation_policy_id: active.context.policy.policy_id.clone(),
+                    continuation_policy_receipt_id: active.context.policy_receipt_id.clone(),
+                    progress_contract_id: active.context.policy.progress_contract_id.clone(),
                     runtime_session_id: core.session_id.clone(),
+                    continuation_state_type: engine.continuation_state_type.clone_ref(py),
                     evaluator: engine.evaluator.clone_ref(py),
                     observer: engine.observer.clone_ref(py),
+                    evaluator_integrity: Arc::clone(&engine.evaluator_integrity),
+                    observer_integrity: Arc::clone(&engine.observer_integrity),
                 }))
             }
         };
@@ -4328,7 +4589,197 @@ impl NativeRuntimeSession {
             core,
             continuation_authority,
             supervisor_authority_issued: false,
+            initial_state_authority_issued: false,
         })
+    }
+
+    #[pyo3(signature = (state, orchestration_state, progress=None, strategy=None))]
+    fn seal_initial_continuation_state(
+        &mut self,
+        py: Python<'_>,
+        state: &Bound<'_, PyAny>,
+        orchestration_state: &Bound<'_, PyAny>,
+        progress: Option<&Bound<'_, PyAny>>,
+        strategy: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<Py<PyAny>> {
+        let binding = self
+            .continuation_authority
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| PyValueError::new_err("native runtime has no continuation authority"))?;
+        if self.initial_state_authority_issued {
+            return Err(PyValueError::new_err(
+                "initial continuation state authority was already issued",
+            ));
+        }
+        if !state
+            .get_type()
+            .is(binding.continuation_state_type.bind(py))
+        {
+            return Err(PyValueError::new_err(
+                "initial continuation state must have the exact trusted type",
+            ));
+        }
+        binding.evaluator_integrity.validate(py)?;
+        binding.observer_integrity.validate(py)?;
+        let live_runtime_state_id = self.core.state_id().map_err(|_| {
+            PyValueError::new_err("native runtime state cannot seal continuation lineage")
+        })?;
+        for (name, expected) in [
+            ("task_id", binding.task_id.as_str()),
+            ("governance_id", binding.governance_id.as_str()),
+            (
+                "governance_receipt_id",
+                binding.governance_receipt_id.as_str(),
+            ),
+            (
+                "continuation_policy_id",
+                binding.continuation_policy_id.as_str(),
+            ),
+            (
+                "continuation_policy_receipt_id",
+                binding.continuation_policy_receipt_id.as_str(),
+            ),
+            (
+                "progress_contract_id",
+                binding.progress_contract_id.as_str(),
+            ),
+            ("runtime_session_id", binding.runtime_session_id.as_str()),
+            ("runtime_state_id", live_runtime_state_id.as_str()),
+        ] {
+            let supplied: String = state.getattr(name)?.extract()?;
+            if supplied != expected {
+                return Err(PyValueError::new_err(
+                    "initial continuation state does not bind native authority",
+                ));
+            }
+        }
+        let orchestration_state_id: String = orchestration_state.getattr("state_id")?.extract()?;
+        let bound_orchestration_state_id: String =
+            state.getattr("orchestration_state_id")?.extract()?;
+        if orchestration_state_id != bound_orchestration_state_id {
+            return Err(PyValueError::new_err(
+                "initial continuation state does not bind orchestration state",
+            ));
+        }
+        for name in [
+            "lease_requests",
+            "leases_granted",
+            "leases_denied",
+            "continuation_logical_tick",
+            "strategy_recoveries",
+        ] {
+            if state.getattr(name)?.extract::<u64>()? != 0 {
+                return Err(PyValueError::new_err(
+                    "initial continuation decision ledger must be empty",
+                ));
+            }
+        }
+        if state.getattr("last_decision")?.extract::<String>()? != "none"
+            || !state.getattr("last_denial_reason")?.is_none()
+            || !state.getattr("last_consumed_progress_id")?.is_none()
+            || !state
+                .getattr("last_consumed_external_progress_endpoint_id")?
+                .is_none()
+            || !state.getattr("pending_grant_id")?.is_none()
+            || !state.getattr("pending_grant_receipt_id")?.is_none()
+            || !state
+                .getattr("cumulative_granted")?
+                .getattr("is_zero")?
+                .extract::<bool>()?
+        {
+            return Err(PyValueError::new_err(
+                "initial continuation decision semantics are not empty",
+            ));
+        }
+        let state_strategy = state.getattr("current_strategy_material_id")?;
+        match strategy {
+            None if !state_strategy.is_none() => {
+                return Err(PyValueError::new_err(
+                    "initial continuation strategy lineage is invalid",
+                ));
+            }
+            Some(value) => {
+                let expected: String = value.getattr("strategy_material_id")?.extract()?;
+                if state_strategy.extract::<String>()? != expected {
+                    return Err(PyValueError::new_err(
+                        "initial continuation strategy lineage is invalid",
+                    ));
+                }
+            }
+            None => {}
+        }
+        let state_progress = state.getattr("last_progress_id")?;
+        match progress {
+            None => {
+                if !state_progress.is_none()
+                    || !state.getattr("last_progress_classification")?.is_none()
+                    || !state
+                        .getattr("last_external_progress_endpoint_id")?
+                        .is_none()
+                    || state
+                        .getattr("progress_state")?
+                        .getattr("value")?
+                        .extract::<String>()?
+                        != "stalled"
+                {
+                    return Err(PyValueError::new_err(
+                        "initial continuation progress lineage is invalid",
+                    ));
+                }
+            }
+            Some(value) => {
+                let expected_progress_id: String = value.getattr("progress_id")?.extract()?;
+                let expected_classification: String = value
+                    .getattr("classification")?
+                    .getattr("value")?
+                    .extract()?;
+                let expected_external = value.getattr("current_external_endpoint_id")?;
+                let supplied_external = state.getattr("last_external_progress_endpoint_id")?;
+                let task_complete: bool = value.getattr("task_complete")?.extract()?;
+                let expected_progress_state = if task_complete {
+                    "complete"
+                } else if expected_classification == "measurable_progress" {
+                    "progressing"
+                } else {
+                    "stalled"
+                };
+                if state_progress.extract::<String>()? != expected_progress_id
+                    || state
+                        .getattr("last_progress_classification")?
+                        .getattr("value")?
+                        .extract::<String>()?
+                        != expected_classification
+                    || !supplied_external.eq(&expected_external)?
+                    || state
+                        .getattr("progress_state")?
+                        .getattr("value")?
+                        .extract::<String>()?
+                        != expected_progress_state
+                {
+                    return Err(PyValueError::new_err(
+                        "initial continuation progress lineage is invalid",
+                    ));
+                }
+            }
+        }
+        let canonical_lineage: String = state.call_method0("_decision_lineage_text")?.extract()?;
+        let lineage_seal = Py::new(
+            py,
+            NativeContinuationStateSeal {
+                binding,
+                canonical_lineage: Arc::from(canonical_lineage),
+                observer: self
+                    .continuation_authority
+                    .as_ref()
+                    .expect("validated continuation authority")
+                    .observer
+                    .clone_ref(py),
+            },
+        )?;
+        let sealed = state.call_method1("_with_native_lineage", (lineage_seal,))?;
+        self.initial_state_authority_issued = true;
+        Ok(sealed.unbind())
     }
 
     fn take_continuation_request_authority(
@@ -4469,18 +4920,27 @@ fn _register_continuation_engine(
     py: Python<'_>,
     evaluator: Py<PyAny>,
     observer: Py<PyAny>,
+    continuation_state_type: Py<PyAny>,
 ) -> PyResult<()> {
-    if !evaluator.bind(py).is_callable() || !observer.bind(py).is_callable() {
+    if !evaluator.bind(py).is_callable()
+        || !observer.bind(py).is_callable()
+        || !continuation_state_type.bind(py).is_callable()
+    {
         return Err(PyValueError::new_err(
-            "continuation evaluator and observer must be callable",
+            "continuation engine bindings must be callable",
         ));
     }
+    let evaluator_integrity = Arc::new(PythonFunctionIntegrity::root(py, evaluator.bind(py))?);
+    let observer_integrity = Arc::new(PythonFunctionIntegrity::root(py, observer.bind(py))?);
     CONTINUATION_ENGINE
         .set(
             py,
             ContinuationEngine {
                 evaluator,
                 observer,
+                continuation_state_type,
+                evaluator_integrity,
+                observer_integrity,
             },
         )
         .map_err(|_| PyValueError::new_err("continuation engine is already initialized"))

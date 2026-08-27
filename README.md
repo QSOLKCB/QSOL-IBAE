@@ -96,7 +96,8 @@ continuation without changing those frozen v0.2-v0.4 records:
   or governed observed/derived counters, bound exactly into continuation
   policy, state, and native context; classification/completion are derived from
   exact bound sources, and external counters require a source-bound native
-  observation matched to its governed tool admission;
+  observation matched to its governed tool admission plus contiguous semantic
+  value/basis endpoints that cannot be replayed by rotating receipt IDs;
 - closed `measurable_progress`, `no_progress`, `regression`,
   `new_information`, and `incomparable` classifications, with completion
   computed separately and model confidence/activity excluded;
@@ -105,7 +106,8 @@ continuation without changing those frozen v0.2-v0.4 records:
   breaking; receipts revalidate their bound material, live cycles are derived
   from native history, and descriptive paraphrases have no authority;
 - governance-owned continuation policies with exact initial budgets, ordered
-  finite lease schedules, checked cumulative ceilings, request caps, and a
+  finite lease schedules, checked cumulative ceilings, a six-entry minimum
+  initial cycle window, request caps that reserve a terminal denial, and a
   finite strategy-recovery allowance;
 - one task/session continuation ledger with deterministic grant/deny receipts,
   native-bound decision/recovery semantics, single-use measurable-progress
@@ -115,7 +117,9 @@ continuation without changing those frozen v0.2-v0.4 records:
 - a once-issued, session-scoped native supervisor request capability separate
   from the public requester label, with the exact evaluator/observer captured
   once in native storage during trusted module initialization and cloned by the
-  dedicated continuation-session factory, exact request seals, and an opt-in
+  dedicated continuation-session factory, integrity checks over their bound
+  code/dependency graph, one-shot native sealing of the initial state, exact
+  request seals, and an opt-in
   Rust `apply_lease` transition
   that independently validates the authorized request and full governance
   grant against the live per-instance session before issuing its
@@ -124,7 +128,8 @@ continuation without changing those frozen v0.2-v0.4 records:
   cross-session authority without mutation;
 - in-process structural checkpoints, a separate fixed-shape continuation
   evidence receipt, checkpoint-evidence-bound semantic continuation partial
-  receipts, and watchdog observations whose exact lease-exhaustion flag is
+  receipts whose reason is validated when the checkpoint is created, and
+  watchdog observations whose exact lease-exhaustion flag is
   identity-bearing but cannot claim completion;
 - exact experimental `tiny`, `standard`, `extended`, and `repository` profiles
   plus a deterministic model-free schedule benchmark with no correctness

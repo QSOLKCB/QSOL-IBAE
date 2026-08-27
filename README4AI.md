@@ -46,7 +46,8 @@ v0.5 adds `IBAE-OBJECTIVE-PROGRESS-V1` and
 obligation/evidence measures; activity, confidence, and wall time are not
 progress authority. Classification and completion are derived from exact bound
 prior/current sources; external counters require a source-bound native
-observation matched to its governed tool admission. Policy, state, and native
+observation matched to its governed tool admission and a contiguous semantic
+value/basis endpoint that excludes receipt identity. Policy, state, and native
 context bind the exact admitted progress contract and its orchestration
 lineage; the built-in contract counts both unsatisfied and blocked obligations,
 and observation refreshes live control state. Structured strategy changes
@@ -54,12 +55,15 @@ revalidate admitted strategy, capability
 frontier, targets, dependency path, recovery mode, and runtime-derived cycle
 evidence; paraphrase is excluded from identity. Governance precommits an exact
 initial budget, finite indexed schedule, cumulative ceiling, request cap, and
-strategy-recovery cap. The supervisor requests, governance grants or denies,
+strategy-recovery cap; initial history retains six transitions and the request
+cap reserves a terminal decision beyond the schedule. The supervisor requests, governance grants or denies,
 and an opt-in Rust session applies only a full validated governance-issued
 grant. Trusted module initialization captures the exact evaluator/observer once
 in native storage and removes the bootstrap entrypoint. Session creation clones
 only those originals into a non-serialized per-instance native authority and
 returns a separate once-issued, session-scoped supervisor request capability;
+a native integrity graph detects in-place mutation of their bound code and
+dependencies, and the initial zero-decision state is sealed before exposure;
 a public principal label,
 reconstructed record, mutable Python validator, or equal-ID duplicate session
 is insufficient. An exact
@@ -72,7 +76,8 @@ application changes exact limits plus one runtime logical tick while consuming n
 tool/runtime resource counter or history; rejection is state-neutral. The
 compact state exposes effective remaining request and schedule decisions.
 Structural in-process checkpoints require live status, strategy, and that same
-effective capacity; semantic partial evidence derives from the
+effective capacity and reject a false semantic partial reason at checkpoint
+construction; semantic partial evidence derives from the
 checkpoint, and watchdog lease exhaustion is identity-bearing, checked against
 effective checkpoint capacity, but
 non-authoritative. Existing v0.2-v0.4 schemas and fixture bytes remain

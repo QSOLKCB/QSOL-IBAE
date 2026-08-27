@@ -203,7 +203,9 @@ budget, finite ordered schedule, request cap, strategy-recovery cap, and total
 ceiling equal to the initial budget plus the complete schedule. Governance
 checks every requested/cumulative vector componentwise with checked arithmetic;
 Rust independently checks the grant, indexed schedule, cumulative ledger, and
-ceiling before changing limits.
+ceiling before changing limits. The request cap is strictly greater than the
+scheduled lease count, preserving one recordable terminal lease-ceiling
+decision.
 
 ## IBAE-BND-006 — No self-extension
 
@@ -217,7 +219,11 @@ native storage and removes its bootstrap entrypoint. Continuation-session
 creation clones only those originals into a Rust-private per-instance authority
 and returns a separate once-issued, session-scoped,
 non-constructible supervisor request capability. The public principal label is
-insufficient. An exact native request seal invokes only the pinned evaluator, and Rust validates
+insufficient. Native integrity records validate the captured functions' code,
+referenced globals and default/closure bindings, and reachable IBAE helper/class
+definitions at
+session creation and every evaluator/observer entry. Every initial
+zero-decision state receives a one-shot native session seal. An exact native request seal invokes only the pinned evaluator, and Rust validates
 the authorized request plus full grant against the live session before issuing
 the grant seal. No raw grant issuer or mutable Python validator is exposed, and
 an equal-ID duplicate session carries distinct non-serialized authority. A
@@ -301,6 +307,10 @@ Current v0.2 partial implementation: compact epistemic projection retains the ex
 
 Repeated canonical state patterns with period 1, 2, or 3 are detectable without wall-clock input.
 
+Current enforcement: every continuation policy retains at least six initial
+history entries, the complete two-period window needed to detect periods one
+through three before any lease is applied.
+
 ## IBAE-CYC-002 — No unbounded identical transition
 
 **ENFORCED MUST**
@@ -328,7 +338,9 @@ counter evidence whenever a record is constructed or consumed. Tool activity
 and elapsed time are absent. Canonical obligation sources enforce their safe
 direction, and continuation policy/state/native context commit the exact
 admitted progress-contract identity. Only `measurable_progress` may
-independently authorize continuation.
+independently authorize continuation. Governed external dimensions also commit
+receipt-independent semantic value/basis endpoints, and every observation must
+continue from the live endpoint.
 
 ## IBAE-PROG-002 — Model confidence is not progress authority
 
@@ -380,7 +392,9 @@ unsatisfied and blocked obligations, so newly blocked work cannot authorize a
 lease. External evidence is paired with declared dimensions in canonical key
 order. A measurable progress identity is consumed by its first
 progress-authorized grant, so a later progress-based grant requires a freshly
-observed endpoint. Only exact context observation may replace that live
+observed endpoint. Rotating external evidence receipts cannot replay an old
+interval because its prior semantic endpoint must equal the live endpoint.
+Only exact context observation may replace that live
 endpoint; denials preserve it. Native evaluator-issued lineage binds the decision ledger,
 last decision/denial, progress identity/classification/state, consumed endpoint,
 and recovery count; context observation is resealed through the pinned native
@@ -804,7 +818,9 @@ immutable record classes with fixed closed statuses and distinct receipt
 domains. v0.5 checkpoints require status to equal the live continuation state;
 any supplied strategy must equal the live strategy even when that identity is
 absent, and remaining leases use the effective request/schedule minimum;
-semantic partial evidence IDs are derived from the cited checkpoint and cannot
+checkpoint construction requires a semantic partial reason to match the actual
+last denial and any required lease/recovery exhaustion; semantic partial
+evidence IDs are derived from the cited checkpoint and cannot
 be replaced by unrelated fingerprints. A later accepted attempt creates a new
 final receipt rather than mutating earlier evidence.
 

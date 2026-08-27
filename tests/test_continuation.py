@@ -99,8 +99,16 @@ def _authority(runtime: RustRuntimeSession) -> object:
     return _REQUEST_AUTHORITIES[id(runtime)]
 
 
-def _governed_runtime(profile: str = "tiny", *, session: str = "continuation"):
-    continuation_policy = experimental_continuation_profile(profile)
+def _governed_runtime(
+    profile: str = "tiny",
+    *,
+    session: str = "continuation",
+    progress_contract: ProgressMeasureContract | None = None,
+):
+    continuation_policy = experimental_continuation_profile(
+        profile,
+        progress_contract=progress_contract,
+    )
     governance_policy = GovernancePolicy(
         policy_key="continuation.reference",
         policy_version=1,
@@ -276,6 +284,7 @@ def _state_and_progress(profile: str = "tiny", *, progressing: bool = True):
     state = ContinuationState.create(
         policy=policy,
         policy_receipt=policy_receipt,
+        runtime_session=runtime,
         orchestration_state=current,
         runtime_snapshot=runtime.snapshot,
         progress=progress,
@@ -424,6 +433,40 @@ def test_policy_requires_exact_precommitted_ceiling_and_safe_classes():
         )
 
 
+def test_policy_reserves_a_terminal_decision_after_the_lease_schedule():
+    base = BudgetVector(2, 2, 1, 0, 6)
+    lease = BudgetVector(1, 1, 0, 0, 1)
+    with pytest.raises(ValueError, match="reserve one terminal decision"):
+        ContinuationPolicy(
+            "no.terminal.decision",
+            1,
+            "tiny",
+            1,
+            base,
+            (lease,),
+            base.add_checked(lease),
+            1,
+            _progress_contract().contract_id,
+        )
+
+
+def test_policy_retains_the_full_short_cycle_detection_window():
+    base = BudgetVector(2, 2, 1, 0, 5)
+    lease = BudgetVector(1, 1, 0, 0, 1)
+    with pytest.raises(ValueError, match="six-transition cycle window"):
+        ContinuationPolicy(
+            "short.cycle.history",
+            1,
+            "tiny",
+            1,
+            base,
+            (lease,),
+            base.add_checked(lease),
+            2,
+            _progress_contract().contract_id,
+        )
+
+
 def test_obligation_progress_direction_cannot_be_inverted():
     with pytest.raises(ValueError, match="unsafe direction"):
         ProgressDimension(
@@ -481,6 +524,7 @@ def test_newly_blocked_obligations_do_not_authorize_continuation():
     state = ContinuationState.create(
         policy=policy,
         policy_receipt=policy_receipt,
+        runtime_session=runtime,
         orchestration_state=blocked,
         runtime_snapshot=runtime.snapshot,
         progress=progress,
@@ -763,6 +807,114 @@ def test_external_counter_requires_source_bound_native_provenance():
         ProgressCounterEvidence(live, unrelated_admission)
 
 
+def test_external_counter_progress_must_continue_from_the_live_endpoint():
+    contract = ProgressMeasureContract(
+        "external.contiguous",
+        1,
+        (
+            ProgressDimension(
+                "tests.failing",
+                ProgressSource.GOVERNED_EXTERNAL_COUNTER,
+                ProgressDirection.DECREASE,
+            ),
+        ),
+    )
+    policy, governance_policy, task, governance, policy_receipt, runtime = (
+        _governed_runtime(
+            "standard",
+            session="external-endpoint-continuity",
+            progress_contract=contract,
+        )
+    )
+    work = _obligation_states(total=1)
+    basis = _id("external-contiguous-basis")
+
+    def counter(value, source):
+        return _counter_evidence(
+            governance_policy,
+            task,
+            governance,
+            "tests.failing",
+            value,
+            basis,
+            EpistemicClass.OBSERVED,
+            source=source,
+        )
+
+    progress = evaluate_progress(
+        task_id=task.task_id,
+        governance_id=governance.governance_id,
+        contract=contract,
+        prior_state=work,
+        current_state=work,
+        prior_evidence={"tests.failing": counter(10, "initial-prior")},
+        current_evidence={"tests.failing": counter(9, "initial-current")},
+    )
+    state = ContinuationState.create(
+        policy=policy,
+        policy_receipt=policy_receipt,
+        runtime_session=runtime,
+        orchestration_state=work,
+        runtime_snapshot=runtime.snapshot,
+        progress=progress,
+    )
+    _, first = _request_and_decide(
+        policy, policy_receipt, runtime, progress, state
+    )
+    application = runtime.apply_lease(first.receipt)
+    state = commit_lease_application(
+        first.next_state,
+        policy=policy,
+        grant=first.receipt,
+        application=application,
+        runtime_snapshot=runtime.snapshot,
+    )
+    assert state.last_consumed_external_progress_endpoint_id == (
+        progress.current_external_endpoint_id
+    )
+
+    replay = evaluate_progress(
+        task_id=task.task_id,
+        governance_id=governance.governance_id,
+        contract=contract,
+        prior_state=work,
+        current_state=work,
+        prior_evidence={"tests.failing": counter(10, "replay-prior")},
+        current_evidence={"tests.failing": counter(9, "replay-current")},
+    )
+    assert replay.classification is ProgressClassification.MEASURABLE_PROGRESS
+    assert replay.progress_id != progress.progress_id
+    with pytest.raises(ValueError, match="continue from the live endpoint"):
+        observe_continuation_context(
+            state,
+            policy=policy,
+            orchestration_state=work,
+            runtime_snapshot=runtime.snapshot,
+            progress=replay,
+        )
+
+    fresh = evaluate_progress(
+        task_id=task.task_id,
+        governance_id=governance.governance_id,
+        contract=contract,
+        prior_state=work,
+        current_state=work,
+        prior_evidence={"tests.failing": counter(9, "fresh-prior")},
+        current_evidence={"tests.failing": counter(8, "fresh-current")},
+    )
+    state = observe_continuation_context(
+        state,
+        policy=policy,
+        orchestration_state=work,
+        runtime_snapshot=runtime.snapshot,
+        progress=fresh,
+    )
+    _, second = _request_and_decide(
+        policy, policy_receipt, runtime, fresh, state
+    )
+    assert isinstance(second.receipt, LeaseGrantReceipt)
+
+
 def test_unknown_to_known_external_measure_is_new_information_not_progress():
     _, governance_policy, task, governance, _, _, prior, current, _, _ = (
         _state_and_progress()
@@ -899,6 +1051,69 @@ def test_native_session_pins_continuation_engine_before_request(monkeypatch):
         runtime_snapshot=runtime.snapshot,
     )
     assert observed.continuation_state_id == committed.continuation_state_id
+
+
+@pytest.mark.parametrize(
+    "target_name", ("_evaluate_continuation", "_observe_continuation_context")
+)
+def test_native_engine_rejects_mutated_pinned_function_code(
+    monkeypatch, target_name
+):
+    import ibae.continuation as continuation_module
+
+    def substituted_engine(*_args, **_kwargs):
+        return None
+
+    target = getattr(continuation_module, target_name)
+    monkeypatch.setattr(target, "__code__", substituted_engine.__code__)
+    with pytest.raises(ValueError, match="engine integrity"):
+        _state_and_progress()
+
+
+def test_native_engine_rejects_mutated_evaluator_global(monkeypatch):
+    import ibae.continuation as continuation_module
+
+    def substituted_denial(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setitem(
+        continuation_module._evaluate_continuation.__globals__,
+        "_deny_continuation",
+        substituted_denial,
+    )
+    with pytest.raises(ValueError, match="engine integrity"):
+        _state_and_progress()
+
+
+@pytest.mark.parametrize(
+    "target_name", ("_evaluate_continuation", "_observe_continuation_context")
+)
+def test_native_engine_rechecks_integrity_at_each_authority_entry(
+    monkeypatch, target_name
+):
+    import ibae.continuation as continuation_module
+
+    policy, _, _, _, policy_receipt, runtime, _, current, progress, state = (
+        _state_and_progress()
+    )
+
+    def substituted_engine(*_args, **_kwargs):
+        return None
+
+    target = getattr(continuation_module, target_name)
+    monkeypatch.setattr(target, "__code__", substituted_engine.__code__)
+    with pytest.raises(ValueError, match="engine integrity"):
+        if target_name == "_evaluate_continuation":
+            _request_and_decide(
+                policy, policy_receipt, runtime, progress, state
+            )
+        else:
+            observe_continuation_context(
+                state,
+                policy=policy,
+                orchestration_state=current,
+                runtime_snapshot=runtime.snapshot,
+            )
 
 
 def test_runtime_cannot_self_extend_or_apply_without_opt_in_policy():
@@ -1062,20 +1277,15 @@ def test_hash_consistent_but_unissued_grant_cannot_extend_native_limits(
         requester=PrincipalAuthority.OPENAI_SUPERVISOR,
         requester_authority=duplicate_authority,
     )
-    duplicate_decision = evaluate_continuation(
-        state,
-        duplicate_request,
-        runtime_session=duplicate,
-        policy=policy,
-        policy_receipt=policy_receipt,
-        progress=progress,
-    )
-    cross_session = runtime.apply_lease_transition(duplicate_decision.receipt)
-    assert cross_session.receipt.status == "rejected"
-    assert (
-        cross_session.receipt.rejection_reason
-        == "IBAE-RT-LEASE-REJECT-UNISSUED-GRANT"
-    )
+    with pytest.raises(ValueError, match="does not bind native session"):
+        evaluate_continuation(
+            state,
+            duplicate_request,
+            runtime_session=duplicate,
+            policy=policy,
+            policy_receipt=policy_receipt,
+            progress=progress,
+        )
 
     from ibae._runtime import (
         NativeContinuationRequestSeal,
@@ -1353,6 +1563,7 @@ def test_material_strategy_change_is_alternative_justification_not_progress():
     state = ContinuationState.create(
         policy=policy,
         policy_receipt=policy_receipt,
+        runtime_session=runtime,
         orchestration_state=orchestration,
         runtime_snapshot=runtime.snapshot,
         strategy=prior_strategy,
@@ -1380,42 +1591,39 @@ def test_material_strategy_change_is_alternative_justification_not_progress():
     assert decision.next_state.strategy_recoveries == 1
 
 
-def test_strategy_change_receipt_must_bind_current_strategy_lineage():
+def test_native_initial_state_seal_rejects_strategy_lineage_injection():
     policy, _, task, governance, policy_receipt, runtime = _governed_runtime(
         "standard", session="stale-strategy-lineage"
     )
-    orchestration, prior_strategy, alternate = _strategy_state()
+    orchestration, prior_strategy, _ = _strategy_state()
     no_progress = _progress(task, governance, orchestration, orchestration)
     state = ContinuationState.create(
         policy=policy,
         policy_receipt=policy_receipt,
+        runtime_session=runtime,
         orchestration_state=orchestration,
         runtime_snapshot=runtime.snapshot,
         strategy=prior_strategy,
         progress=no_progress,
     )
-    change = evaluate_strategy_change(
-        task_id=task.task_id,
-        governance_id=governance.governance_id,
-        orchestration_state=orchestration,
-        prior_strategy=prior_strategy,
-        proposed_strategy=alternate,
+    assert state.lease_requests == 0
+    with pytest.raises(ValueError, match="decision lineage does not match"):
+        replace(
+            state, current_strategy_material_id=_id("newer-strategy-material")
+        )
+    unsealed_injection = replace(
+        state,
+        _decision_lineage_capability=None,
+        current_strategy_material_id=_id("newer-strategy-material"),
     )
-    stale_state = replace(
-        state, current_strategy_material_id=_id("newer-strategy-material")
-    )
-    _, decision = _request_and_decide(
-        policy,
-        policy_receipt,
-        runtime,
-        no_progress,
-        stale_state,
-        strategy_change=change,
-    )
-    assert (
-        decision.receipt.denial_reason
-        is LeaseDenialReason.STRATEGY_CHANGE_NOT_MATERIAL
-    )
+    with pytest.raises(ValueError, match="lacks evaluated decision lineage"):
+        ContinuationRequest.from_state(
+            unsealed_injection,
+            progress=no_progress,
+            requested_resources=policy.lease_schedule[0],
+            requester=PrincipalAuthority.OPENAI_SUPERVISOR,
+            requester_authority=_authority(runtime),
+        )
 
 
 @pytest.mark.parametrize(
@@ -1442,6 +1650,7 @@ def test_real_period_one_two_three_cycles_are_canonical(sequence, period):
     state = ContinuationState.create(
         policy=policy,
         policy_receipt=policy_receipt,
+        runtime_session=runtime,
         orchestration_state=orchestration,
         runtime_snapshot=runtime.snapshot,
         progress=progress,
@@ -1495,6 +1704,7 @@ def test_cycle_equivalent_strategy_is_rejected_but_breaking_change_can_continue(
     state = ContinuationState.create(
         policy=policy,
         policy_receipt=policy_receipt,
+        runtime_session=runtime,
         orchestration_state=orchestration,
         runtime_snapshot=runtime.snapshot,
         strategy=prior_strategy,
@@ -1562,6 +1772,7 @@ def test_strategy_recovery_count_is_finite():
     state = ContinuationState.create(
         policy=policy,
         policy_receipt=policy_receipt,
+        runtime_session=runtime,
         orchestration_state=orchestration,
         runtime_snapshot=runtime.snapshot,
         strategy=prior_strategy,
@@ -1701,6 +1912,7 @@ def test_complete_task_never_receives_unnecessary_continuation():
     state = ContinuationState.create(
         policy=policy,
         policy_receipt=policy_receipt,
+        runtime_session=runtime,
         orchestration_state=complete,
         runtime_snapshot=runtime.snapshot,
         progress=progress,
@@ -1881,6 +2093,7 @@ def test_governance_ceiling_exhaustion_is_deterministic():
     state = ContinuationState.create(
         policy=policy,
         policy_receipt=policy_receipt,
+        runtime_session=runtime,
         orchestration_state=orchestration_states[1],
         runtime_snapshot=runtime.snapshot,
         progress=progress,
@@ -1982,26 +2195,11 @@ def test_requested_amount_cannot_exceed_schedule_or_cumulative_ceiling():
         is LeaseDenialReason.AMOUNT_EXCEEDS_SCHEDULE
     )
 
-    fabricated = replace(
-        state,
-        cumulative_granted=BudgetVector(request_delta=MAX_U64),
-    )
-    request = ContinuationRequest.from_state(
-        fabricated,
-        progress=progress,
-        requested_resources=BudgetVector(request_delta=1),
-        requester=PrincipalAuthority.OPENAI_SUPERVISOR,
-        requester_authority=_authority(runtime),
-    )
-    denied = evaluate_continuation(
-        fabricated,
-        request,
-        runtime_session=runtime,
-        policy=policy,
-        policy_receipt=policy_receipt,
-        progress=progress,
-    )
-    assert denied.receipt.denial_reason is LeaseDenialReason.LEASE_CEILING_REACHED
+    with pytest.raises(ValueError, match="decision lineage does not match"):
+        replace(
+            state,
+            cumulative_granted=BudgetVector(request_delta=MAX_U64),
+        )
 
 
 def test_denials_are_finitely_bounded_by_request_policy():
@@ -2473,6 +2671,7 @@ def _partial_context(reason):
         state = ContinuationState.create(
             policy=policy,
             policy_receipt=policy_receipt,
+            runtime_session=runtime,
             orchestration_state=current,
             runtime_snapshot=runtime.snapshot,
             progress=progress,
@@ -2496,6 +2695,7 @@ def _partial_context(reason):
         state = ContinuationState.create(
             policy=policy,
             policy_receipt=policy_receipt,
+            runtime_session=runtime,
             orchestration_state=current,
             runtime_snapshot=runtime.snapshot,
             strategy=primary,
@@ -2549,6 +2749,7 @@ def _partial_context(reason):
     state = ContinuationState.create(
         policy=policy,
         policy_receipt=policy_receipt,
+        runtime_session=runtime,
         orchestration_state=states[1],
         runtime_snapshot=runtime.snapshot,
         progress=progress,
@@ -2601,8 +2802,8 @@ def _partial_context(reason):
 
 
 def test_partial_receipt_rejects_reason_mismatch():
-    policy, _, _, _, _, runtime, _, current, progress, state = (
-        _state_and_progress()
+    policy, runtime, current, progress, state = _partial_context(
+        ContinuationPartialReason.NO_PROGRESS
     )
     checkpoint = ContinuationCheckpoint(
         state=state,
@@ -2627,23 +2828,33 @@ def test_partial_receipt_rejects_reason_mismatch():
         ContinuationPartialReason.STRATEGY_RECOVERY_EXHAUSTED,
     ),
 )
-def test_partial_receipt_requires_the_actual_denial(reason):
+def test_checkpoint_requires_the_actual_denial(reason):
     policy, _, _, _, _, runtime, _, current, progress, state = (
         _state_and_progress(progressing=False)
     )
-    checkpoint = ContinuationCheckpoint(
-        state=state,
-        policy=policy,
-        orchestration_state=current,
-        runtime_snapshot=runtime.snapshot,
-        progress=progress,
-        partial_reason=reason,
-    )
     with pytest.raises(ValueError, match="actual lease denial"):
-        ContinuationPartialReceipt(
+        ContinuationCheckpoint(
             state=state,
-            checkpoint=checkpoint,
-            reason=reason,
+            policy=policy,
+            orchestration_state=current,
+            runtime_snapshot=runtime.snapshot,
+            progress=progress,
+            partial_reason=reason,
+        )
+
+
+def test_checkpoint_rejects_partial_reason_for_progressing_state():
+    policy, _, _, _, _, runtime, _, current, progress, state = (
+        _state_and_progress()
+    )
+    with pytest.raises(ValueError, match="continuation progress state"):
+        ContinuationCheckpoint(
+            state=state,
+            policy=policy,
+            orchestration_state=current,
+            runtime_snapshot=runtime.snapshot,
+            progress=progress,
+            partial_reason=ContinuationPartialReason.NO_PROGRESS,
         )
 
 
