@@ -1183,6 +1183,9 @@ struct ContinuationAuthorityBinding {
     continuation_state_type: Py<PyAny>,
     continuation_request_type: Py<PyAny>,
     runtime_snapshot_type: Py<PyAny>,
+    orchestration_state_type: Py<PyAny>,
+    progress_record_type: Py<PyAny>,
+    strategy_materialization_type: Py<PyAny>,
     evaluator: Py<PyAny>,
     observer: Py<PyAny>,
     committer: Py<PyAny>,
@@ -1226,6 +1229,9 @@ struct ContinuationEngine {
     continuation_state_type: Py<PyAny>,
     continuation_request_type: Py<PyAny>,
     runtime_snapshot_type: Py<PyAny>,
+    orchestration_state_type: Py<PyAny>,
+    progress_record_type: Py<PyAny>,
+    strategy_materialization_type: Py<PyAny>,
     evaluator_integrity: Arc<PythonFunctionIntegrity>,
     observer_integrity: Arc<PythonFunctionIntegrity>,
     committer_integrity: Arc<PythonFunctionIntegrity>,
@@ -1963,6 +1969,11 @@ impl NativeContinuationRequestSeal {
             .evaluator
             .bind(py)
             .call((state, request), Some(&kwargs))?;
+        // Caller-controlled exact objects can still be mutated through
+        // object.__setattr__, and their field operations can execute Python.
+        // Validate the entire pinned graph before inspecting the evaluator's
+        // output or issuing a native grant seal.
+        self.binding.evaluator_integrity.validate(py)?;
         let next_state = raw.getattr("next_state")?;
         let receipt = raw.getattr("receipt")?;
         let granted: bool = raw.getattr("granted")?.extract()?;
@@ -5072,6 +5083,11 @@ impl NativeRuntimeSession {
                     continuation_state_type: engine.continuation_state_type.clone_ref(py),
                     continuation_request_type: engine.continuation_request_type.clone_ref(py),
                     runtime_snapshot_type: engine.runtime_snapshot_type.clone_ref(py),
+                    orchestration_state_type: engine.orchestration_state_type.clone_ref(py),
+                    progress_record_type: engine.progress_record_type.clone_ref(py),
+                    strategy_materialization_type: engine
+                        .strategy_materialization_type
+                        .clone_ref(py),
                     evaluator: engine.evaluator.clone_ref(py),
                     observer: engine.observer.clone_ref(py),
                     committer: engine.committer.clone_ref(py),
@@ -5117,9 +5133,40 @@ impl NativeRuntimeSession {
                 "initial continuation state must have the exact trusted type",
             ));
         }
+        if !orchestration_state
+            .get_type()
+            .is(binding.orchestration_state_type.bind(py))
+        {
+            return Err(PyValueError::new_err(
+                "initial orchestration state must have the exact trusted type",
+            ));
+        }
+        if let Some(value) = progress {
+            if !value.get_type().is(binding.progress_record_type.bind(py)) {
+                return Err(PyValueError::new_err(
+                    "initial progress must have the exact trusted type",
+                ));
+            }
+        }
+        if let Some(value) = strategy {
+            if !value
+                .get_type()
+                .is(binding.strategy_materialization_type.bind(py))
+            {
+                return Err(PyValueError::new_err(
+                    "initial strategy must have the exact trusted type",
+                ));
+            }
+        }
         binding.evaluator_integrity.validate(py)?;
         binding.observer_integrity.validate(py)?;
         binding.committer_integrity.validate(py)?;
+        if let Some(value) = progress {
+            value.call_method0("_validate_bound_claims")?;
+            binding.evaluator_integrity.validate(py)?;
+            binding.observer_integrity.validate(py)?;
+            binding.committer_integrity.validate(py)?;
+        }
         let live_runtime_state_id = self.core.state_id().map_err(|_| {
             PyValueError::new_err("native runtime state cannot seal continuation lineage")
         })?;
@@ -5256,6 +5303,23 @@ impl NativeRuntimeSession {
                 }
             }
             Some(value) => {
+                let expected_task_id: String = value.getattr("task_id")?.extract()?;
+                let expected_governance_id: String = value.getattr("governance_id")?.extract()?;
+                let expected_contract_id: String = value
+                    .getattr("contract")?
+                    .getattr("contract_id")?
+                    .extract()?;
+                let expected_orchestration_state_id: String =
+                    value.getattr("current_orchestration_state_id")?.extract()?;
+                if expected_task_id != binding.task_id
+                    || expected_governance_id != binding.governance_id
+                    || expected_contract_id != binding.progress_contract_id
+                    || expected_orchestration_state_id != orchestration_state_id
+                {
+                    return Err(PyValueError::new_err(
+                        "initial progress does not bind native authority",
+                    ));
+                }
                 let expected_progress_id: String = value.getattr("progress_id")?.extract()?;
                 let expected_progress_aggregate = advance_continuation_progress_aggregate(
                     &progress_seed,
@@ -5299,6 +5363,8 @@ impl NativeRuntimeSession {
         }
         let canonical_lineage: String = state.call_method0("_decision_lineage_text")?.extract()?;
         binding.evaluator_integrity.validate(py)?;
+        binding.observer_integrity.validate(py)?;
+        binding.committer_integrity.validate(py)?;
         let canonical_lineage: Arc<str> = Arc::from(canonical_lineage);
         let transition = binding.begin_initial_lineage()?;
         let lineage_seal = Py::new(
@@ -5496,6 +5562,7 @@ fn canonicalize_json(canonical_json: &str) -> PyResult<String> {
 }
 
 #[pyfunction]
+#[allow(clippy::too_many_arguments)]
 fn _register_continuation_engine(
     py: Python<'_>,
     evaluator: Py<PyAny>,
@@ -5504,6 +5571,9 @@ fn _register_continuation_engine(
     continuation_state_type: Py<PyAny>,
     continuation_request_type: Py<PyAny>,
     runtime_snapshot_type: Py<PyAny>,
+    orchestration_state_type: Py<PyAny>,
+    progress_record_type: Py<PyAny>,
+    strategy_materialization_type: Py<PyAny>,
 ) -> PyResult<()> {
     if !evaluator.bind(py).is_callable()
         || !observer.bind(py).is_callable()
@@ -5511,6 +5581,9 @@ fn _register_continuation_engine(
         || !continuation_state_type.bind(py).is_callable()
         || !continuation_request_type.bind(py).is_callable()
         || !runtime_snapshot_type.bind(py).is_callable()
+        || !orchestration_state_type.bind(py).is_callable()
+        || !progress_record_type.bind(py).is_callable()
+        || !strategy_materialization_type.bind(py).is_callable()
     {
         return Err(PyValueError::new_err(
             "continuation engine bindings must be callable",
@@ -5529,6 +5602,9 @@ fn _register_continuation_engine(
                 continuation_state_type,
                 continuation_request_type,
                 runtime_snapshot_type,
+                orchestration_state_type,
+                progress_record_type,
+                strategy_materialization_type,
                 evaluator_integrity,
                 observer_integrity,
                 committer_integrity,

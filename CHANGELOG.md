@@ -22,13 +22,20 @@ All notable changes to QSOL-IBAE will be documented here.
   strategy identity, capability frontier, target obligations, dependency path,
   recovery mode, and period-1/2/3 cycle-breaking evidence. Receipts revalidate
   their exact material, while continuation admission derives live cycles from
-  native history even when optional caller evidence is omitted.
+  native history even when optional caller evidence is omitted. Context
+  observation can validate but cannot replace the live strategy identity;
+  strategy lineage advances only through an admitted change grant, preventing
+  rewind and historical-receipt replay.
 - `IBAE-CONTINUATION-LEASE-V1`, with governance-precommitted initial budgets,
   finite indexed lease schedules, exact cumulative ceilings, request caps,
   strategy-recovery caps, one task/session continuation ledger, and closed
   grant/deny receipts. Initial history retains the complete six-transition
-  period-1/2/3 window, and every request cap reserves a terminal decision beyond
-  the lease schedule.
+  period-1/2/3 window, and every request cap reserves ordinary decision capacity
+  beyond the lease schedule. If ordinary denials consume that reserve first,
+  one canonical terminal-ceiling receipt marker is added to native lineage
+  without enlarging request counts, ticks, aggregates, or retained history;
+  repeated terminal requests are state-neutral, and a lease-ceiling checkpoint
+  must cite the exact marker receipt.
 - opt-in Rust `apply_lease` authority that independently validates complete
   governance grant/receipt identities, policy/session/state lineage, schedule,
   replay index, and checked ceiling before changing exact limits. Accepted
@@ -47,15 +54,21 @@ All notable changes to QSOL-IBAE will be documented here.
   behind class/static method and property descriptors, referenced globals and
   default/closure bindings, and reachable IBAE helpers/classes at session
   creation and every evaluator/observer/committer entry. Native request entry
-  requires the exact trusted type before callbacks and rechecks integrity after
-  them. The complete initial zero-decision state receives a one-shot native
-  session seal only after Rust derives its exact decision/progress aggregate
-  seeds. Every reseal advances one live native generation and retires its
-  predecessor.
+  requires the exact trusted type before callbacks and rechecks integrity
+  immediately after evaluation, before reading or sealing evaluator output.
+  The complete initial zero-decision state receives a one-shot native session
+  seal only after Rust derives its exact decision/progress aggregate seeds and
+  validates exact registered orchestration/progress/strategy types plus the
+  progress record's bound task, governance, contract, and orchestration claims.
+  Failed validation does not consume the one-shot seal. Every reseal advances
+  one live native generation and retires its predecessor.
   Context observation and application commit require the exact live native
   session snapshot and reseal the resulting full continuation state. Benchmark
   objects are never inspected or passed into the governance evaluator, so
   caller-controlled mapping callbacks cannot run inside decision authority.
+- authority-bearing continuation policy-receipt fingerprints/profile fields
+  must remain exact built-in strings/integers before comparison, excluding
+  callback-bearing scalar subclasses from governance evaluation.
 - single-use measurable-progress endpoints: one exact progress identity may
   justify at most one progress-based grant, after which another such grant
   requires freshly observed progress. External evidence is paired with

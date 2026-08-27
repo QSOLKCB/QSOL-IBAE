@@ -56,7 +56,10 @@ frontier, targets, dependency path, recovery mode, and runtime-derived cycle
 evidence; paraphrase is excluded from identity. Governance precommits an exact
 initial budget, finite indexed schedule, cumulative ceiling, request cap, and
 strategy-recovery cap; initial history retains six transitions and the request
-cap reserves a terminal decision beyond the schedule. The supervisor requests, governance grants or denies,
+cap reserves ordinary denial capacity beyond the schedule. If ordinary
+decisions are consumed before the schedule, one canonical terminal-ceiling
+denial receipt marker enters native lineage without increasing the ordinary
+ledger; repeats are state-neutral. The supervisor requests, governance grants or denies,
 and an opt-in Rust session applies only a full validated governance-issued
 grant. Trusted module initialization captures the exact evaluator, context
 observer, and application committer once in native storage and removes the
@@ -66,7 +69,9 @@ returns a separate once-issued, session-scoped supervisor request capability;
 a native integrity graph detects in-place mutation of their bound code, all
 reachable mutable Python function dependencies regardless of module, and
 descriptor-backed functions. Exact request typing precedes callbacks and native
-integrity is rechecked afterward. The complete initial zero-decision state is
+integrity is rechecked immediately after evaluation, before output is read or
+sealed. The complete initial zero-decision state accepts only exact registered
+context types and rederived progress bound to the native authority, then is
 sealed only after Rust derives its exact decision/progress seeds; each reseal
 advances the sole live native generation and retires its predecessor; and
 context observation/application commit and checkpoint construction/resume
@@ -78,7 +83,9 @@ is insufficient. An exact
 request seal enters the pinned evaluator, then Rust validates the request and
 grant against the live session before issuing the grant seal used by
 `apply_lease`. Native lineage protects recovery and decision/progress semantics,
-including the full ordered progress count/aggregate, and each measurable
+including the full ordered progress count/aggregate, live strategy identity,
+and terminal ceiling marker. Context observation cannot rewind strategy
+lineage; only an admitted strategy-change grant advances it. Each measurable
 progress identity is single-use for progress-based admission. An accepted
 application changes exact limits plus one runtime logical tick while consuming no
 tool/runtime resource counter or history; rejection is state-neutral. The
@@ -88,7 +95,8 @@ recovery when that evidence bound is full.
 Structural in-process checkpoints require live status, strategy, and that same
 effective capacity and reject a false semantic partial reason at checkpoint
 construction; semantic partial evidence derives from the
-checkpoint, and watchdog lease exhaustion is identity-bearing, checked against
+checkpoint, terminal ceiling partials cite the exact lineage marker receipt,
+and watchdog lease exhaustion is identity-bearing, checked against
 effective checkpoint capacity, but
 non-authoritative. Existing v0.2-v0.4 schemas and fixture bytes remain
 unchanged.

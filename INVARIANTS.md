@@ -204,8 +204,11 @@ ceiling equal to the initial budget plus the complete schedule. Governance
 checks every requested/cumulative vector componentwise with checked arithmetic;
 Rust independently checks the grant, indexed schedule, cumulative ledger, and
 ceiling before changing limits. The request cap is strictly greater than the
-scheduled lease count, preserving one recordable terminal lease-ceiling
-decision.
+scheduled lease count, preserving ordinary denial capacity beyond the
+schedule. If that capacity is already consumed when the schedule becomes
+exhausted, exactly one terminal lease-ceiling denial receipt ID is added to
+native lineage without increasing the ordinary request/denial ledger, logical
+tick, aggregate, or retained history; repetition is state-neutral.
 
 ## IBAE-BND-006 — No self-extension
 
@@ -226,9 +229,13 @@ descriptor functions behind class/static methods and properties, referenced
 globals and default/closure bindings, and reachable IBAE helper/class definitions
 at session creation and every evaluator/observer/committer entry. Native request
 entry requires the exact trusted type before callbacks and rechecks integrity
-after them.
+immediately after evaluation and before reading or sealing evaluator output.
 Every initial zero-decision state receives a one-shot native session seal over
 the complete canonical state after Rust derives the exact aggregate seed.
+Initial orchestration, progress, and strategy values require their exact
+registered trusted types; any progress record must rederive its bound claims
+and match the native task, governance, contract, and orchestration endpoint
+before the one-shot authority is consumed.
 Observation and application commit require an exact snapshot of the matching
 live native session. Every resulting state advances one native live-lineage
 generation and retires its predecessor. The sealed state also binds the complete
@@ -409,8 +416,9 @@ interval because its prior semantic endpoint must equal the live endpoint.
 Only exact context observation may replace that live
 endpoint; denials preserve it. Native evaluator-issued lineage binds the decision ledger,
 last decision/denial, progress identity/classification/state, consumed endpoint,
-and recovery count; context observation is resealed through the pinned native
-observer.
+recovery count, live strategy identity, and any terminal-ceiling receipt marker;
+context observation is resealed through the pinned native observer and cannot
+replace the strategy identity.
 Repeated inputs produce byte-identical fixtures across hash seeds.
 
 ## IBAE-PROG-005 — Strategy identity is explicit
@@ -430,7 +438,10 @@ orchestration state, prior/proposed material, status, reason, and cycle evidence
 before it can authorize recovery. A strategy receipt may authorize only the
 policy-bounded recovery count and is never classified as progress. The live
 recovery count is protected by evaluator-issued decision lineage; reconstructing
-that public counter cannot restore recovery authority.
+that public counter cannot restore recovery authority. Context observation may
+only confirm the current exact materialization; only an admitted strategy-change
+grant may advance strategy lineage, so an earlier materialization cannot rewind
+the ledger for replay.
 
 ---
 
@@ -831,7 +842,8 @@ domains. v0.5 checkpoints require status to equal the live continuation state;
 any supplied strategy must equal the live strategy even when that identity is
 absent, and remaining leases use the effective request/schedule minimum;
 checkpoint construction requires a semantic partial reason to match the actual
-last denial and any required lease/recovery exhaustion; semantic partial
+last denial and any required lease/recovery exhaustion. A terminal ceiling
+marker path must cite that exact lineage-bound denial receipt; semantic partial
 evidence IDs are derived from the cited checkpoint and cannot
 be replaced by unrelated fingerprints. Construction and resume require the
 matching live native session to validate the complete supplied runtime

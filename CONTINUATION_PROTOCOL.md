@@ -46,8 +46,10 @@ and property descriptors, referenced globals and default/closure bindings, and
 reachable IBAE helper/class definitions; session creation and every
 evaluator/observer/committer entry fails closed if any bound object has been
 mutated in place. Native evaluation requires the exact trusted request type
-before invoking request methods and rechecks integrity after caller-controlled
-callbacks. The supervisor capability can seal an
+before invoking request methods, rechecks integrity after caller-controlled
+callbacks, and rechecks the complete evaluator graph immediately after the
+evaluator returns and before reading or sealing any evaluator output. The
+supervisor capability can seal an
 exact canonical request but cannot select those functions. The request seal is
 likewise non-constructible and is the only entry to the pinned evaluator. Its
 native binding uses live object capability identity solely for in-process authorization; memory identity never
@@ -57,6 +59,10 @@ The supported Python API creates continuation sessions only through the
 dedicated factory, which extracts the capability before returning the runtime;
 the generic constructor rejects continuation arguments and the runtime facade
 does not expose its native handle.
+
+Authority-bearing policy-receipt fingerprints and profile fields must remain
+exact built-in strings and integers. They are validated before comparison, so
+a callback-bearing scalar subclass cannot execute while governance is deciding.
 
 ## Versioned records
 
@@ -178,6 +184,12 @@ orchestration state, prior/proposed materializations, derived status/reason,
 and cycle evidence whenever its identity is consumed. Fresh fingerprint
 strings cannot manufacture an admitted material change.
 
+Context observation may validate an optional exact materialization of the
+currently live strategy, but cannot replace that strategy identity. Only an
+admitted strategy-change grant may advance the strategy lineage, so a prior
+materialization and its historical change receipt cannot rewind and replay a
+recovery transition.
+
 Cycle evidence is recomputed from native bounded transition history. Cold
 execution and cache-hit paths use the same transition identity, so reuse cannot
 hide a periodic loop. The evaluator derives the live period-1/2/3 result even
@@ -223,8 +235,11 @@ resource ceiling must also fit the Rust runtime hard caps. A requested vector
 may be smaller than its indexed scheduled vector, but cannot exceed it in any
 component. Cumulative grants cannot exceed the precommitted continuation
 capacity or total ceiling. The request cap must be strictly greater than the
-number of scheduled leases, reserving at least one decision for the terminal
-lease-ceiling denial and its auditable partial checkpoint.
+number of scheduled leases, providing ordinary denial capacity beyond the
+schedule. If that ordinary capacity is consumed before the schedule becomes
+exhausted, the first post-schedule request may bind exactly one terminal
+lease-ceiling denial receipt into native lineage without enlarging the ordinary
+request ledger.
 
 ### Experimental named profiles
 
@@ -273,6 +288,15 @@ precommitted request cap has been reached, another request returns a stable
 request-limit denial without advancing state, tick, or counters. This prevents
 denial spam from becoming unbounded retained authority state.
 
+There is one narrow terminal case: when every scheduled lease and every
+ordinary request decision are already consumed, the first additional request
+returns a lease-ceiling denial receipt and stores that exact
+receipt identity in the canonical `terminal_ceiling_receipt_id` marker while
+transitioning to `lease_exhausted`. The marker is protected by the next native
+lineage generation but does not increment the request/denial ledger, logical
+tick, aggregate, or retained decision history. Repetition is fully
+state-neutral and retains the original marker.
+
 A denial records the submitted progress identity in its receipt but never
 installs that identity as the live progress endpoint. Only an exact context
 observation, validated against the prior and current orchestration endpoints,
@@ -287,11 +311,16 @@ The native lineage seal binds the complete canonical continuation state,
 including runtime state and pending-application identity in addition to exact
 task/governance/policy identity; request, grant, denial, recovery, cumulative,
 strategy, progress, decision-aggregate accounting, and the complete ordered
-progress-event count and aggregate. Rust independently derives the exact
-decision and progress aggregate seeds before the initial zero-decision state
-is sealed once by its native session; there is no unsealed initial-state
-exemption. Erasing or changing any public authority field cannot mint another
-valid state. The per-session binding also tracks one non-serialized live
+progress-event count and aggregate, including the optional terminal-ceiling
+receipt marker. Rust independently derives the exact decision and progress
+aggregate seeds before the initial zero-decision state is sealed once by its
+native session; the supplied orchestration state, progress record, and strategy
+materialization must have their exact registered trusted types. Any initial
+progress record must rederive its bound claims and match the native task,
+governance, progress contract, and current orchestration state before this
+one-shot authority is consumed. There is no unsealed initial-state exemption.
+Erasing or changing any public authority field cannot mint another valid
+state. The per-session binding also tracks one non-serialized live
 generation: every recorded decision, observation, and application commit
 atomically advances it, so every predecessor seal becomes unusable even when
 the runtime snapshot did not change. Legitimate context observation and application commit both enter
@@ -376,7 +405,7 @@ task/governance/policy/progress-contract/orchestration/runtime lineage,
 request/grant/denial counts, cumulative grants, decision aggregate, bounded
 decision receipt IDs, strategy recovery count, progress state, ordered progress
 event count/aggregate, pending application, last consumed progress identity,
-and continuation logical tick.
+the optional terminal-ceiling receipt marker, and continuation logical tick.
 Advancing orchestration state requires a progress record whose prior endpoint
 is the ledger's current state;
 lease requests must reuse the exact last committed progress identity.
@@ -413,8 +442,10 @@ continuation state's status. A supplied strategy must equal the live state's
 strategy even when that live identity is `null`, and checkpoint
 `leases_remaining` is the minimum of request decisions and schedule slots. If
 a semantic partial reason is supplied, checkpoint construction itself requires
-the matching last denial and any required lease/recovery exhaustion; a false
-reason can never become a structurally valid checkpoint.
+the matching last ordinary denial or, for the special terminal ceiling path,
+the exact lineage-bound `terminal_ceiling_receipt_id` as its relevant receipt,
+plus any required lease/recovery exhaustion. A false reason can never become a
+structurally valid checkpoint.
 
 Checkpoint construction and resume require the matching live native session;
 Rust compares the complete supplied runtime snapshot with that session before

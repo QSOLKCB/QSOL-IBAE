@@ -433,11 +433,14 @@ class ContinuationPolicy:
         self._validate_runtime_hard_limits()
 
     def _validate_authority_fields(self) -> None:
-        if type(self.admitted_progress) is not tuple:
-            raise TypeError("admitted_progress must remain an exact tuple")
-        if self.admitted_progress != (ProgressClassification.MEASURABLE_PROGRESS,):
+        if (
+            type(self.admitted_progress) is not tuple
+            or len(self.admitted_progress) != 1
+            or self.admitted_progress[0]
+            is not ProgressClassification.MEASURABLE_PROGRESS
+        ):
             raise ValueError(
-                "only measurable_progress may independently justify continuation"
+                "admitted_progress must remain the exact measurable-progress tuple"
             )
 
     def _validate_runtime_hard_limits(self) -> None:
@@ -543,12 +546,42 @@ class ContinuationPolicyReceipt:
         object.__setattr__(
             self, "task_profile_version", policy.task_profile_version
         )
+        self._validate_authority_fields()
+
+    def _validate_authority_fields(self) -> None:
+        for name in (
+            "task_id",
+            "governance_id",
+            "governance_receipt_id",
+            "continuation_policy_id",
+            "progress_contract_id",
+        ):
+            value = getattr(self, name)
+            if type(value) is not str:
+                raise TypeError(
+                    f"continuation policy receipt {name} must remain an exact string"
+                )
+            require_fingerprint(f"continuation policy receipt {name}", value)
+        if type(self.task_profile) is not str:
+            raise TypeError(
+                "continuation policy receipt task_profile must remain an exact string"
+            )
+        require_symbol("continuation policy receipt task profile", self.task_profile)
+        if type(self.task_profile_version) is not int:
+            raise TypeError(
+                "continuation policy receipt version must remain an exact integer"
+            )
+        require_positive_int(
+            "continuation policy receipt task profile version",
+            self.task_profile_version,
+        )
 
     @property
     def receipt_id(self) -> str:
         return self.canonical_record()["receipt_id"]
 
     def canonical_record(self) -> dict[str, Any]:
+        self._validate_authority_fields()
         return _with_receipt_id(
             CONTINUATION_POLICY_RECEIPT_ID_DOMAIN,
             {
@@ -1756,6 +1789,7 @@ class ContinuationState:
     last_decision: str
     last_denial_reason: LeaseDenialReason | None
     progress_state: ProgressState
+    terminal_ceiling_receipt_id: str | None = None
     pending_grant_id: str | None = None
     pending_grant_receipt_id: str | None = None
     _decision_lineage_capability: Any | None = field(
@@ -1841,6 +1875,14 @@ class ContinuationState:
         if self.last_denial_reason is not None:
             _enum("last denial reason", self.last_denial_reason, LeaseDenialReason)
         _enum("continuation progress state", self.progress_state, ProgressState)
+        if self.terminal_ceiling_receipt_id is not None:
+            require_fingerprint(
+                "terminal ceiling receipt id", self.terminal_ceiling_receipt_id
+            )
+            if self.progress_state is not ProgressState.LEASE_EXHAUSTED:
+                raise ValueError(
+                    "a terminal ceiling receipt requires lease-exhausted state"
+                )
         if (self.pending_grant_id is None) != (
             self.pending_grant_receipt_id is None
         ):
@@ -1850,6 +1892,11 @@ class ContinuationState:
             require_fingerprint(
                 "pending grant receipt id", self.pending_grant_receipt_id
             )
+        if (
+            self.terminal_ceiling_receipt_id is not None
+            and self.has_pending_grant
+        ):
+            raise ValueError("terminal ceiling state cannot carry a pending grant")
         if self.last_decision == "denied" and self.last_denial_reason is None:
             raise ValueError("a denied last decision requires a denial reason")
         if self.last_decision != "denied" and self.last_denial_reason is not None:
@@ -2074,6 +2121,14 @@ class ContinuationState:
             raise ValueError("continuation state exceeds progress evidence capacity")
         if self.strategy_recoveries > policy.max_strategy_recoveries:
             raise ValueError("continuation state exceeds strategy recovery capacity")
+        if self.terminal_ceiling_receipt_id is not None and (
+            self.leases_granted != policy.max_leases
+            or self.lease_requests != policy.max_lease_requests
+            or self.has_pending_grant
+        ):
+            raise ValueError(
+                "terminal ceiling receipt does not bind exhausted policy state"
+            )
 
     def compact_projection(self, policy: ContinuationPolicy) -> dict[str, Any]:
         self._require_policy(policy)
@@ -2140,6 +2195,7 @@ class ContinuationState:
             "remaining_total_continuation_ceiling": self.remaining_capacity(
                 policy
             ).canonical_record(),
+            "terminal_ceiling_receipt_id": self.terminal_ceiling_receipt_id,
         }
 
     def _decision_lineage_record(self) -> dict[str, Any]:
@@ -2223,6 +2279,7 @@ class ContinuationState:
             "runtime_state_id": self.runtime_state_id,
             "strategy_recoveries": self.strategy_recoveries,
             "task_id": self.task_id,
+            "terminal_ceiling_receipt_id": self.terminal_ceiling_receipt_id,
         }
 
 
@@ -2305,16 +2362,19 @@ def _observe_continuation_context(
         )
     if strategy is not None and type(strategy) is not StrategyMaterialization:
         raise TypeError("strategy must be exact StrategyMaterialization or None")
+    if (
+        strategy is not None
+        and strategy.strategy_material_id != state.current_strategy_material_id
+    ):
+        raise ValueError(
+            "strategy lineage cannot change through context observation"
+        )
     return replace(
         state,
         _decision_lineage_capability=None,
         orchestration_state_id=orchestration_state.state_id,
         runtime_state_id=runtime_snapshot.state_id,
-        current_strategy_material_id=(
-            state.current_strategy_material_id
-            if strategy is None
-            else strategy.strategy_material_id
-        ),
+        current_strategy_material_id=state.current_strategy_material_id,
         last_progress_id=(
             state.last_progress_id if progress is None else progress.progress_id
         ),
@@ -3055,6 +3115,7 @@ def _evaluate_continuation(
             blocking_governance_violation_id,
         )
 
+    policy_receipt._validate_authority_fields()
     state._require_policy(policy)
     if (
         policy_receipt.continuation_policy_id != policy.continuation_policy_id
@@ -3215,13 +3276,14 @@ def _evaluate_continuation(
         )
         if not terminal_ceiling_without_request_slot:
             return denied
-        if state.progress_state is ProgressState.LEASE_EXHAUSTED:
+        if state.terminal_ceiling_receipt_id is not None:
             return denied
         return _ContinuationEvaluationResult(
             replace(
                 state,
                 _decision_lineage_capability=None,
                 progress_state=ProgressState.LEASE_EXHAUSTED,
+                terminal_ceiling_receipt_id=denied.receipt.receipt_id,
             ),
             denied.receipt,
         )
@@ -3365,11 +3427,20 @@ def _validate_semantic_partial_reason(
             raise ValueError("partial reason does not match continuation progress state")
         if leases_remaining != 0:
             raise ValueError("lease-ceiling partial requires exhausted lease capacity")
+        recorded_ordinary_ceiling = (
+            state.last_decision == "denied"
+            and state.last_denial_reason
+            is LeaseDenialReason.LEASE_CEILING_REACHED
+        )
+        if (
+            not recorded_ordinary_ceiling
+            and state.terminal_ceiling_receipt_id is None
+        ):
+            raise ValueError(
+                "lease-ceiling partial requires a lineage-bound ceiling denial"
+            )
         return
     required_state = {
-        ContinuationPartialReason.LEASE_CEILING_EXHAUSTED: (
-            ProgressState.LEASE_EXHAUSTED
-        ),
         ContinuationPartialReason.NO_PROGRESS: ProgressState.STALLED,
         ContinuationPartialReason.TERMINAL_CYCLE: ProgressState.CYCLE_BLOCKED,
         ContinuationPartialReason.STRATEGY_RECOVERY_EXHAUSTED: (
@@ -3379,9 +3450,6 @@ def _validate_semantic_partial_reason(
     if state.progress_state is not required_state:
         raise ValueError("partial reason does not match continuation progress state")
     required_denials = {
-        ContinuationPartialReason.LEASE_CEILING_EXHAUSTED: (
-            LeaseDenialReason.LEASE_CEILING_REACHED,
-        ),
         ContinuationPartialReason.NO_PROGRESS: (
             LeaseDenialReason.NO_MEASURABLE_PROGRESS,
         ),
@@ -3398,11 +3466,6 @@ def _validate_semantic_partial_reason(
         or state.last_denial_reason not in required_denials
     ):
         raise ValueError("partial reason does not match the actual lease denial")
-    if (
-        reason is ContinuationPartialReason.LEASE_CEILING_EXHAUSTED
-        and leases_remaining != 0
-    ):
-        raise ValueError("lease-ceiling partial requires exhausted lease capacity")
     if (
         reason is ContinuationPartialReason.STRATEGY_RECOVERY_EXHAUSTED
         and strategy_recoveries_remaining != 0
@@ -3547,6 +3610,14 @@ class ContinuationCheckpoint:
             _enum("checkpoint partial reason", partial_reason, ContinuationPartialReason)
         if status is ProgressState.COMPLETE and partial_reason is not None:
             raise ValueError("complete checkpoints cannot carry a partial reason")
+        if (
+            partial_reason is ContinuationPartialReason.LEASE_CEILING_EXHAUSTED
+            and state.terminal_ceiling_receipt_id is not None
+            and relevant_receipt_id != state.terminal_ceiling_receipt_id
+        ):
+            raise ValueError(
+                "checkpoint must bind the terminal ceiling receipt"
+            )
         effective_leases_remaining = min(
             policy.max_lease_requests - state.lease_requests,
             state.leases_remaining(policy),
@@ -4048,6 +4119,9 @@ _native_runtime._register_continuation_engine(
     ContinuationState,
     ContinuationRequest,
     RuntimeSnapshot,
+    OrchestrationState,
+    ProgressRecord,
+    StrategyMaterialization,
 )
 delattr(_native_runtime, "_register_continuation_engine")
 del _native_runtime

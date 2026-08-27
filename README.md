@@ -111,8 +111,9 @@ continuation without changing those frozen v0.2-v0.4 records:
   finite strategy-recovery allowance;
 - one task/session continuation ledger with deterministic grant/deny receipts,
   native-bound decision/recovery semantics, single-use measurable-progress
-  endpoints, request-and-schedule-aware compact AI recovery state, live
-  progress-state refresh, and no self-extension by runtime, tools, or future
+  endpoints, one lineage-bound terminal-ceiling denial marker outside an
+  already exhausted ordinary request ledger, request-and-schedule-aware compact
+  AI recovery state, live progress-state refresh, and no self-extension by runtime, tools, or future
   workers;
 - a once-issued, session-scoped native supervisor request capability separate
   from the public requester label, with the exact evaluator, context observer,
@@ -120,8 +121,10 @@ continuation without changing those frozen v0.2-v0.4 records:
   module initialization and cloned by the dedicated continuation-session
   factory, integrity checks over mutable Python function dependencies even
   outside the package and behind descriptors, exact request typing plus
-  post-callback revalidation, one-shot native sealing of the complete initial
-  state after Rust derives its decision/progress seeds, one live native lineage
+  post-evaluation revalidation before evaluator output is read or sealed,
+  one-shot native sealing of the complete initial state only from exact
+  registered context types and rederived, authority-bound progress after Rust
+  derives its decision/progress seeds, one live native lineage
   generation that retires every predecessor, exact live-session checks for
   context observation/application commit and checkpoint snapshots, benchmark
   objects kept entirely outside governance evaluation, exact request seals,
@@ -132,11 +135,15 @@ continuation without changing those frozen v0.2-v0.4 records:
   non-constructible grant seal; it changes only exact limits plus one runtime
   logical tick and rejects unissued/replayed/forged/stale or equal-ID
   cross-session authority without mutation;
+- context observation preserves the current strategy identity; only an
+  admitted strategy-change grant advances that lineage, preventing rewind and
+  replay of an earlier change receipt;
 - in-process structural checkpoints validated against the complete live native
   snapshot, a separate fixed-shape continuation
   evidence receipt whose count/aggregate must match the sealed full progress
   history, checkpoint-evidence-bound semantic continuation partial
-  receipts whose reason is validated when the checkpoint is created, and
+  receipts whose reason is validated when the checkpoint is created and whose
+  terminal lease-ceiling path cites the exact lineage-bound denial marker, and
   watchdog observations whose exact lease-exhaustion flag is
   identity-bearing but cannot claim completion;
 - exact experimental `tiny`, `standard`, `extended`, and `repository` profiles

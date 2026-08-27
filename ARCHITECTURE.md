@@ -314,10 +314,14 @@ their bound code, every reachable mutable Python function dependency regardless
 of module, descriptor functions behind class/static methods and properties,
 referenced globals and default/closure bindings, and reachable IBAE helper/class
 definitions; every authority entry fails closed on in-place mutation. Exact
-request typing precedes request callbacks and integrity is rechecked after each
-callback. The complete initial zero-decision state is sealed once by the native
-session after Rust independently derives its exact decision and progress
-aggregate seeds.
+request typing precedes request callbacks, and evaluator integrity is rechecked
+again immediately after evaluation and before any output is read or sealed.
+The complete initial zero-decision state is sealed once by the native session
+after Rust independently derives its exact decision and progress aggregate
+seeds. Initial orchestration, progress, and strategy inputs require their exact
+registered trusted types; progress must rederive its claims and bind the native
+task, governance, contract, and orchestration endpoint before the one-shot seal
+is consumed.
 The public supervisor label cannot substitute for it. Exact request seals enter
 the pinned evaluator, and Rust independently validates the resulting full grant
 against the authorized request and live session before issuing a grant seal.
@@ -335,14 +339,20 @@ is state-neutral.
 Period-1/2/3 cycle evidence is recomputed from the live native history rather
 than trusted as optional caller input. Policies retain the full six-transition
 two-period window and reserve at least one request decision beyond scheduled
-leases for the terminal ceiling denial. The compact projection exposes both
+leases for ordinary denial handling. If ordinary decisions are consumed first,
+the first post-schedule request installs one exact terminal-ceiling denial
+receipt marker in native lineage without increasing request counts, ticks,
+aggregates, or retained decision history; repeats are state-neutral. The compact
+projection exposes both
 remaining schedule slots and remaining request decisions, so exhausted request
 or schedule capacity cannot advertise an impossible recovery; a missing prior
 strategy identity likewise suppresses material-strategy recovery. It exposes
 remaining bounded progress-observation capacity and suppresses objective
 progress recovery when that capacity is full. Checkpoints
 use that same effective minimum and cannot bind a strategy absent from live state;
-ordinary progress observation refreshes stalled/progressing/complete state.
+context observation cannot change the live strategy identity, which advances
+only through an admitted strategy-change grant; ordinary progress observation
+refreshes stalled/progressing/complete state.
 The sealed state also advances an ordered progress-event count and aggregate,
 so compact evidence must supply the complete trace rather than a matching suffix.
 
@@ -683,11 +693,14 @@ continue from a receipt-independent semantic endpoint. A separate native supervi
 capability seals an exact request for the evaluator captured at trusted module
 initialization; Rust then validates the authorized request and exact governance grant against
 the live per-instance session before issuing its non-constructible grant seal.
-The captured evaluator graph is integrity-checked at every authority entry, and
-the initial continuation state is sealed before exposure.
+The captured evaluator graph is integrity-checked at every authority entry and
+again after evaluation before its output is read or sealed. Initial context
+uses exact registered types and bound progress semantics before the initial
+continuation state is sealed and exposed.
 A self-consistent reconstructed grant or equal-ID duplicate session cannot
-extend limits. Native decision lineage protects the strategy-recovery counter
-and decision/progress semantics, while each measurable progress identity is
+extend limits. Native decision lineage protects the strategy-recovery counter,
+decision/progress semantics, the one-shot terminal-ceiling denial marker, and
+the live strategy identity, while each measurable progress identity is
 single-use for progress-based admission. The candidate implements
 endpoint-checked fixed-shape continuation evidence,
 request-and-schedule-aware compact AI recovery state, exact structural
