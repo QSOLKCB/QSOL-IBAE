@@ -302,9 +302,11 @@ in canonical key order. A measurable progress endpoint is consumed by its
 first progress-authorized grant; another such grant requires a fresh observed
 endpoint.
 Governance binds an exact initial budget, finite indexed resource schedule,
-request cap, strategy-recovery cap, and total ceiling. Continuation-session
-creation pins the evaluator and observer inside a non-serialized per-instance
-native authority and returns a separate once-issued, session-scoped supervisor
+request cap, strategy-recovery cap, and total ceiling. Trusted module
+initialization captures the exact evaluator and observer once in native storage
+and removes the bootstrap entrypoint. Continuation-session creation clones only
+those originals into a non-serialized per-instance native authority and returns
+a separate once-issued, session-scoped supervisor
 request capability.
 The public supervisor label cannot substitute for it. Exact request seals enter
 the pinned evaluator, and Rust independently validates the resulting full grant
@@ -654,8 +656,8 @@ rebinds preserve both prior and current orchestration endpoints, derive their
 claims from bound sources, and require source-bound governed provenance for
 external counters. Strategy receipts revalidate their exact material and live
 cycle evidence is recomputed internally. A separate native supervisor
-capability seals an exact request for the evaluator pinned at session creation;
-Rust then validates the authorized request and exact governance grant against
+capability seals an exact request for the evaluator captured at trusted module
+initialization; Rust then validates the authorized request and exact governance grant against
 the live per-instance session before issuing its non-constructible grant seal.
 A self-consistent reconstructed grant or equal-ID duplicate session cannot
 extend limits. Native decision lineage protects the strategy-recovery counter
@@ -665,7 +667,8 @@ endpoint-checked fixed-shape continuation evidence,
 request-and-schedule-aware compact AI recovery state, exact structural
 in-process checkpoint/resume,
 checkpoint-evidence-bound semantic continuation partials, and an exact-context
-watchdog record whose lease-exhaustion flag is identity-bearing but cannot
+watchdog record whose lease-exhaustion flag is identity-bearing, checked against
+effective checkpoint capacity, but cannot
 become completion authority. The existing v0.4 governance/evidence schema
 remains unchanged.
 

@@ -212,8 +212,10 @@ ceiling before changing limits.
 No model, local worker, tool backend, runtime, GPU kernel, or scheduler may grant itself additional execution budget.
 
 Current enforcement: only the closed OpenAI-supervisor principal can request;
-continuation-session creation pins the evaluator/observer into a Rust-private
-per-instance authority and returns a separate once-issued, session-scoped,
+trusted module initialization captures the exact evaluator/observer once in
+native storage and removes its bootstrap entrypoint. Continuation-session
+creation clones only those originals into a Rust-private per-instance authority
+and returns a separate once-issued, session-scoped,
 non-constructible supervisor request capability. The public principal label is
 insufficient. An exact native request seal invokes only the pinned evaluator, and Rust validates
 the authorized request plus full grant against the live session before issuing
@@ -378,7 +380,8 @@ unsatisfied and blocked obligations, so newly blocked work cannot authorize a
 lease. External evidence is paired with declared dimensions in canonical key
 order. A measurable progress identity is consumed by its first
 progress-authorized grant, so a later progress-based grant requires a freshly
-observed endpoint. Native evaluator-issued lineage binds the decision ledger,
+observed endpoint. Only exact context observation may replace that live
+endpoint; denials preserve it. Native evaluator-issued lineage binds the decision ledger,
 last decision/denial, progress identity/classification/state, consumed endpoint,
 and recovery count; context observation is resealed through the pinned native
 observer.

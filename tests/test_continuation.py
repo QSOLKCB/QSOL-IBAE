@@ -863,10 +863,10 @@ def test_supervisor_label_without_native_request_authority_is_denied():
 
 
 def test_native_session_pins_continuation_engine_before_request(monkeypatch):
-    policy, _, _, _, policy_receipt, runtime, _, current, progress, state = (
-        _state_and_progress()
-    )
     import ibae.continuation as continuation_module
+    import ibae._runtime as native_runtime
+
+    assert not hasattr(native_runtime, "_register_continuation_engine")
 
     def substituted_engine(*_args, **_kwargs):
         raise AssertionError("mutable module evaluator must not be consulted")
@@ -876,6 +876,9 @@ def test_native_session_pins_continuation_engine_before_request(monkeypatch):
     )
     monkeypatch.setattr(
         continuation_module, "_observe_continuation_context", substituted_engine
+    )
+    policy, _, _, _, policy_receipt, runtime, _, current, progress, state = (
+        _state_and_progress()
     )
     _, decision = _request_and_decide(
         policy, policy_receipt, runtime, progress, state
@@ -1738,6 +1741,88 @@ def test_pending_grant_blocks_another_request_until_rust_applies_it():
     )
 
 
+def test_earlier_denial_cannot_install_an_unobserved_progress_endpoint():
+    (
+        policy,
+        _,
+        task,
+        governance,
+        policy_receipt,
+        runtime,
+        prior,
+        current,
+        progress,
+        state,
+    ) = _state_and_progress("standard")
+    _, first = _request_and_decide(
+        policy, policy_receipt, runtime, progress, state
+    )
+    assert first.next_state.has_pending_grant
+
+    unrelated_prior = prior.advance(
+        logical_tick=1,
+        event_ids=(_id("unrelated-progress-lineage"),),
+    )
+    unrelated = _progress(task, governance, unrelated_prior, current)
+    assert unrelated.classification is ProgressClassification.MEASURABLE_PROGRESS
+    assert unrelated.progress_id != progress.progress_id
+
+    request = ContinuationRequest.from_state(
+        first.next_state,
+        progress=progress,
+        requested_resources=policy.lease_schedule[1],
+        requester=PrincipalAuthority.OPENAI_SUPERVISOR,
+    )
+    request = replace(
+        request, progress_id=unrelated.progress_id
+    )._with_request_authority(_authority(runtime))
+    denied = evaluate_continuation(
+        first.next_state,
+        request,
+        runtime_session=runtime,
+        policy=policy,
+        policy_receipt=policy_receipt,
+        progress=unrelated,
+    )
+    assert (
+        denied.receipt.denial_reason
+        is LeaseDenialReason.PENDING_LEASE_APPLICATION
+    )
+    assert denied.next_state.last_progress_id == progress.progress_id
+    assert (
+        denied.next_state.last_progress_classification
+        is progress.classification
+    )
+
+    application = runtime.apply_lease(first.receipt)
+    committed = commit_lease_application(
+        denied.next_state,
+        policy=policy,
+        grant=first.receipt,
+        application=application,
+        runtime_snapshot=runtime.snapshot,
+    )
+    valid_shape = ContinuationRequest.from_state(
+        committed,
+        progress=progress,
+        requested_resources=policy.lease_schedule[1],
+        requester=PrincipalAuthority.OPENAI_SUPERVISOR,
+    )
+    forged = replace(
+        valid_shape, progress_id=unrelated.progress_id
+    )._with_request_authority(_authority(runtime))
+    stale = evaluate_continuation(
+        committed,
+        forged,
+        runtime_session=runtime,
+        policy=policy,
+        policy_receipt=policy_receipt,
+        progress=unrelated,
+    )
+    assert stale.receipt.denial_reason is LeaseDenialReason.STALE_PROGRESS
+    assert stale.next_state.last_progress_id == progress.progress_id
+
+
 def test_one_measurable_progress_endpoint_authorizes_at_most_one_grant():
     (
         policy,
@@ -1961,6 +2046,51 @@ def test_denials_are_finitely_bounded_by_request_policy():
     )
     assert final.receipt.denial_reason is LeaseDenialReason.LEASE_REQUEST_LIMIT
     assert final.next_state is state
+
+
+def test_watchdog_exhaustion_uses_effective_checkpoint_lease_capacity():
+    policy, _, _, _, policy_receipt, runtime, _, current, progress, state = (
+        _state_and_progress("tiny", progressing=False)
+    )
+    for _ in range(policy.max_lease_requests):
+        _, decision = _request_and_decide(
+            policy, policy_receipt, runtime, progress, state
+        )
+        state = decision.next_state
+    assert state.progress_state is ProgressState.STALLED
+
+    checkpoint = ContinuationCheckpoint(
+        state=state,
+        policy=policy,
+        orchestration_state=current,
+        runtime_snapshot=runtime.snapshot,
+        progress=progress,
+        partial_reason=ContinuationPartialReason.WATCHDOG_EXPIRED,
+    )
+    assert checkpoint.leases_remaining == 0
+    observation = WatchdogObservation(
+        state.task_id,
+        state.governance_id,
+        state.orchestration_state_id,
+        state.runtime_state_id,
+        state.continuation_state_id,
+        60_000,
+        lease_exhausted=True,
+    )
+    partial = ContinuationPartialReceipt(
+        state=state,
+        checkpoint=checkpoint,
+        reason=ContinuationPartialReason.WATCHDOG_EXPIRED,
+        watchdog_observation=observation,
+    )
+    assert partial.watchdog_observation_id == observation.observation_id
+    with pytest.raises(ValueError, match="effective checkpoint capacity"):
+        ContinuationPartialReceipt(
+            state=state,
+            checkpoint=checkpoint,
+            reason=ContinuationPartialReason.WATCHDOG_EXPIRED,
+            watchdog_observation=replace(observation, lease_exhausted=False),
+        )
 
 
 def test_checkpoint_resume_validates_exact_live_in_process_lineage():

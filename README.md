@@ -113,7 +113,8 @@ continuation without changing those frozen v0.2-v0.4 records:
   progress-state refresh, and no self-extension by runtime, tools, or future
   workers;
 - a once-issued, session-scoped native supervisor request capability separate
-  from the public requester label, with the evaluator/observer pinned by the
+  from the public requester label, with the exact evaluator/observer captured
+  once in native storage during trusted module initialization and cloned by the
   dedicated continuation-session factory, exact request seals, and an opt-in
   Rust `apply_lease` transition
   that independently validates the authorized request and full governance

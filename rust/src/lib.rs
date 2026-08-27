@@ -8,6 +8,7 @@
 
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
+use pyo3::sync::GILOnceCell;
 use pyo3::types::{PyAny, PyBool, PyDict, PyModule};
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
@@ -1154,6 +1155,17 @@ struct ContinuationAuthorityBinding {
     evaluator: Py<PyAny>,
     observer: Py<PyAny>,
 }
+
+/// Process-local trusted continuation engine captured exactly once while the
+/// Python continuation module is initialized.  Session factories clone these
+/// original callables from native storage; mutable Python module attributes
+/// are never consulted when a later session is created.
+struct ContinuationEngine {
+    evaluator: Py<PyAny>,
+    observer: Py<PyAny>,
+}
+
+static CONTINUATION_ENGINE: GILOnceCell<ContinuationEngine> = GILOnceCell::new();
 
 impl ContinuationAuthorityBinding {
     fn authorize_request(&self, canonical_request: &str) -> Result<String, &'static str> {
@@ -4268,11 +4280,8 @@ impl NativeRuntimeSession {
         max_executions=None,
         max_retries=None,
         max_history=None,
-        continuation_context=None,
-        continuation_evaluator=None,
-        continuation_observer=None
+        continuation_context=None
     ))]
-    #[allow(clippy::too_many_arguments)]
     fn new(
         py: Python<'_>,
         session_key: &str,
@@ -4281,34 +4290,7 @@ impl NativeRuntimeSession {
         max_retries: Option<&Bound<'_, PyAny>>,
         max_history: Option<&Bound<'_, PyAny>>,
         continuation_context: Option<&str>,
-        continuation_evaluator: Option<Py<PyAny>>,
-        continuation_observer: Option<Py<PyAny>>,
     ) -> PyResult<Self> {
-        if continuation_context.is_some()
-            != (continuation_evaluator.is_some() && continuation_observer.is_some())
-        {
-            return Err(PyValueError::new_err(
-                "continuation context requires its exact evaluator and observer",
-            ));
-        }
-        if continuation_context.is_none()
-            && (continuation_evaluator.is_some() || continuation_observer.is_some())
-        {
-            return Err(PyValueError::new_err(
-                "continuation engine cannot be bound without continuation context",
-            ));
-        }
-        if continuation_evaluator
-            .as_ref()
-            .is_some_and(|value| !value.bind(py).is_callable())
-            || continuation_observer
-                .as_ref()
-                .is_some_and(|value| !value.bind(py).is_callable())
-        {
-            return Err(PyValueError::new_err(
-                "continuation evaluator and observer must be callable",
-            ));
-        }
         let limits = Limits {
             requests: exact_u64(max_requests, 32, "max_requests")?,
             executions: exact_u64(max_executions, 16, "max_executions")?,
@@ -4328,14 +4310,19 @@ impl NativeRuntimeSession {
         .map_err(PyValueError::new_err)?;
         let continuation_authority = match core.continuation.as_ref() {
             None => None,
-            Some(active) => Some(Arc::new(ContinuationAuthorityBinding {
-                task_id: active.context.task_id.clone(),
-                governance_id: active.context.governance_id.clone(),
-                continuation_policy_id: active.context.policy.policy_id.clone(),
-                runtime_session_id: core.session_id.clone(),
-                evaluator: continuation_evaluator.expect("validated evaluator"),
-                observer: continuation_observer.expect("validated observer"),
-            })),
+            Some(active) => {
+                let engine = CONTINUATION_ENGINE.get(py).ok_or_else(|| {
+                    PyValueError::new_err("trusted continuation engine is not initialized")
+                })?;
+                Some(Arc::new(ContinuationAuthorityBinding {
+                    task_id: active.context.task_id.clone(),
+                    governance_id: active.context.governance_id.clone(),
+                    continuation_policy_id: active.context.policy.policy_id.clone(),
+                    runtime_session_id: core.session_id.clone(),
+                    evaluator: engine.evaluator.clone_ref(py),
+                    observer: engine.observer.clone_ref(py),
+                }))
+            }
         };
         Ok(Self {
             core,
@@ -4477,6 +4464,28 @@ fn canonicalize_json(canonical_json: &str) -> PyResult<String> {
         .map_err(|_| PyValueError::new_err("value is not admitted canonical JSON"))
 }
 
+#[pyfunction]
+fn _register_continuation_engine(
+    py: Python<'_>,
+    evaluator: Py<PyAny>,
+    observer: Py<PyAny>,
+) -> PyResult<()> {
+    if !evaluator.bind(py).is_callable() || !observer.bind(py).is_callable() {
+        return Err(PyValueError::new_err(
+            "continuation evaluator and observer must be callable",
+        ));
+    }
+    CONTINUATION_ENGINE
+        .set(
+            py,
+            ContinuationEngine {
+                evaluator,
+                observer,
+            },
+        )
+        .map_err(|_| PyValueError::new_err("continuation engine is already initialized"))
+}
+
 #[pymodule]
 fn _runtime(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<NativeRuntimeSession>()?;
@@ -4489,6 +4498,7 @@ fn _runtime(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<NativeEvidenceSummarySeal>()?;
     module.add_class::<NativeEvidenceReceiptSeal>()?;
     module.add_function(wrap_pyfunction!(canonicalize_json, module)?)?;
+    module.add_function(wrap_pyfunction!(_register_continuation_engine, module)?)?;
     module.add("PROTOCOL_VERSION", PROTOCOL_VERSION)?;
     module.add("EVIDENCE_PROTOCOL_VERSION", EVIDENCE_PROTOCOL_VERSION)?;
     module.add("EVIDENCE_PROFILE", EVIDENCE_PROFILE)?;

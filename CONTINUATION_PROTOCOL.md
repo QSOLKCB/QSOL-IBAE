@@ -35,12 +35,14 @@ A request is not a grant. A grant is not applied runtime capacity. An applied
 lease is not evidence of task progress. A strategy change may justify one
 bounded recovery attempt, but is not itself progress.
 
-At session creation, the deterministic evaluator and context observer are
-pinned in a Rust-private, non-serialized per-instance authority binding. The
-supervisor capability can seal an exact canonical request but cannot select or
-replace those functions. The request seal is likewise non-constructible and is
-the only entry to the pinned evaluator. Its native binding uses live object
-capability identity solely for in-process authorization; memory identity never
+Trusted module initialization captures the exact deterministic evaluator and
+context observer once in native storage and removes the one-shot bootstrap
+entrypoint. Session creation clones only those originals into a Rust-private,
+non-serialized per-instance authority binding; later reassignment of Python
+module attributes cannot replace them. The supervisor capability can seal an
+exact canonical request but cannot select those functions. The request seal is
+likewise non-constructible and is the only entry to the pinned evaluator. Its
+native binding uses live object capability identity solely for in-process authorization; memory identity never
 enters canonical correctness records. A separately created session with equal
 canonical IDs therefore cannot issue authority for the original live session.
 The supported Python API creates continuation sessions only through the
@@ -250,6 +252,11 @@ precommitted request cap has been reached, another request returns a stable
 request-limit denial without advancing state, tick, or counters. This prevents
 denial spam from becoming unbounded retained authority state.
 
+A denial records the submitted progress identity in its receipt but never
+installs that identity as the live progress endpoint. Only an exact context
+observation, validated against the prior and current orchestration endpoints,
+may update the live progress ledger.
+
 A grant advances governance continuation state and creates one pending grant.
 It does not itself change native runtime limits or consume runtime request,
 execution, retry, mutation, cache-hit, or history resources. No second request
@@ -261,8 +268,8 @@ decision receipt aggregate; current strategy material; last decision and
 denial; last progress identity and classification; progress control state; and
 last consumed progress identity. Erasing or changing any of those public fields
 cannot mint another valid state. Legitimate context observation enters the
-observer pinned at session creation and receives a new native seal for the
-resulting exact lineage. The issuer is not held in a Python closure or exposed
+observer pinned during trusted module initialization and receives a new native
+seal for the resulting exact lineage. The issuer is not held in a Python closure or exposed
 as a mutable module validator.
 
 ## Rust lease application
@@ -270,9 +277,9 @@ as a mutable module validator.
 `apply_lease` is accepted only by an opt-in continuation-enabled native
 session. Rust independently parses the full canonical governance grant and
 recomputes both grant and receipt identities. A per-instance native request
-seal first validates its exact authorized request, invokes the evaluator pinned
-at session creation, and passes the resulting grant directly to a Rust-private
-issuer. That issuer independently validates the request identity, complete
+seal first validates its exact authorized request, invokes the evaluator cloned
+from native initialization storage, and passes the resulting grant directly to
+a Rust-private issuer. That issuer independently validates the request identity, complete
 grant, and live native session/state before it may mint a separate
 non-constructible seal. The Python runtime facade exposes no grant issuer, and
 a structural grant or grant issued by an equal-ID duplicate session lacks the
@@ -429,11 +436,12 @@ partial, and a partial cannot be relabelled accepted.
 A watchdog expiry requires a bound `WatchdogObservation`. Elapsed milliseconds
 are retained as an observation but excluded from watchdog correctness identity.
 The observation always has `correctness_authority = false` and
-`task_complete = false`. Its `lease_exhausted` flag must match independent
-continuation state and is included in the observation identity. Its task,
-governance, orchestration, runtime, and continuation identities must match the
-exact partial state; elapsed time cannot manufacture lease exhaustion or
-normal completion.
+`task_complete = false`. Its `lease_exhausted` flag must match the effective
+remaining request-and-schedule lease capacity reported by the bound checkpoint
+and is included in the observation identity. Its task, governance,
+orchestration, runtime, and continuation identities must match the exact
+partial state; elapsed time cannot manufacture lease exhaustion or normal
+completion.
 
 ## Benchmark-only policy experiment
 

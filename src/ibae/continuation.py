@@ -2841,22 +2841,6 @@ def _deny_continuation(
             state.decision_aggregate_id, denial.receipt_id, ordinal
         ),
         decision_receipt_ids=(*state.decision_receipt_ids, denial.receipt_id),
-        last_progress_id=(
-            progress.progress_id
-            if progress.task_id == state.task_id
-            and progress.governance_id == state.governance_id
-            and progress.current_orchestration_state_id
-            == state.orchestration_state_id
-            else state.last_progress_id
-        ),
-        last_progress_classification=(
-            progress.classification
-            if progress.task_id == state.task_id
-            and progress.governance_id == state.governance_id
-            and progress.current_orchestration_state_id
-            == state.orchestration_state_id
-            else state.last_progress_classification
-        ),
         last_decision="denied",
         last_denial_reason=reason,
         progress_state=_denial_state(reason),
@@ -3754,10 +3738,10 @@ class ContinuationPartialReceipt:
             ):
                 raise ValueError("watchdog observation does not bind partial state")
             if watchdog_observation.lease_exhausted != (
-                state.progress_state is ProgressState.LEASE_EXHAUSTED
+                checkpoint.leases_remaining == 0
             ):
                 raise ValueError(
-                    "watchdog lease exhaustion must match independent continuation state"
+                    "watchdog lease exhaustion must match effective checkpoint capacity"
                 )
         elif watchdog_observation is not None:
             raise ValueError("only watchdog expiry may bind a watchdog observation")
@@ -3807,3 +3791,16 @@ class ContinuationPartialReceipt:
             "task_id": self.task_id,
             "watchdog_observation_id": self.watchdog_observation_id,
         }
+
+
+# Capture the authoritative evaluator/observer once in native storage during
+# trusted module initialization, then remove the one-shot bootstrap entrypoint.
+# Later continuation-session creation never resolves mutable module globals.
+from . import _runtime as _native_runtime
+
+_native_runtime._register_continuation_engine(
+    _evaluate_continuation,
+    _observe_continuation_context,
+)
+delattr(_native_runtime, "_register_continuation_engine")
+del _native_runtime

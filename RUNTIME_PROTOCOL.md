@@ -123,9 +123,11 @@ lineage, a schedule-bounded mutation-free vector, checked cumulative grant,
 and no duplicate/replayed grant ID.
 
 Rust does not decide whether progress justifies a lease and exposes no
-`request_lease` command. Continuation-session creation pins the deterministic
-evaluator and context observer inside a Rust-private per-instance binding and
-returns a separate once-issued, session-scoped supervisor request capability.
+`request_lease` command. Trusted module initialization captures the exact
+deterministic evaluator and context observer once in native storage and removes
+the bootstrap entrypoint. Continuation-session creation clones only those
+originals into a Rust-private per-instance binding and returns a separate
+once-issued, session-scoped supervisor request capability.
 The dedicated continuation factory extracts it before returning the runtime;
 the generic constructor rejects continuation arguments, and the runtime facade
 does not expose its native handle. The requester label alone is not authority.

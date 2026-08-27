@@ -1276,8 +1276,6 @@ class RustRuntimeSession:
             active_limits.max_retries,
             active_limits.max_history,
             None,
-            None,
-            None,
         )
 
     @classmethod
@@ -1295,12 +1293,7 @@ class RustRuntimeSession:
             raise TypeError("continuation runtimes require exact RustRuntimeSession")
         if not isinstance(session_key, str) or not session_key:
             raise ValueError("session_key must be a non-empty string")
-        from .continuation import (
-            ContinuationPolicy,
-            ContinuationPolicyReceipt,
-            _evaluate_continuation,
-            _observe_continuation_context,
-        )
+        from .continuation import ContinuationPolicy, ContinuationPolicyReceipt
 
         if type(continuation_policy) is not ContinuationPolicy:
             raise TypeError("continuation_policy must be an exact policy")
@@ -1340,8 +1333,6 @@ class RustRuntimeSession:
             policy_limits.max_retries,
             policy_limits.max_history,
             continuation_context,
-            _evaluate_continuation,
-            _observe_continuation_context,
         )
         authority = session.__native.take_continuation_request_authority()
         return session, authority

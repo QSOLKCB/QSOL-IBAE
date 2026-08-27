@@ -56,9 +56,11 @@ evidence; paraphrase is excluded from identity. Governance precommits an exact
 initial budget, finite indexed schedule, cumulative ceiling, request cap, and
 strategy-recovery cap. The supervisor requests, governance grants or denies,
 and an opt-in Rust session applies only a full validated governance-issued
-grant. Session creation pins the evaluator/observer into a non-serialized
-per-instance native authority and returns a separate once-issued,
-session-scoped supervisor request capability; a public principal label,
+grant. Trusted module initialization captures the exact evaluator/observer once
+in native storage and removes the bootstrap entrypoint. Session creation clones
+only those originals into a non-serialized per-instance native authority and
+returns a separate once-issued, session-scoped supervisor request capability;
+a public principal label,
 reconstructed record, mutable Python validator, or equal-ID duplicate session
 is insufficient. An exact
 request seal enters the pinned evaluator, then Rust validates the request and
@@ -71,7 +73,8 @@ tool/runtime resource counter or history; rejection is state-neutral. The
 compact state exposes effective remaining request and schedule decisions.
 Structural in-process checkpoints require live status, strategy, and that same
 effective capacity; semantic partial evidence derives from the
-checkpoint, and watchdog lease exhaustion is identity-bearing but
+checkpoint, and watchdog lease exhaustion is identity-bearing, checked against
+effective checkpoint capacity, but
 non-authoritative. Existing v0.2-v0.4 schemas and fixture bytes remain
 unchanged.
 
