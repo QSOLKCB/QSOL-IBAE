@@ -206,9 +206,10 @@ Rust independently checks the grant, indexed schedule, cumulative ledger, and
 ceiling before changing limits. The request cap is strictly greater than the
 scheduled lease count, preserving ordinary denial capacity beyond the
 schedule. If that capacity is already consumed when the schedule becomes
-exhausted, exactly one terminal lease-ceiling denial receipt ID is added to
-native lineage without increasing the ordinary request/denial ledger, logical
-tick, aggregate, or retained history; repetition is state-neutral.
+exhausted, the next exact request-limit denial adds one terminal marker to
+native lineage; if both ledgers are exhausted, it cites the lease-ceiling
+denial instead. Neither path increases the ordinary request/denial ledger,
+logical tick, aggregate, or retained history; repetition is state-neutral.
 
 ## IBAE-BND-006 — No self-extension
 
@@ -243,7 +244,10 @@ registered trusted types; any progress record must rederive its bound claims
 and match the native task, governance, contract, and orchestration endpoint
 before the one-shot authority is consumed.
 Observation and application commit require an exact snapshot of the matching
-live native session. Every resulting state advances one native live-lineage
+live native session. Observer progress fields are validated as exact and
+callback-free before comparison, and Rust independently requires every
+non-observation authority field—including consumed progress—to equal the prior
+lineage before resealing. Every resulting state advances one native live-lineage
 generation and retires its predecessor. The sealed state also binds the complete
 ordered progress count and aggregate. An exact native request seal invokes only
 the pinned evaluator, and Rust validates the authorized request plus full grant against the live session before issuing
@@ -424,7 +428,10 @@ endpoint; denials preserve it. Native evaluator-issued lineage binds the decisio
 last decision/denial, progress identity/classification/state, consumed endpoint,
 recovery count, live strategy identity, and any terminal-ceiling receipt marker;
 context observation is resealed through the pinned native observer and cannot
-replace the strategy identity.
+replace the strategy identity. If ordinary denials exhaust the request ledger
+before all schedule slots are granted, the first exact request-limit denial
+binds a one-shot terminal marker and `lease_exhausted` state without increasing
+the ledger; the existing non-watchdog lease-ceiling partial then cites it.
 Repeated inputs produce byte-identical fixtures across hash seeds.
 
 ## IBAE-PROG-005 — Strategy identity is explicit
@@ -848,8 +855,9 @@ domains. v0.5 checkpoints require status to equal the live continuation state;
 any supplied strategy must equal the live strategy even when that identity is
 absent, and remaining leases use the effective request/schedule minimum;
 checkpoint construction requires a semantic partial reason to match the actual
-last denial and any required lease/recovery exhaustion. A terminal ceiling
-marker path must cite that exact lineage-bound denial receipt, and checkpoint
+last denial and any required lease/recovery exhaustion. A request- or
+schedule-cap terminal marker path must cite that exact lineage-bound denial
+receipt, and checkpoint
 consumers revalidate the binding against live state after construction;
 semantic partial
 evidence IDs are derived from the cited checkpoint and cannot

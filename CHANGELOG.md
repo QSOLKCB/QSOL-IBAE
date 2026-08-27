@@ -31,8 +31,9 @@ All notable changes to QSOL-IBAE will be documented here.
   strategy-recovery caps, one task/session continuation ledger, and closed
   grant/deny receipts. Initial history retains the complete six-transition
   period-1/2/3 window, and every request cap reserves ordinary decision capacity
-  beyond the lease schedule. If ordinary denials consume that reserve first,
-  one canonical terminal-ceiling receipt marker is added to native lineage
+  beyond the lease schedule. If ordinary denials consume the full request
+  ledger before all schedule slots are granted, or if both ledgers are
+  exhausted, one canonical terminal-ceiling receipt marker is added to native lineage
   without enlarging request counts, ticks, aggregates, or retained history;
   repeated terminal requests are state-neutral, and a lease-ceiling checkpoint
   must cite the exact marker receipt.
@@ -69,7 +70,11 @@ All notable changes to QSOL-IBAE will be documented here.
   Failed validation does not consume the one-shot seal. Every reseal advances
   one live native generation and retires its predecessor.
   Context observation and application commit require the exact live native
-  session snapshot and reseal the resulting full continuation state. Benchmark
+  session snapshot and reseal the resulting full continuation state. Observer
+  progress is validated as exact and callback-free before comparison; Rust
+  additionally compares the prior/result authority projection and rejects any
+  change outside the closed observation endpoints, including consumed-progress
+  identity. Benchmark
   objects are never inspected or passed into the governance evaluator, so
   caller-controlled mapping callbacks cannot run inside decision authority.
 - authority-bearing continuation policy-receipt fingerprints/profile fields

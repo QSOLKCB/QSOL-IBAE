@@ -2625,7 +2625,29 @@ def test_denials_are_finitely_bounded_by_request_policy():
         progress=progress,
     )
     assert final.receipt.denial_reason is LeaseDenialReason.LEASE_REQUEST_LIMIT
-    assert final.next_state is state
+    assert final.next_state is not state
+    assert final.next_state.progress_state is ProgressState.LEASE_EXHAUSTED
+    assert final.next_state.lease_requests == state.lease_requests
+    assert (
+        final.next_state.terminal_ceiling_receipt_id
+        == final.receipt.receipt_id
+    )
+    repeated_request = ContinuationRequest.from_state(
+        final.next_state,
+        progress=progress,
+        requested_resources=policy.lease_schedule[0],
+        requester=PrincipalAuthority.OPENAI_SUPERVISOR,
+        requester_authority=_authority(runtime),
+    )
+    repeated = evaluate_continuation(
+        final.next_state,
+        repeated_request,
+        runtime_session=runtime,
+        policy=policy,
+        policy_receipt=policy_receipt,
+        progress=progress,
+    )
+    assert repeated.next_state is final.next_state
 
 
 def test_watchdog_exhaustion_uses_effective_checkpoint_lease_capacity():
@@ -4441,3 +4463,160 @@ def test_round5_partial_revalidates_mutated_terminal_receipt_binding():
             reason=ContinuationPartialReason.LEASE_CEILING_EXHAUSTED,
             execution_receipt_id=unrelated_receipt_id,
         )
+
+
+def test_round6_observer_rejects_progress_callback_before_lineage_reseal():
+    import ibae.continuation as continuation_module
+
+    (
+        policy,
+        _,
+        task,
+        governance,
+        policy_receipt,
+        runtime,
+        _,
+        current,
+        progress,
+        state,
+    ) = _state_and_progress("standard")
+    _, granted = _request_and_decide(
+        policy, policy_receipt, runtime, progress, state
+    )
+    application = runtime.apply_lease(granted.receipt)
+    state = commit_lease_application(
+        granted.next_state,
+        runtime_session=runtime,
+        policy=policy,
+        grant=granted.receipt,
+        application=application,
+        runtime_snapshot=runtime.snapshot,
+    )
+    consumed_progress_id = state.last_consumed_progress_id
+    refresh = _progress(task, governance, current, current)
+    original_task_id = refresh.task_id
+    original_replace = continuation_module.replace
+
+    def hostile_replace(instance, /, **changes):
+        continuation_module.replace = original_replace
+        changes["last_consumed_progress_id"] = None
+        return original_replace(instance, **changes)
+
+    class Trigger(str):
+        fired = False
+
+        def __ne__(self, other):
+            type(self).fired = True
+            continuation_module.replace = hostile_replace
+            return str.__ne__(self, other)
+
+    object.__setattr__(refresh, "task_id", Trigger(original_task_id))
+    try:
+        with pytest.raises(TypeError, match="must remain an exact string"):
+            observe_continuation_context(
+                state,
+                runtime_session=runtime,
+                policy=policy,
+                orchestration_state=current,
+                runtime_snapshot=runtime.snapshot,
+                progress=refresh,
+            )
+    finally:
+        continuation_module.replace = original_replace
+        object.__setattr__(refresh, "task_id", original_task_id)
+
+    assert Trigger.fired is False
+    observed = observe_continuation_context(
+        state,
+        runtime_session=runtime,
+        policy=policy,
+        orchestration_state=current,
+        runtime_snapshot=runtime.snapshot,
+        progress=refresh,
+    )
+    assert observed.last_consumed_progress_id == consumed_progress_id
+
+
+def test_round6_request_cap_exhaustion_binds_a_normal_partial_outcome():
+    (
+        policy,
+        _,
+        task,
+        governance,
+        policy_receipt,
+        runtime,
+        _,
+        current,
+        stalled,
+        state,
+    ) = _state_and_progress("standard", progressing=False)
+    for _ in range(policy.max_lease_requests - 1):
+        _, denied = _request_and_decide(
+            policy, policy_receipt, runtime, stalled, state
+        )
+        assert denied.receipt.denial_reason is LeaseDenialReason.NO_MEASURABLE_PROGRESS
+        state = denied.next_state
+
+    later = _obligation_states(total=3, satisfied=1)
+    progress = _progress(task, governance, current, later)
+    state = observe_continuation_context(
+        state,
+        runtime_session=runtime,
+        policy=policy,
+        orchestration_state=later,
+        runtime_snapshot=runtime.snapshot,
+        progress=progress,
+    )
+    _, granted = _request_and_decide(
+        policy, policy_receipt, runtime, progress, state
+    )
+    application = runtime.apply_lease(granted.receipt)
+    state = commit_lease_application(
+        granted.next_state,
+        runtime_session=runtime,
+        policy=policy,
+        grant=granted.receipt,
+        application=application,
+        runtime_snapshot=runtime.snapshot,
+    )
+    assert state.lease_requests == policy.max_lease_requests
+    assert state.leases_granted < policy.max_leases
+    assert state.progress_state is ProgressState.PROGRESSING
+
+    _, terminal = _request_and_decide(
+        policy, policy_receipt, runtime, progress, state
+    )
+    assert terminal.receipt.denial_reason is LeaseDenialReason.LEASE_REQUEST_LIMIT
+    assert terminal.next_state.progress_state is ProgressState.LEASE_EXHAUSTED
+    assert terminal.next_state.lease_requests == policy.max_lease_requests
+    assert terminal.next_state.leases_granted == state.leases_granted
+    assert (
+        terminal.next_state.terminal_ceiling_receipt_id
+        == terminal.receipt.receipt_id
+    )
+
+    checkpoint = ContinuationCheckpoint(
+        state=terminal.next_state,
+        runtime_session=runtime,
+        policy=policy,
+        orchestration_state=later,
+        runtime_snapshot=runtime.snapshot,
+        progress=progress,
+        relevant_receipt_id=terminal.receipt.receipt_id,
+        partial_reason=ContinuationPartialReason.LEASE_CEILING_EXHAUSTED,
+    )
+    partial = ContinuationPartialReceipt(
+        state=terminal.next_state,
+        checkpoint=checkpoint,
+        reason=ContinuationPartialReason.LEASE_CEILING_EXHAUSTED,
+    )
+    assert partial.canonical_record()["status"] == "partial"
+
+    _, repeated = _request_and_decide(
+        policy, policy_receipt, runtime, progress, terminal.next_state
+    )
+    assert repeated.next_state is terminal.next_state
+    assert (
+        repeated.next_state.terminal_ceiling_receipt_id
+        == terminal.receipt.receipt_id
+    )

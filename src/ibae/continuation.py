@@ -2236,8 +2236,7 @@ class ContinuationState:
         if self.strategy_recoveries > policy.max_strategy_recoveries:
             raise ValueError("continuation state exceeds strategy recovery capacity")
         if self.terminal_ceiling_receipt_id is not None and (
-            self.leases_granted != policy.max_leases
-            or self.lease_requests != policy.max_lease_requests
+            self.lease_requests != policy.max_lease_requests
             or self.has_pending_grant
         ):
             raise ValueError(
@@ -2410,6 +2409,14 @@ def _observe_continuation_context(
 
     if type(state) is not ContinuationState:
         raise TypeError("state must be an exact ContinuationState")
+    if progress is not None:
+        if type(progress) is not ProgressRecord:
+            raise TypeError("progress must be an exact ProgressRecord")
+        # Observation is also an authority-writing boundary. Reject hostile
+        # scalar/container substitutions before any progress field can run a
+        # comparison callback, then rederive the bound claims.
+        progress._validate_authority_fields()
+        progress._validate_bound_claims()
     state._require_policy(policy)
     if state.has_pending_grant:
         raise ValueError("a pending lease must be applied before context advances")
@@ -2449,8 +2456,6 @@ def _observe_continuation_context(
     ):
         raise ValueError("runtime limits do not match applied continuation grants")
     if progress is not None:
-        if type(progress) is not ProgressRecord:
-            raise TypeError("progress must be an exact ProgressRecord")
         if (
             progress.task_id != state.task_id
             or progress.governance_id != state.governance_id
@@ -3418,6 +3423,15 @@ def _evaluate_continuation(
             and state.leases_granted >= policy.max_leases
             and state.lease_requests >= policy.max_lease_requests
         )
+        terminal_request_limit_without_request_slot = (
+            reason is LeaseDenialReason.LEASE_REQUEST_LIMIT
+            and state.leases_granted < policy.max_leases
+            and state.lease_requests >= policy.max_lease_requests
+        )
+        terminal_exhaustion_without_request_slot = (
+            terminal_ceiling_without_request_slot
+            or terminal_request_limit_without_request_slot
+        )
         denied = _deny_continuation(
             state,
             request,
@@ -3427,11 +3441,11 @@ def _evaluate_continuation(
             blocking_evidence_id=blocking_id,
             record_decision=(
                 reason is not LeaseDenialReason.UNAUTHORIZED_REQUESTER
-                and not terminal_ceiling_without_request_slot
+                and not terminal_exhaustion_without_request_slot
                 and state.lease_requests < policy.max_lease_requests
             ),
         )
-        if not terminal_ceiling_without_request_slot:
+        if not terminal_exhaustion_without_request_slot:
             return denied
         if state.terminal_ceiling_receipt_id is not None:
             return denied

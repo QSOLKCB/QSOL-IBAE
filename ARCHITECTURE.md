@@ -335,7 +335,10 @@ the original. Native lineage covers the complete canonical continuation state
 plus a non-serialized live generation; every decision, observation, or commit
 atomically retires its predecessor. Legitimate context observation and
 application commit require an exact snapshot of the matching live native
-session and are resealed through their pinned callables. Every grant/deny decision
+session and are resealed through their pinned callables. Observer progress is
+validated as exact and callback-free before comparison; Rust then compares the
+prior/result authority projection and permits only orchestration, runtime, and
+progress-observation endpoints to change. Every grant/deny decision
 advances a separate continuation logical tick.
 Accepted native application advances the runtime logical tick once while
 consuming no tool resource counter or execution history; rejected application
@@ -345,9 +348,10 @@ Period-1/2/3 cycle evidence is recomputed from the live native history rather
 than trusted as optional caller input. Policies retain the full six-transition
 two-period window and reserve at least one request decision beyond scheduled
 leases for ordinary denial handling. If ordinary decisions are consumed first,
-the first post-schedule request installs one exact terminal-ceiling denial
-receipt marker in native lineage without increasing request counts, ticks,
-aggregates, or retained decision history; repeats are state-neutral. The compact
+the first subsequent exact request installs one exact terminal request-limit
+receipt marker in native lineage; if both ledgers are exhausted, the marker
+cites the lease-ceiling denial instead. Neither path increases request counts,
+ticks, aggregates, or retained decision history; repeats are state-neutral. The compact
 projection exposes both
 remaining schedule slots and remaining request decisions, so exhausted request
 or schedule capacity cannot advertise an impossible recovery; a missing prior
@@ -706,7 +710,9 @@ A self-consistent reconstructed grant or equal-ID duplicate session cannot
 extend limits. Native decision lineage protects the strategy-recovery counter,
 decision/progress semantics, the one-shot terminal-ceiling denial marker, and
 the live strategy identity, while each measurable progress identity is
-single-use for progress-based admission. The candidate implements
+single-use for progress-based admission. The same one-shot terminal marker and
+normal partial path apply when the request cap is exhausted before every
+scheduled lease is granted. The candidate implements
 endpoint-checked fixed-shape continuation evidence,
 request-and-schedule-aware compact AI recovery state, exact structural
 in-process checkpoint/resume,

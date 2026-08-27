@@ -1225,6 +1225,37 @@ fn validate_evaluated_strategy_authority(
     Ok(())
 }
 
+fn validate_context_observation_authority(
+    prior_lineage: &str,
+    observed_lineage: &str,
+) -> Result<(), ()> {
+    let prior = parse_runtime_canonical(prior_lineage).map_err(|_| ())?;
+    let observed = parse_runtime_canonical(observed_lineage).map_err(|_| ())?;
+    let mut prior = prior.as_object().ok_or(())?.clone();
+    let mut observed = observed.as_object().ok_or(())?.clone();
+    // Context observation may advance only these exact observation endpoints.
+    // Decision, grant, recovery, consumed-progress, terminal, and policy
+    // authority must remain byte-for-byte equivalent.
+    for name in [
+        "last_external_progress_endpoint_id",
+        "last_progress_classification",
+        "last_progress_id",
+        "orchestration_state_id",
+        "progress_aggregate_id",
+        "progress_event_count",
+        "progress_state",
+        "runtime_state_id",
+    ] {
+        if prior.remove(name).is_none() || observed.remove(name).is_none() {
+            return Err(());
+        }
+    }
+    if prior != observed {
+        return Err(());
+    }
+    Ok(())
+}
+
 /// Non-constructible in-process proof that the exact live native session
 /// admitted one exact governance grant for application. It is not producer
 /// authentication, a signature, or durable remote attestation.
@@ -2218,6 +2249,37 @@ impl NativeContinuationStateSeal {
         self.binding.observer_integrity.validate(py)?;
         self.require_current_lineage(py, state)?;
         self.binding.observer_integrity.validate(py)?;
+        if !orchestration_state
+            .get_type()
+            .is(self.binding.orchestration_state_type.bind(py))
+        {
+            return Err(PyValueError::new_err(
+                "continuation orchestration state must have the exact trusted type",
+            ));
+        }
+        if let Some(value) = progress {
+            if !value
+                .get_type()
+                .is(self.binding.progress_record_type.bind(py))
+            {
+                return Err(PyValueError::new_err(
+                    "continuation progress must have the exact trusted type",
+                ));
+            }
+            value.call_method0("_validate_authority_fields")?;
+            value.call_method0("_validate_bound_claims")?;
+            self.binding.observer_integrity.validate(py)?;
+        }
+        if let Some(value) = strategy {
+            if !value
+                .get_type()
+                .is(self.binding.strategy_materialization_type.bind(py))
+            {
+                return Err(PyValueError::new_err(
+                    "continuation strategy must have the exact trusted type",
+                ));
+            }
+        }
         {
             let native: PyRef<'_, NativeRuntimeSession> = native_session.extract()?;
             native.require_live_continuation_snapshot(py, runtime_snapshot, &self.binding)?;
@@ -2237,6 +2299,7 @@ impl NativeContinuationStateSeal {
             kwargs.set_item("strategy", value)?;
         }
         let observed = self.observer.bind(py).call((state,), Some(&kwargs))?;
+        self.binding.observer_integrity.validate(py)?;
         if !observed
             .get_type()
             .is(self.binding.continuation_state_type.bind(py))
@@ -2248,6 +2311,10 @@ impl NativeContinuationStateSeal {
         let canonical_lineage: String =
             observed.call_method0("_decision_lineage_text")?.extract()?;
         self.binding.observer_integrity.validate(py)?;
+        validate_context_observation_authority(self.canonical_lineage.as_ref(), &canonical_lineage)
+            .map_err(|_| {
+                PyValueError::new_err("continuation observer changed non-observation authority")
+            })?;
         let canonical_lineage: Arc<str> = Arc::from(canonical_lineage);
         let lineage_seal = Py::new(
             py,
@@ -2262,6 +2329,7 @@ impl NativeContinuationStateSeal {
         let sealed = observed
             .call_method1("_with_native_lineage", (lineage_seal,))?
             .unbind();
+        self.binding.observer_integrity.validate(py)?;
         transition.commit(canonical_lineage)?;
         Ok(sealed)
     }

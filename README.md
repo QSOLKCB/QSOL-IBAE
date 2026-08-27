@@ -111,8 +111,8 @@ continuation without changing those frozen v0.2-v0.4 records:
   finite strategy-recovery allowance;
 - one task/session continuation ledger with deterministic grant/deny receipts,
   native-bound decision/recovery semantics, single-use measurable-progress
-  endpoints, one lineage-bound terminal-ceiling denial marker outside an
-  already exhausted ordinary request ledger, request-and-schedule-aware compact
+  endpoints, one lineage-bound terminal effective-ceiling denial marker outside
+  an already exhausted ordinary request ledger, request-and-schedule-aware compact
   AI recovery state, live progress-state refresh, and no self-extension by runtime, tools, or future
   workers;
 - a once-issued, session-scoped native supervisor request capability separate
@@ -128,8 +128,10 @@ continuation without changing those frozen v0.2-v0.4 records:
   registered context types and rederived, authority-bound progress after Rust
   derives its decision/progress seeds, one live native lineage
   generation that retires every predecessor, exact live-session checks for
-  context observation/application commit and checkpoint snapshots, benchmark
-  objects kept entirely outside governance evaluation, exact request seals,
+  context observation/application commit and checkpoint snapshots, exact
+  callback-free progress validation at observer entry plus a native
+  prior/result projection that permits only observation endpoints to change,
+  benchmark objects kept entirely outside governance evaluation, exact request seals,
   and an opt-in
   Rust `apply_lease` transition
   that independently validates the authorized request and full governance
@@ -145,8 +147,9 @@ continuation without changing those frozen v0.2-v0.4 records:
   evidence receipt whose count/aggregate must match the sealed full progress
   history, checkpoint-evidence-bound semantic continuation partial
   receipts whose reason is validated when the checkpoint is created and whose
-  terminal lease-ceiling path cites—and revalidates on consumption—the exact
-  lineage-bound denial marker, and
+  request- or schedule-cap terminal path cites—and revalidates on
+  consumption—the exact lineage-bound denial marker, providing a normal partial
+  even when ordinary denials consumed the request ledger first, and
   watchdog observations whose exact lease-exhaustion flag is
   identity-bearing but cannot claim completion;
 - exact experimental `tiny`, `standard`, `extended`, and `repository` profiles

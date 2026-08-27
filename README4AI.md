@@ -57,9 +57,10 @@ evidence; paraphrase is excluded from identity. Governance precommits an exact
 initial budget, finite indexed schedule, cumulative ceiling, request cap, and
 strategy-recovery cap; initial history retains six transitions and the request
 cap reserves ordinary denial capacity beyond the schedule. If ordinary
-decisions are consumed before the schedule, one canonical terminal-ceiling
-denial receipt marker enters native lineage without increasing the ordinary
-ledger; repeats are state-neutral. The supervisor requests, governance grants or denies,
+decisions are consumed before the schedule, one canonical terminal
+request-limit receipt marker enters native lineage without increasing the
+ordinary ledger; if both ledgers are exhausted, it cites the lease-ceiling
+denial instead. Repeats are state-neutral. The supervisor requests, governance grants or denies,
 and an opt-in Rust session applies only a full validated governance-issued
 grant. Trusted module initialization captures the exact evaluator, context
 observer, and application committer once in native storage and removes the
@@ -80,8 +81,11 @@ context types and rederived progress bound to the native authority, then is
 sealed only after Rust derives its exact decision/progress seeds; each reseal
 advances the sole live native generation and retires its predecessor; and
 context observation/application commit and checkpoint construction/resume
-require the matching live native session and complete snapshot; benchmark
-objects are not inspected or forwarded into governance evaluation;
+require the matching live native session and complete snapshot. Observer entry
+validates callback-free exact progress before comparison, and Rust permits only
+the closed observation endpoints to differ between prior and resulting
+lineages; consumed-progress and other decision authority must remain identical.
+Benchmark objects are not inspected or forwarded into governance evaluation;
 a public principal label,
 reconstructed record, mutable Python validator, or equal-ID duplicate session
 is insufficient. An exact
@@ -102,7 +106,9 @@ effective capacity and reject a false semantic partial reason at checkpoint
 construction; semantic partial evidence derives from the
 checkpoint, terminal ceiling partials cite the exact lineage marker receipt,
 and partial construction revalidates that marker against the live state even
-if a frozen checkpoint was mutated. Watchdog lease exhaustion is identity-bearing, checked against
+if a frozen checkpoint was mutated. Request-cap exhaustion with ungranted
+schedule slots also binds this one-shot terminal marker and has the same normal
+non-watchdog partial path. Watchdog lease exhaustion is identity-bearing, checked against
 effective checkpoint capacity, but
 non-authoritative. Existing v0.2-v0.4 schemas and fixture bytes remain
 unchanged.

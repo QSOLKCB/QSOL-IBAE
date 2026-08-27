@@ -49,6 +49,11 @@ mutated in place. Native evaluation requires the exact trusted request type
 before invoking request methods, rechecks integrity after caller-controlled
 callbacks, and rechecks the complete evaluator graph immediately after the
 evaluator returns and before reading or sealing any evaluator output. The
+observer likewise validates an exact callback-free progress record before its
+first comparison. After observation, Rust compares the prior and resulting
+canonical lineages after removing only the closed observation-endpoint fields;
+decision, grant, recovery, consumed-progress, terminal, and policy authority
+must remain identical before resealing. The
 supervisor capability can seal an
 exact canonical request but cannot select those functions. The request seal is
 likewise non-constructible and is the only entry to the pinned evaluator. Its
@@ -242,9 +247,10 @@ component. Cumulative grants cannot exceed the precommitted continuation
 capacity or total ceiling. The request cap must be strictly greater than the
 number of scheduled leases, providing ordinary denial capacity beyond the
 schedule. If that ordinary capacity is consumed before the schedule becomes
-exhausted, the first post-schedule request may bind exactly one terminal
-lease-ceiling denial receipt into native lineage without enlarging the ordinary
-request ledger.
+exhausted, the first subsequent exact request may bind exactly one terminal
+request-limit denial receipt into native lineage without enlarging the ordinary
+request ledger; if both ledgers are exhausted, the corresponding marker cites
+the lease-ceiling denial instead.
 
 ### Experimental named profiles
 
@@ -290,12 +296,16 @@ resources, and schedule/ceiling overflow.
 Each admitted request decision consumes one continuation request and advances
 the continuation logical tick once, whether granted or denied. After the
 precommitted request cap has been reached, another request returns a stable
-request-limit denial without advancing state, tick, or counters. This prevents
-denial spam from becoming unbounded retained authority state.
+request-limit denial without advancing tick or counters. The first exact valid
+request after exhaustion installs one terminal marker and transitions to
+`lease_exhausted`; later requests are state-neutral. This prevents denial spam
+from becoming unbounded retained authority state while preserving a normal
+partial-finalization path.
 
-There is one narrow terminal case: when every scheduled lease and every
-ordinary request decision are already consumed, the first additional request
-returns a lease-ceiling denial receipt and stores that exact
+There are two no-decision-slot terminal cases: the schedule and request ledger
+may both be exhausted, or ordinary denials may exhaust the request ledger while
+scheduled leases remain. The first additional exact valid request returns the
+corresponding lease-ceiling or request-limit denial and stores that exact
 receipt identity in the canonical `terminal_ceiling_receipt_id` marker while
 transitioning to `lease_exhausted`. The marker is protected by the next native
 lineage generation but does not increment the request/denial ledger, logical
@@ -447,7 +457,7 @@ continuation state's status. A supplied strategy must equal the live state's
 strategy even when that live identity is `null`, and checkpoint
 `leases_remaining` is the minimum of request decisions and schedule slots. If
 a semantic partial reason is supplied, checkpoint construction itself requires
-the matching last ordinary denial or, for the special terminal ceiling path,
+the matching last ordinary denial or, for a no-decision-slot terminal path,
 the exact lineage-bound `terminal_ceiling_receipt_id` as its relevant receipt,
 plus any required lease/recovery exhaustion. A false reason can never become a
 structurally valid checkpoint. Resume reconstruction and partial finalization
