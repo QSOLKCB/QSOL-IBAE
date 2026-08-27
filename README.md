@@ -119,9 +119,11 @@ continuation without changing those frozen v0.2-v0.4 records:
   and application committer captured once in native storage during trusted
   module initialization and cloned by the dedicated continuation-session
   factory, integrity checks over mutable Python function dependencies even
-  outside the package, one-shot native sealing of the complete initial state
-  after Rust derives its decision seed, exact live-session checks for context
-  observation/application commit, exact request seals, and an opt-in
+  outside the package and behind descriptors, exact request typing plus
+  post-callback revalidation, one-shot native sealing of the complete initial
+  state after Rust derives its decision/progress seeds, one live native lineage
+  generation that retires every predecessor, exact live-session checks for
+  context observation/application commit, exact request seals, and an opt-in
   Rust `apply_lease` transition
   that independently validates the authorized request and full governance
   grant against the live per-instance session before issuing its
@@ -129,7 +131,8 @@ continuation without changing those frozen v0.2-v0.4 records:
   logical tick and rejects unissued/replayed/forged/stale or equal-ID
   cross-session authority without mutation;
 - in-process structural checkpoints, a separate fixed-shape continuation
-  evidence receipt, checkpoint-evidence-bound semantic continuation partial
+  evidence receipt whose count/aggregate must match the sealed full progress
+  history, checkpoint-evidence-bound semantic continuation partial
   receipts whose reason is validated when the checkpoint is created, and
   watchdog observations whose exact lease-exhaustion flag is
   identity-bearing but cannot claim completion;

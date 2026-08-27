@@ -129,13 +129,16 @@ native storage and removes the bootstrap entrypoint. Continuation-session
 creation clones only those originals into a Rust-private per-instance binding and returns a separate
 once-issued, session-scoped supervisor request capability.
 The binding records the captured functions' code, every reachable mutable
-Python function dependency regardless of module, referenced globals and
-default/closure bindings, and reachable IBAE helper/class definitions and
-rejects session creation or evaluator/observer/committer entry if any are
-mutated in place. It seals the complete initial zero-decision continuation state
-only after independently deriving its decision-aggregate seed; every later
-state must preserve full native lineage. Observation and application commit
-require an exact snapshot of that same live native session.
+Python function dependency regardless of module, underlying descriptor
+functions, referenced globals and default/closure bindings, and reachable IBAE
+helper/class definitions and rejects session creation or
+evaluator/observer/committer entry if any are mutated in place. Native request
+entry requires the exact trusted type before callbacks and rechecks integrity
+after them. It seals the complete initial zero-decision continuation state only
+after independently deriving its decision and progress aggregate seeds; every
+later state must preserve full native lineage. Each reseal advances one
+non-serialized live generation and retires its predecessor. Observation and
+application commit require an exact snapshot of that same live native session.
 The dedicated continuation factory extracts it before returning the runtime;
 the generic constructor rejects continuation arguments, and the runtime facade
 does not expose its native handle. The requester label alone is not authority.

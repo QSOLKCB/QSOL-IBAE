@@ -63,19 +63,22 @@ observer, and application committer once in native storage and removes the
 bootstrap entrypoint. Session creation clones only those originals into a
 non-serialized per-instance native authority and
 returns a separate once-issued, session-scoped supervisor request capability;
-a native integrity graph detects in-place mutation of their bound code and all
-reachable mutable Python function dependencies regardless of module. The
-complete initial zero-decision state is sealed only after Rust derives its exact
-decision seed, and context observation/application commit require the matching
-live native session and snapshot;
+a native integrity graph detects in-place mutation of their bound code, all
+reachable mutable Python function dependencies regardless of module, and
+descriptor-backed functions. Exact request typing precedes callbacks and native
+integrity is rechecked afterward. The complete initial zero-decision state is
+sealed only after Rust derives its exact decision/progress seeds; each reseal
+advances the sole live native generation and retires its predecessor; and
+context observation/application commit require the matching live native session
+and snapshot;
 a public principal label,
 reconstructed record, mutable Python validator, or equal-ID duplicate session
 is insufficient. An exact
 request seal enters the pinned evaluator, then Rust validates the request and
 grant against the live session before issuing the grant seal used by
 `apply_lease`. Native lineage protects recovery and decision/progress semantics,
-and each measurable progress identity is single-use for progress-based
-admission. An accepted
+including the full ordered progress count/aggregate, and each measurable
+progress identity is single-use for progress-based admission. An accepted
 application changes exact limits plus one runtime logical tick while consuming no
 tool/runtime resource counter or history; rejection is state-neutral. The
 compact state exposes effective remaining request and schedule decisions.

@@ -310,20 +310,23 @@ committer once in native storage and removes the bootstrap entrypoint.
 Continuation-session creation clones only those originals into a non-serialized
 per-instance native authority and returns a separate once-issued,
 session-scoped supervisor request capability. Native integrity records cover
-their bound code, every
-reachable mutable Python function dependency regardless of module, referenced
-globals and default/closure bindings, and reachable IBAE helper/class
-definitions; every authority entry fails closed on in-place mutation. The
-complete initial zero-decision state is sealed once by the native session after
-Rust independently derives its exact decision-aggregate seed.
+their bound code, every reachable mutable Python function dependency regardless
+of module, descriptor functions behind class/static methods and properties,
+referenced globals and default/closure bindings, and reachable IBAE helper/class
+definitions; every authority entry fails closed on in-place mutation. Exact
+request typing precedes request callbacks and integrity is rechecked after each
+callback. The complete initial zero-decision state is sealed once by the native
+session after Rust independently derives its exact decision and progress
+aggregate seeds.
 The public supervisor label cannot substitute for it. Exact request seals enter
 the pinned evaluator, and Rust independently validates the resulting full grant
 against the authorized request and live session before issuing a grant seal.
 An equal-ID duplicate session has distinct native authority and cannot issue for
-the original. Native lineage covers the complete canonical continuation state;
-legitimate context observation and application commit require an exact snapshot
-of the matching live native session and are resealed through their pinned
-callables. Every grant/deny decision
+the original. Native lineage covers the complete canonical continuation state
+plus a non-serialized live generation; every decision, observation, or commit
+atomically retires its predecessor. Legitimate context observation and
+application commit require an exact snapshot of the matching live native
+session and are resealed through their pinned callables. Every grant/deny decision
 advances a separate continuation logical tick.
 Accepted native application advances the runtime logical tick once while
 consuming no tool resource counter or execution history; rejected application
@@ -338,6 +341,8 @@ or schedule capacity cannot advertise an impossible recovery; a missing prior
 strategy identity likewise suppresses material-strategy recovery. Checkpoints
 use that same effective minimum and cannot bind a strategy absent from live state;
 ordinary progress observation refreshes stalled/progressing/complete state.
+The sealed state also advances an ordered progress-event count and aggregate,
+so compact evidence must supply the complete trace rather than a matching suffix.
 
 The `tiny`, `standard`, `extended`, and `repository` profiles are exact
 version-1 experimental fixtures, not universal constants. Equal, front-loaded,

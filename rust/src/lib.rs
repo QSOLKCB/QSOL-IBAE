@@ -13,7 +13,7 @@ use pyo3::types::{PyAny, PyBool, PyDict, PyModule, PyTuple, PyType};
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 const PROTOCOL_VERSION: &str = "IBAE-RUNTIME-PROTOCOL-V1";
 const COMMAND_DOMAIN: &str = "ibae.runtime-command-id.v1";
@@ -29,6 +29,9 @@ const CONTINUATION_POLICY_ID_DOMAIN: &str = "ibae.continuation-policy-id.v1";
 const CONTINUATION_POLICY_RECEIPT_ID_DOMAIN: &str = "ibae.continuation-policy-receipt-id.v1";
 const CONTINUATION_REQUEST_ID_DOMAIN: &str = "ibae.continuation-request-id.v1";
 const CONTINUATION_DECISION_AGGREGATE_DOMAIN: &str = "ibae.continuation-decision-aggregate.v1";
+const CONTINUATION_EVIDENCE_VERSION: &str = "IBAE-CONTINUATION-EVIDENCE-V1";
+const CONTINUATION_EVIDENCE_PROGRESS_AGGREGATE_DOMAIN: &str =
+    "ibae.continuation-progress-aggregate.v1";
 const LEASE_GRANT_ID_DOMAIN: &str = "ibae.continuation-lease-grant-id.v1";
 const LEASE_GRANT_RECEIPT_ID_DOMAIN: &str = "ibae.continuation-lease-grant-receipt-id.v1";
 const LEASE_APPLICATION_ID_DOMAIN: &str = "ibae.runtime-lease-application-id.v1";
@@ -198,6 +201,26 @@ fn domain_fingerprint(domain: &str, canonical_payload: &str) -> String {
         write!(&mut output, "{byte:02x}").expect("writing to String cannot fail");
     }
     output
+}
+
+fn initial_continuation_progress_aggregate() -> String {
+    let payload = canonical_value(&json!({
+        "item_type": "seed",
+        "protocol_version": CONTINUATION_EVIDENCE_VERSION,
+    }))
+    .expect("the continuation progress aggregate seed is canonicalizable");
+    domain_fingerprint(CONTINUATION_EVIDENCE_PROGRESS_AGGREGATE_DOMAIN, &payload)
+}
+
+fn advance_continuation_progress_aggregate(prior: &str, progress_id: &str, ordinal: u64) -> String {
+    let payload = canonical_value(&json!({
+        "item_type": "progress",
+        "ordinal": ordinal,
+        "prior": prior,
+        "progress_id": progress_id,
+    }))
+    .expect("the continuation progress aggregate item is canonicalizable");
+    domain_fingerprint(CONTINUATION_EVIDENCE_PROGRESS_AGGREGATE_DOMAIN, &payload)
 }
 
 fn is_fingerprint(value: &str) -> bool {
@@ -1158,6 +1181,7 @@ struct ContinuationAuthorityBinding {
     progress_contract_id: String,
     runtime_session_id: String,
     continuation_state_type: Py<PyAny>,
+    continuation_request_type: Py<PyAny>,
     runtime_snapshot_type: Py<PyAny>,
     evaluator: Py<PyAny>,
     observer: Py<PyAny>,
@@ -1165,6 +1189,29 @@ struct ContinuationAuthorityBinding {
     evaluator_integrity: Arc<PythonFunctionIntegrity>,
     observer_integrity: Arc<PythonFunctionIntegrity>,
     committer_integrity: Arc<PythonFunctionIntegrity>,
+    live_lineage: Mutex<LiveContinuationLineageState>,
+}
+
+#[derive(Clone)]
+struct LiveContinuationLineage {
+    generation: u64,
+    canonical: Arc<str>,
+}
+
+enum LiveContinuationLineageState {
+    Uninitialized,
+    Ready(LiveContinuationLineage),
+    Transitioning {
+        prior: Option<LiveContinuationLineage>,
+        next_generation: u64,
+    },
+}
+
+struct ContinuationLineageTransition<'a> {
+    binding: &'a ContinuationAuthorityBinding,
+    prior: Option<LiveContinuationLineage>,
+    next_generation: u64,
+    finished: bool,
 }
 
 /// Process-local trusted continuation engine captured exactly once while the
@@ -1177,6 +1224,7 @@ struct ContinuationEngine {
     observer: Py<PyAny>,
     committer: Py<PyAny>,
     continuation_state_type: Py<PyAny>,
+    continuation_request_type: Py<PyAny>,
     runtime_snapshot_type: Py<PyAny>,
     evaluator_integrity: Arc<PythonFunctionIntegrity>,
     observer_integrity: Arc<PythonFunctionIntegrity>,
@@ -1184,6 +1232,158 @@ struct ContinuationEngine {
 }
 
 static CONTINUATION_ENGINE: GILOnceCell<ContinuationEngine> = GILOnceCell::new();
+
+impl ContinuationAuthorityBinding {
+    fn begin_initial_lineage(&self) -> PyResult<ContinuationLineageTransition<'_>> {
+        let mut live = self
+            .live_lineage
+            .lock()
+            .map_err(|_| PyValueError::new_err("native continuation lineage lock failed"))?;
+        if !matches!(*live, LiveContinuationLineageState::Uninitialized) {
+            return Err(PyValueError::new_err(
+                "initial continuation lineage was already established",
+            ));
+        }
+        *live = LiveContinuationLineageState::Transitioning {
+            prior: None,
+            next_generation: 0,
+        };
+        Ok(ContinuationLineageTransition {
+            binding: self,
+            prior: None,
+            next_generation: 0,
+            finished: false,
+        })
+    }
+
+    fn begin_lineage_transition(
+        &self,
+        generation: u64,
+        canonical: &str,
+    ) -> PyResult<ContinuationLineageTransition<'_>> {
+        let mut live = self
+            .live_lineage
+            .lock()
+            .map_err(|_| PyValueError::new_err("native continuation lineage lock failed"))?;
+        let prior = match &*live {
+            LiveContinuationLineageState::Ready(item)
+                if item.generation == generation && item.canonical.as_ref() == canonical =>
+            {
+                item.clone()
+            }
+            LiveContinuationLineageState::Transitioning { .. } => {
+                return Err(PyValueError::new_err(
+                    "native continuation lineage transition is already in progress",
+                ));
+            }
+            _ => {
+                return Err(PyValueError::new_err(
+                    "continuation state seal is superseded by the live native state",
+                ));
+            }
+        };
+        let next_generation = generation.checked_add(1).ok_or_else(|| {
+            PyValueError::new_err("native continuation lineage generation is exhausted")
+        })?;
+        *live = LiveContinuationLineageState::Transitioning {
+            prior: Some(prior.clone()),
+            next_generation,
+        };
+        Ok(ContinuationLineageTransition {
+            binding: self,
+            prior: Some(prior),
+            next_generation,
+            finished: false,
+        })
+    }
+
+    fn validates_live_lineage(&self, generation: u64, canonical: &str) -> bool {
+        let Ok(live) = self.live_lineage.lock() else {
+            return false;
+        };
+        match &*live {
+            LiveContinuationLineageState::Ready(item) => {
+                item.generation == generation && item.canonical.as_ref() == canonical
+            }
+            LiveContinuationLineageState::Transitioning {
+                prior,
+                next_generation,
+            } => {
+                prior.as_ref().is_some_and(|item| {
+                    item.generation == generation && item.canonical.as_ref() == canonical
+                }) || *next_generation == generation
+            }
+            LiveContinuationLineageState::Uninitialized => false,
+        }
+    }
+}
+
+impl ContinuationLineageTransition<'_> {
+    fn next_generation(&self) -> u64 {
+        self.next_generation
+    }
+
+    fn commit(mut self, canonical: Arc<str>) -> PyResult<()> {
+        let mut live = self
+            .binding
+            .live_lineage
+            .lock()
+            .map_err(|_| PyValueError::new_err("native continuation lineage lock failed"))?;
+        match &*live {
+            LiveContinuationLineageState::Transitioning {
+                next_generation, ..
+            } if *next_generation == self.next_generation => {}
+            _ => {
+                return Err(PyValueError::new_err(
+                    "native continuation lineage transition was lost",
+                ));
+            }
+        }
+        *live = LiveContinuationLineageState::Ready(LiveContinuationLineage {
+            generation: self.next_generation,
+            canonical,
+        });
+        self.finished = true;
+        Ok(())
+    }
+
+    fn restore(mut self) -> PyResult<()> {
+        self.restore_inner()?;
+        self.finished = true;
+        Ok(())
+    }
+
+    fn restore_inner(&self) -> PyResult<()> {
+        let mut live = self
+            .binding
+            .live_lineage
+            .lock()
+            .map_err(|_| PyValueError::new_err("native continuation lineage lock failed"))?;
+        match &*live {
+            LiveContinuationLineageState::Transitioning {
+                next_generation, ..
+            } if *next_generation == self.next_generation => {}
+            _ => {
+                return Err(PyValueError::new_err(
+                    "native continuation lineage transition was lost",
+                ));
+            }
+        }
+        *live = match &self.prior {
+            Some(prior) => LiveContinuationLineageState::Ready(prior.clone()),
+            None => LiveContinuationLineageState::Uninitialized,
+        };
+        Ok(())
+    }
+}
+
+impl Drop for ContinuationLineageTransition<'_> {
+    fn drop(&mut self) {
+        if !self.finished {
+            let _ = self.restore_inner();
+        }
+    }
+}
 
 struct PythonIdentityBinding {
     name: String,
@@ -1211,9 +1411,15 @@ struct PythonClassIntegrity {
     entries: Vec<PythonIdentityBinding>,
 }
 
+struct PythonDescriptorIntegrity {
+    descriptor: Py<PyAny>,
+    functions: Vec<PythonIdentityBinding>,
+}
+
 enum PythonIntegrityNode {
     Function(PythonFunctionIntegrity),
     Class(PythonClassIntegrity),
+    Descriptor(PythonDescriptorIntegrity),
 }
 
 fn continuation_integrity_error() -> PyErr {
@@ -1262,6 +1468,30 @@ fn capture_integrity_node(
     if value.hasattr("__code__")? && value.hasattr("__globals__")? {
         return Ok(Some(Box::new(PythonIntegrityNode::Function(
             PythonFunctionIntegrity::capture(py, value, visited)?,
+        ))));
+    }
+    let mut descriptor_functions = Vec::new();
+    for name in ["__func__", "fget", "fset", "fdel"] {
+        if !value.hasattr(name)? {
+            continue;
+        }
+        let function = value.getattr(name)?;
+        if function.is_none() {
+            continue;
+        }
+        let nested = capture_integrity_node(py, &function, visited)?;
+        descriptor_functions.push(PythonIdentityBinding {
+            name: name.to_owned(),
+            value: function.unbind(),
+            nested,
+        });
+    }
+    if !descriptor_functions.is_empty() {
+        return Ok(Some(Box::new(PythonIntegrityNode::Descriptor(
+            PythonDescriptorIntegrity {
+                descriptor: value.clone().unbind(),
+                functions: descriptor_functions,
+            },
         ))));
     }
     if is_ibae_python_object(value) && value.downcast::<PyType>().is_ok() {
@@ -1419,11 +1649,30 @@ impl PythonClassIntegrity {
     }
 }
 
+impl PythonDescriptorIntegrity {
+    fn validate(&self, py: Python<'_>) -> PyResult<()> {
+        let descriptor = self.descriptor.bind(py);
+        for function in &self.functions {
+            let current = descriptor
+                .getattr(function.name.as_str())
+                .map_err(|_| continuation_integrity_error())?;
+            if !current.is(function.value.bind(py)) {
+                return Err(continuation_integrity_error());
+            }
+            if let Some(nested) = &function.nested {
+                nested.validate(py)?;
+            }
+        }
+        Ok(())
+    }
+}
+
 impl PythonIntegrityNode {
     fn validate(&self, py: Python<'_>) -> PyResult<()> {
         match self {
             Self::Function(value) => value.validate(py),
             Self::Class(value) => value.validate(py),
+            Self::Descriptor(value) => value.validate(py),
         }
     }
 }
@@ -1587,8 +1836,25 @@ impl NativeContinuationRequestSeal {
         blocking_governance_violation_id: Option<&str>,
         benchmark_observation: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Py<PyAny>> {
+        if !request
+            .get_type()
+            .is(self.binding.continuation_request_type.bind(py))
+        {
+            return Err(PyValueError::new_err(
+                "continuation request must have the exact trusted type",
+            ));
+        }
+        if !state
+            .get_type()
+            .is(self.binding.continuation_state_type.bind(py))
+        {
+            return Err(PyValueError::new_err(
+                "continuation state must have the exact trusted type",
+            ));
+        }
         self.binding.evaluator_integrity.validate(py)?;
         let canonical_request: String = request.call_method0("_canonical_text")?.extract()?;
+        self.binding.evaluator_integrity.validate(py)?;
         if canonical_request != self.canonical_request.as_ref() {
             return Err(PyValueError::new_err(
                 "continuation request seal does not match request",
@@ -1603,14 +1869,23 @@ impl NativeContinuationRequestSeal {
             }
         }
         let lineage = state.call_method0("_native_lineage_seal")?;
-        if !lineage.is_none() {
-            let lineage: PyRef<'_, NativeContinuationStateSeal> = lineage.extract()?;
-            if !lineage.matches_continuation_authority(&self.binding) {
-                return Err(PyValueError::new_err(
-                    "continuation state lineage does not bind native session",
-                ));
-            }
+        self.binding.evaluator_integrity.validate(py)?;
+        if lineage.is_none() {
+            return Err(PyValueError::new_err(
+                "continuation state lacks native lineage",
+            ));
         }
+        let lineage: PyRef<'_, NativeContinuationStateSeal> = lineage.extract()?;
+        if !lineage.matches_continuation_authority(&self.binding) {
+            return Err(PyValueError::new_err(
+                "continuation state lineage does not bind native session",
+            ));
+        }
+        lineage.require_current_lineage(py, state)?;
+        self.binding.evaluator_integrity.validate(py)?;
+        let transition = self
+            .binding
+            .begin_lineage_transition(lineage.generation, lineage.canonical_lineage.as_ref())?;
 
         let kwargs = PyDict::new_bound(py);
         kwargs.set_item("runtime_session", runtime_session)?;
@@ -1654,26 +1929,39 @@ impl NativeContinuationRequestSeal {
             receipt
         };
 
-        let sealed_state = if next_state.is(state) {
-            next_state
+        if !next_state
+            .get_type()
+            .is(self.binding.continuation_state_type.bind(py))
+        {
+            return Err(PyValueError::new_err(
+                "continuation evaluator returned an invalid state type",
+            ));
+        }
+        if next_state.is(state) {
+            let finalized = raw.call_method1("_finalize", (next_state, sealed_receipt))?;
+            transition.restore()?;
+            Ok(finalized.unbind())
         } else {
             let canonical_lineage: String = next_state
                 .call_method0("_decision_lineage_text")?
                 .extract()?;
+            self.binding.evaluator_integrity.validate(py)?;
+            let canonical_lineage: Arc<str> = Arc::from(canonical_lineage);
             let lineage_seal = Py::new(
                 py,
                 NativeContinuationStateSeal {
                     binding: Arc::clone(&self.binding),
-                    canonical_lineage: Arc::from(canonical_lineage),
+                    generation: transition.next_generation(),
+                    canonical_lineage: Arc::clone(&canonical_lineage),
                     observer: self.observer.clone_ref(py),
                     committer: self.committer.clone_ref(py),
                 },
             )?;
-            next_state.call_method1("_with_native_lineage", (lineage_seal,))?
-        };
-        Ok(raw
-            .call_method1("_finalize", (sealed_state, sealed_receipt))?
-            .unbind())
+            let sealed_state = next_state.call_method1("_with_native_lineage", (lineage_seal,))?;
+            let finalized = raw.call_method1("_finalize", (sealed_state, sealed_receipt))?;
+            transition.commit(canonical_lineage)?;
+            Ok(finalized.unbind())
+        }
     }
 }
 
@@ -1687,6 +1975,7 @@ impl NativeContinuationRequestSeal {
 )]
 struct NativeContinuationStateSeal {
     binding: Arc<ContinuationAuthorityBinding>,
+    generation: u64,
     canonical_lineage: Arc<str>,
     observer: Py<PyAny>,
     committer: Py<PyAny>,
@@ -1696,6 +1985,9 @@ struct NativeContinuationStateSeal {
 impl NativeContinuationStateSeal {
     fn validates(&self, canonical_lineage: &str) -> bool {
         self.canonical_lineage.as_ref() == canonical_lineage
+            && self
+                .binding
+                .validates_live_lineage(self.generation, canonical_lineage)
     }
 
     #[pyo3(signature = (
@@ -1721,10 +2013,15 @@ impl NativeContinuationStateSeal {
     ) -> PyResult<Py<PyAny>> {
         self.binding.observer_integrity.validate(py)?;
         self.require_current_lineage(py, state)?;
+        self.binding.observer_integrity.validate(py)?;
         {
             let native: PyRef<'_, NativeRuntimeSession> = native_session.extract()?;
             native.require_live_continuation_snapshot(py, runtime_snapshot, &self.binding)?;
         }
+        self.binding.observer_integrity.validate(py)?;
+        let transition = self
+            .binding
+            .begin_lineage_transition(self.generation, self.canonical_lineage.as_ref())?;
         let kwargs = PyDict::new_bound(py);
         kwargs.set_item("policy", policy)?;
         kwargs.set_item("orchestration_state", orchestration_state)?;
@@ -1736,20 +2033,33 @@ impl NativeContinuationStateSeal {
             kwargs.set_item("strategy", value)?;
         }
         let observed = self.observer.bind(py).call((state,), Some(&kwargs))?;
+        if !observed
+            .get_type()
+            .is(self.binding.continuation_state_type.bind(py))
+        {
+            return Err(PyValueError::new_err(
+                "continuation observer returned an invalid state type",
+            ));
+        }
         let canonical_lineage: String =
             observed.call_method0("_decision_lineage_text")?.extract()?;
+        self.binding.observer_integrity.validate(py)?;
+        let canonical_lineage: Arc<str> = Arc::from(canonical_lineage);
         let lineage_seal = Py::new(
             py,
             NativeContinuationStateSeal {
                 binding: Arc::clone(&self.binding),
-                canonical_lineage: Arc::from(canonical_lineage),
+                generation: transition.next_generation(),
+                canonical_lineage: Arc::clone(&canonical_lineage),
                 observer: self.observer.clone_ref(py),
                 committer: self.committer.clone_ref(py),
             },
         )?;
-        Ok(observed
+        let sealed = observed
             .call_method1("_with_native_lineage", (lineage_seal,))?
-            .unbind())
+            .unbind();
+        transition.commit(canonical_lineage)?;
+        Ok(sealed)
     }
 
     #[pyo3(signature = (
@@ -1773,31 +2083,49 @@ impl NativeContinuationStateSeal {
     ) -> PyResult<Py<PyAny>> {
         self.binding.committer_integrity.validate(py)?;
         self.require_current_lineage(py, state)?;
+        self.binding.committer_integrity.validate(py)?;
         {
             let native: PyRef<'_, NativeRuntimeSession> = native_session.extract()?;
             native.require_live_continuation_snapshot(py, runtime_snapshot, &self.binding)?;
         }
+        self.binding.committer_integrity.validate(py)?;
+        let transition = self
+            .binding
+            .begin_lineage_transition(self.generation, self.canonical_lineage.as_ref())?;
         let kwargs = PyDict::new_bound(py);
         kwargs.set_item("policy", policy)?;
         kwargs.set_item("grant", grant)?;
         kwargs.set_item("application", application)?;
         kwargs.set_item("runtime_snapshot", runtime_snapshot)?;
         let committed = self.committer.bind(py).call((state,), Some(&kwargs))?;
+        if !committed
+            .get_type()
+            .is(self.binding.continuation_state_type.bind(py))
+        {
+            return Err(PyValueError::new_err(
+                "continuation committer returned an invalid state type",
+            ));
+        }
         let canonical_lineage: String = committed
             .call_method0("_decision_lineage_text")?
             .extract()?;
+        self.binding.committer_integrity.validate(py)?;
+        let canonical_lineage: Arc<str> = Arc::from(canonical_lineage);
         let lineage_seal = Py::new(
             py,
             NativeContinuationStateSeal {
                 binding: Arc::clone(&self.binding),
-                canonical_lineage: Arc::from(canonical_lineage),
+                generation: transition.next_generation(),
+                canonical_lineage: Arc::clone(&canonical_lineage),
                 observer: self.observer.clone_ref(py),
                 committer: self.committer.clone_ref(py),
             },
         )?;
-        Ok(committed
+        let sealed = committed
             .call_method1("_with_native_lineage", (lineage_seal,))?
-            .unbind())
+            .unbind();
+        transition.commit(canonical_lineage)?;
+        Ok(sealed)
     }
 }
 
@@ -4662,6 +4990,7 @@ impl NativeRuntimeSession {
                     progress_contract_id: active.context.policy.progress_contract_id.clone(),
                     runtime_session_id: core.session_id.clone(),
                     continuation_state_type: engine.continuation_state_type.clone_ref(py),
+                    continuation_request_type: engine.continuation_request_type.clone_ref(py),
                     runtime_snapshot_type: engine.runtime_snapshot_type.clone_ref(py),
                     evaluator: engine.evaluator.clone_ref(py),
                     observer: engine.observer.clone_ref(py),
@@ -4669,6 +4998,7 @@ impl NativeRuntimeSession {
                     evaluator_integrity: Arc::clone(&engine.evaluator_integrity),
                     observer_integrity: Arc::clone(&engine.observer_integrity),
                     committer_integrity: Arc::clone(&engine.committer_integrity),
+                    live_lineage: Mutex::new(LiveContinuationLineageState::Uninitialized),
                 }))
             }
         };
@@ -4821,9 +5151,15 @@ impl NativeRuntimeSession {
             None => {}
         }
         let state_progress = state.getattr("last_progress_id")?;
+        let progress_seed = initial_continuation_progress_aggregate();
+        let supplied_progress_count: u64 = state.getattr("progress_event_count")?.extract()?;
+        let supplied_progress_aggregate: String =
+            state.getattr("progress_aggregate_id")?.extract()?;
         match progress {
             None => {
                 if !state_progress.is_none()
+                    || supplied_progress_count != 0
+                    || supplied_progress_aggregate != progress_seed
                     || !state.getattr("last_progress_classification")?.is_none()
                     || !state
                         .getattr("last_external_progress_endpoint_id")?
@@ -4841,6 +5177,11 @@ impl NativeRuntimeSession {
             }
             Some(value) => {
                 let expected_progress_id: String = value.getattr("progress_id")?.extract()?;
+                let expected_progress_aggregate = advance_continuation_progress_aggregate(
+                    &progress_seed,
+                    &expected_progress_id,
+                    0,
+                );
                 let expected_classification: String = value
                     .getattr("classification")?
                     .getattr("value")?
@@ -4856,6 +5197,8 @@ impl NativeRuntimeSession {
                     "stalled"
                 };
                 if state_progress.extract::<String>()? != expected_progress_id
+                    || supplied_progress_count != 1
+                    || supplied_progress_aggregate != expected_progress_aggregate
                     || state
                         .getattr("last_progress_classification")?
                         .getattr("value")?
@@ -4875,11 +5218,15 @@ impl NativeRuntimeSession {
             }
         }
         let canonical_lineage: String = state.call_method0("_decision_lineage_text")?.extract()?;
+        binding.evaluator_integrity.validate(py)?;
+        let canonical_lineage: Arc<str> = Arc::from(canonical_lineage);
+        let transition = binding.begin_initial_lineage()?;
         let lineage_seal = Py::new(
             py,
             NativeContinuationStateSeal {
-                binding,
-                canonical_lineage: Arc::from(canonical_lineage),
+                binding: Arc::clone(&binding),
+                generation: transition.next_generation(),
+                canonical_lineage: Arc::clone(&canonical_lineage),
                 observer: self
                     .continuation_authority
                     .as_ref()
@@ -4895,6 +5242,7 @@ impl NativeRuntimeSession {
             },
         )?;
         let sealed = state.call_method1("_with_native_lineage", (lineage_seal,))?;
+        transition.commit(canonical_lineage)?;
         self.initial_state_authority_issued = true;
         Ok(sealed.unbind())
     }
@@ -5074,12 +5422,14 @@ fn _register_continuation_engine(
     observer: Py<PyAny>,
     committer: Py<PyAny>,
     continuation_state_type: Py<PyAny>,
+    continuation_request_type: Py<PyAny>,
     runtime_snapshot_type: Py<PyAny>,
 ) -> PyResult<()> {
     if !evaluator.bind(py).is_callable()
         || !observer.bind(py).is_callable()
         || !committer.bind(py).is_callable()
         || !continuation_state_type.bind(py).is_callable()
+        || !continuation_request_type.bind(py).is_callable()
         || !runtime_snapshot_type.bind(py).is_callable()
     {
         return Err(PyValueError::new_err(
@@ -5097,6 +5447,7 @@ fn _register_continuation_engine(
                 observer,
                 committer,
                 continuation_state_type,
+                continuation_request_type,
                 runtime_snapshot_type,
                 evaluator_integrity,
                 observer_integrity,

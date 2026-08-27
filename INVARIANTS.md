@@ -222,13 +222,18 @@ and returns a separate once-issued, session-scoped,
 non-constructible supervisor request capability. The public principal label is
 insufficient. Native integrity records validate the captured functions' code,
 every reachable mutable Python function dependency regardless of module,
-referenced globals and default/closure bindings, and reachable IBAE helper/class
-definitions at session creation and every evaluator/observer/committer entry.
+descriptor functions behind class/static methods and properties, referenced
+globals and default/closure bindings, and reachable IBAE helper/class definitions
+at session creation and every evaluator/observer/committer entry. Native request
+entry requires the exact trusted type before callbacks and rechecks integrity
+after them.
 Every initial zero-decision state receives a one-shot native session seal over
 the complete canonical state after Rust derives the exact aggregate seed.
 Observation and application commit require an exact snapshot of the matching
-live native session. An exact native request seal invokes only the pinned
-evaluator, and Rust validates the authorized request plus full grant against the live session before issuing
+live native session. Every resulting state advances one native live-lineage
+generation and retires its predecessor. The sealed state also binds the complete
+ordered progress count and aggregate. An exact native request seal invokes only
+the pinned evaluator, and Rust validates the authorized request plus full grant against the live session before issuing
 the grant seal. No raw grant issuer or mutable Python validator is exposed, and
 an equal-ID duplicate session carries distinct non-serialized authority. A
 reconstructed hash-consistent grant is insufficient. Tool, runtime,

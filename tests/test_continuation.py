@@ -583,66 +583,57 @@ def test_progress_record_claims_are_derived_from_bound_measures_and_state():
 
 
 def test_model_confidence_theatre_cannot_change_no_progress_denial():
-    policy, _, _, _, policy_receipt, runtime, _, _, progress, state = (
-        _state_and_progress(progressing=False)
-    )
-    request = ContinuationRequest.from_state(
-        state,
-        progress=progress,
-        requested_resources=policy.lease_schedule[0],
-        requester=PrincipalAuthority.OPENAI_SUPERVISOR,
-        requester_authority=_authority(runtime),
-    )
-    plain = evaluate_continuation(
-        state,
-        request,
-        runtime_session=runtime,
-        policy=policy,
-        policy_receipt=policy_receipt,
-        progress=progress,
-    )
-    theatrical = evaluate_continuation(
-        state,
-        request,
-        runtime_session=runtime,
-        policy=policy,
-        policy_receipt=policy_receipt,
-        progress=progress,
-        benchmark_observation={"model_statement": "I am 99% done"},
-    )
+    def decision(benchmark_observation=None):
+        policy, _, _, _, policy_receipt, runtime, _, _, progress, state = (
+            _state_and_progress(progressing=False)
+        )
+        request = ContinuationRequest.from_state(
+            state,
+            progress=progress,
+            requested_resources=policy.lease_schedule[0],
+            requester=PrincipalAuthority.OPENAI_SUPERVISOR,
+            requester_authority=_authority(runtime),
+        )
+        return evaluate_continuation(
+            state,
+            request,
+            runtime_session=runtime,
+            policy=policy,
+            policy_receipt=policy_receipt,
+            progress=progress,
+            benchmark_observation=benchmark_observation,
+        )
+
+    plain = decision()
+    theatrical = decision({"model_statement": "I am 99% done"})
     assert plain.receipt.canonical_record() == theatrical.receipt.canonical_record()
     assert plain.next_state.canonical_record() == theatrical.next_state.canonical_record()
 
 
 def test_benchmark_observations_are_non_authoritative_for_grants():
-    policy, _, _, _, policy_receipt, runtime, _, _, progress, state = (
-        _state_and_progress()
-    )
-    request = ContinuationRequest.from_state(
-        state,
-        progress=progress,
-        requested_resources=policy.lease_schedule[0],
-        requester=PrincipalAuthority.OPENAI_SUPERVISOR,
-        requester_authority=_authority(runtime),
-    )
-    left = evaluate_continuation(
-        state,
-        request,
-        runtime_session=runtime,
-        policy=policy,
-        policy_receipt=policy_receipt,
-        progress=progress,
-        benchmark_observation={"wall_clock_ms": 1, "rank": "best"},
-    )
-    right = evaluate_continuation(
-        state,
-        request,
-        runtime_session=runtime,
-        policy=policy,
-        policy_receipt=policy_receipt,
-        progress=progress,
-        benchmark_observation={"wall_clock_ms": 999999, "rank": "worst"},
-    )
+    def decision(benchmark_observation):
+        policy, _, _, _, policy_receipt, runtime, _, _, progress, state = (
+            _state_and_progress()
+        )
+        request = ContinuationRequest.from_state(
+            state,
+            progress=progress,
+            requested_resources=policy.lease_schedule[0],
+            requester=PrincipalAuthority.OPENAI_SUPERVISOR,
+            requester_authority=_authority(runtime),
+        )
+        return evaluate_continuation(
+            state,
+            request,
+            runtime_session=runtime,
+            policy=policy,
+            policy_receipt=policy_receipt,
+            progress=progress,
+            benchmark_observation=benchmark_observation,
+        )
+
+    left = decision({"wall_clock_ms": 1, "rank": "best"})
+    right = decision({"wall_clock_ms": 999999, "rank": "worst"})
     assert left.receipt.canonical_record() == right.receipt.canonical_record()
     assert left.next_state.continuation_state_id == right.next_state.continuation_state_id
 
@@ -1053,6 +1044,7 @@ def test_native_session_pins_continuation_engine_before_request(monkeypatch):
         application=application,
         runtime_snapshot=runtime.snapshot,
     )
+    committed_state_id = committed.continuation_state_id
     observed = observe_continuation_context(
         committed,
         runtime_session=runtime,
@@ -1060,7 +1052,7 @@ def test_native_session_pins_continuation_engine_before_request(monkeypatch):
         orchestration_state=current,
         runtime_snapshot=runtime.snapshot,
     )
-    assert observed.continuation_state_id == committed.continuation_state_id
+    assert observed.continuation_state_id == committed_state_id
 
 
 @pytest.mark.parametrize(
@@ -1121,6 +1113,29 @@ def test_native_engine_rejects_mutated_imported_callable_dependency(monkeypatch)
 
 
 @pytest.mark.parametrize(
+    "descriptor_function",
+    (
+        CycleEvidence.__dict__["from_snapshot"].__func__,
+        RustRuntimeSession.__dict__["_invocation"].__func__,
+        ContinuationState.__dict__["has_pending_grant"].fget,
+    ),
+)
+def test_native_engine_rejects_mutated_descriptor_function_code(
+    monkeypatch, descriptor_function
+):
+    def substituted_descriptor(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(
+        descriptor_function,
+        "__code__",
+        substituted_descriptor.__code__,
+    )
+    with pytest.raises(ValueError, match="engine integrity"):
+        _state_and_progress()
+
+
+@pytest.mark.parametrize(
     "target_name",
     (
         "_evaluate_continuation",
@@ -1173,6 +1188,88 @@ def test_native_engine_rechecks_integrity_at_each_authority_entry(
                 application=application,
                 runtime_snapshot=runtime.snapshot,
             )
+
+
+def test_native_request_entry_rejects_untrusted_callback_before_invocation():
+    policy, _, _, _, policy_receipt, runtime, _, _, progress, state = (
+        _state_and_progress()
+    )
+    request = ContinuationRequest.from_state(
+        state,
+        progress=progress,
+        requested_resources=policy.lease_schedule[0],
+        requester=PrincipalAuthority.OPENAI_SUPERVISOR,
+        requester_authority=_authority(runtime),
+    )
+    request_seal = request._native_request_authority()
+    native = object.__getattribute__(runtime, "_RustRuntimeSession__native")
+    callback_invoked = False
+
+    class MutatingRequest:
+        def _canonical_text(self):
+            nonlocal callback_invoked
+            callback_invoked = True
+            return request._canonical_text()
+
+    with pytest.raises(ValueError, match="exact trusted type"):
+        request_seal.evaluate(
+            native,
+            state,
+            MutatingRequest(),
+            runtime,
+            policy,
+            policy_receipt,
+            progress,
+        )
+    assert callback_invoked is False
+
+
+def test_native_lineage_retires_prior_state_after_each_recorded_decision():
+    policy, _, _, _, policy_receipt, runtime, _, _, progress, state = (
+        _state_and_progress(progressing=False)
+    )
+
+    def request_for(current_state):
+        return ContinuationRequest.from_state(
+            current_state,
+            progress=progress,
+            requested_resources=policy.lease_schedule[0],
+            requester=PrincipalAuthority.OPENAI_SUPERVISOR,
+            requester_authority=_authority(runtime),
+        )
+
+    first_request = request_for(state)
+    stale_parallel_request = request_for(state)
+    first = evaluate_continuation(
+        state,
+        first_request,
+        runtime_session=runtime,
+        policy=policy,
+        policy_receipt=policy_receipt,
+        progress=progress,
+    )
+    assert first.receipt.denial_reason is LeaseDenialReason.NO_MEASURABLE_PROGRESS
+    assert first.next_state.lease_requests == 1
+
+    with pytest.raises(ValueError, match="lineage does not match state|superseded"):
+        evaluate_continuation(
+            state,
+            stale_parallel_request,
+            runtime_session=runtime,
+            policy=policy,
+            policy_receipt=policy_receipt,
+            progress=progress,
+        )
+
+    second = evaluate_continuation(
+        first.next_state,
+        request_for(first.next_state),
+        runtime_session=runtime,
+        policy=policy,
+        policy_receipt=policy_receipt,
+        progress=progress,
+    )
+    assert second.next_state.lease_requests == 2
 
 
 def test_runtime_cannot_self_extend_or_apply_without_opt_in_policy():
@@ -1257,9 +1354,15 @@ def test_skipped_lease_index_is_denied_by_governance_and_rust():
     )
     assert denied.receipt.denial_reason is LeaseDenialReason.LEASE_INDEX_MISMATCH
 
-    request = request._with_request_authority(_authority(runtime))
+    request = ContinuationRequest.from_state(
+        denied.next_state,
+        progress=progress,
+        requested_resources=policy.lease_schedule[0],
+        requester=PrincipalAuthority.OPENAI_SUPERVISOR,
+        requester_authority=_authority(runtime),
+    )
     valid = evaluate_continuation(
-        state,
+        denied.next_state,
         request,
         runtime_session=runtime,
         policy=policy,
@@ -1330,7 +1433,7 @@ def test_hash_consistent_but_unissued_grant_cannot_extend_native_limits(
         continuation_policy_receipt=policy_receipt,
     )
     duplicate_request = ContinuationRequest.from_state(
-        state,
+        decision.next_state,
         progress=progress,
         requested_resources=policy.lease_schedule[0],
         requester=PrincipalAuthority.OPENAI_SUPERVISOR,
@@ -1338,7 +1441,7 @@ def test_hash_consistent_but_unissued_grant_cannot_extend_native_limits(
     )
     with pytest.raises(ValueError, match="does not bind native session"):
         evaluate_continuation(
-            state,
+            decision.next_state,
             duplicate_request,
             runtime_session=duplicate,
             policy=policy,
@@ -1754,6 +1857,8 @@ def test_native_initial_state_seal_rejects_strategy_lineage_injection():
 
 
 def test_native_initial_state_seal_derives_the_exact_decision_seed():
+    import ibae.continuation as continuation_module
+
     policy, _, task, governance, policy_receipt, runtime = _governed_runtime(
         "tiny", session="initial-decision-seed"
     )
@@ -1781,6 +1886,8 @@ def test_native_initial_state_seal_derives_the_exact_decision_seed():
         strategy_recoveries=0,
         current_strategy_material_id=None,
         last_progress_id=progress.progress_id,
+        progress_event_count=1,
+        progress_aggregate_id=continuation_module._progress_aggregate((progress,)),
         last_consumed_progress_id=None,
         last_external_progress_endpoint_id=progress.current_external_endpoint_id,
         last_consumed_external_progress_endpoint_id=None,
@@ -1793,6 +1900,23 @@ def test_native_initial_state_seal_derives_the_exact_decision_seed():
     with pytest.raises(ValueError, match="decision aggregate is invalid"):
         native.seal_initial_continuation_state(
             forged,
+            current,
+            progress,
+            None,
+        )
+
+    forged_progress_aggregate = replace(
+        forged,
+        decision_aggregate_id=continuation_module._initial_decision_aggregate(
+            task_id=task.task_id,
+            governance_id=governance.governance_id,
+            continuation_policy_id=policy.continuation_policy_id,
+        ),
+        progress_aggregate_id=_id("caller-selected-progress-aggregate"),
+    )
+    with pytest.raises(ValueError, match="initial continuation progress lineage"):
+        native.seal_initial_continuation_state(
+            forged_progress_aggregate,
             current,
             progress,
             None,
@@ -1939,7 +2063,7 @@ def test_cycle_equivalent_strategy_is_rejected_but_breaking_change_can_continue(
         policy_receipt,
         runtime,
         no_progress,
-        state,
+        denied.next_state,
         strategy_change=admitted_change,
     )
     assert granted.granted
@@ -2817,6 +2941,14 @@ def test_continuation_evidence_requires_a_contiguous_live_progress_trace():
         progress_records=(first, second),
     )
     assert valid.final_progress_id == state.last_progress_id
+    assert valid.progress_events == state.progress_event_count == 2
+    assert valid.progress_aggregate_id == state.progress_aggregate_id
+    with pytest.raises(ValueError, match="full live history"):
+        ContinuationEvidenceReceipt(
+            state=state,
+            policy=policy,
+            progress_records=(second,),
+        )
     with pytest.raises(ValueError, match="endpoint"):
         ContinuationEvidenceReceipt(
             state=state,

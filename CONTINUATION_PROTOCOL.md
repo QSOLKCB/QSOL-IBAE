@@ -41,10 +41,13 @@ the one-shot bootstrap entrypoint. Session creation clones only those originals
 into a Rust-private, non-serialized per-instance authority binding; later reassignment of Python
 module attributes cannot replace them. Native integrity records also bind the
 captured functions' code, every reachable mutable Python function dependency
-regardless of module, referenced globals and default/closure bindings, and
+regardless of module, the underlying functions of classmethod, staticmethod,
+and property descriptors, referenced globals and default/closure bindings, and
 reachable IBAE helper/class definitions; session creation and every
 evaluator/observer/committer entry fails closed if any bound object has been
-mutated in place. The supervisor capability can seal an
+mutated in place. Native evaluation requires the exact trusted request type
+before invoking request methods and rechecks integrity after caller-controlled
+callbacks. The supervisor capability can seal an
 exact canonical request but cannot select those functions. The request seal is
 likewise non-constructible and is the only entry to the pinned evaluator. Its
 native binding uses live object capability identity solely for in-process authorization; memory identity never
@@ -283,11 +286,15 @@ can be admitted while a grant remains pending.
 The native lineage seal binds the complete canonical continuation state,
 including runtime state and pending-application identity in addition to exact
 task/governance/policy identity; request, grant, denial, recovery, cumulative,
-strategy, progress, and decision-aggregate accounting. Rust independently
-derives the exact decision-aggregate seed before the initial zero-decision state
+strategy, progress, decision-aggregate accounting, and the complete ordered
+progress-event count and aggregate. Rust independently derives the exact
+decision and progress aggregate seeds before the initial zero-decision state
 is sealed once by its native session; there is no unsealed initial-state
 exemption. Erasing or changing any public authority field cannot mint another
-valid state. Legitimate context observation and application commit both enter
+valid state. The per-session binding also tracks one non-serialized live
+generation: every recorded decision, observation, and application commit
+atomically advances it, so every predecessor seal becomes unusable even when
+the runtime snapshot did not change. Legitimate context observation and application commit both enter
 their callables pinned during trusted module initialization, require the exact
 snapshot of the matching live native session, and receive a new seal for the
 resulting state. The issuers are not held in a Python closure or exposed as
@@ -367,16 +374,19 @@ frozen.
 `ContinuationState` is one task/session ledger. Its identity includes exact
 task/governance/policy/progress-contract/orchestration/runtime lineage,
 request/grant/denial counts, cumulative grants, decision aggregate, bounded
-decision receipt IDs, strategy recovery count, progress state, pending
-application, last consumed progress identity, and continuation logical tick.
+decision receipt IDs, strategy recovery count, progress state, ordered progress
+event count/aggregate, pending application, last consumed progress identity,
+and continuation logical tick.
 Advancing orchestration state requires a progress record whose prior endpoint
 is the ledger's current state;
 lease requests must reuse the exact last committed progress identity.
 Every evaluator-produced decision state also carries non-constructible native
 lineage over the complete canonical state, so replacing or erasing a public
 counter, runtime identity, pending grant, decision, denial, classification,
-progress state, or consumed endpoint cannot authorize another grant, fake an
-application, or forge a semantic partial reason. Binding a new progress record
+progress state, progress aggregate, or consumed endpoint cannot authorize
+another grant, fake an application, omit a progress-history prefix, or forge a
+semantic partial reason. Superseded seals fail even when their canonical state
+is otherwise intact. Binding a new progress record
 through the pinned observer immediately derives `complete`, `progressing`, or `stalled` control state and reseals the
 new lineage.
 
@@ -437,8 +447,9 @@ not alter the v0.4 evidence schema or identity.
 
 Construction nevertheless validates the supplied bounded trace before folding
 it: every record must use the policy-bound progress contract, adjacent
-orchestration endpoints must be contiguous, and the final progress and
-orchestration endpoints must equal the live continuation ledger.
+orchestration endpoints must be contiguous, the final progress and orchestration
+endpoints must equal the live continuation ledger, and its count plus aggregate
+must equal the full history already protected by native continuation lineage.
 
 ## Partial finalization and watchdogs
 

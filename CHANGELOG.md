@@ -43,11 +43,15 @@ All notable changes to QSOL-IBAE will be documented here.
   canonical IDs cannot use its distinct native authority against the original
   session. There is no raw exported grant issuer or mutable Python capability
   validator. Native integrity checks cover the captured callable code, every
-  reachable mutable Python function dependency regardless of module,
-  referenced globals and default/closure bindings, and reachable IBAE
-  helpers/classes at session creation and every evaluator/observer/committer
-  entry. The complete initial zero-decision state receives a one-shot native
-  session seal only after Rust derives its exact decision-aggregate seed.
+  reachable mutable Python function dependency regardless of module, functions
+  behind class/static method and property descriptors, referenced globals and
+  default/closure bindings, and reachable IBAE helpers/classes at session
+  creation and every evaluator/observer/committer entry. Native request entry
+  requires the exact trusted type before callbacks and rechecks integrity after
+  them. The complete initial zero-decision state receives a one-shot native
+  session seal only after Rust derives its exact decision/progress aggregate
+  seeds. Every reseal advances one live native generation and retires its
+  predecessor.
   Context observation and application commit require the exact live native
   session snapshot and reseal the resulting full continuation state.
 - single-use measurable-progress endpoints: one exact progress identity may
@@ -55,8 +59,10 @@ All notable changes to QSOL-IBAE will be documented here.
   requires freshly observed progress. External evidence is paired with
   dimensions in canonical key order. Native decision lineage now binds the
   last decision/denial, progress identity/classification/state, consumed
-  endpoint, grant ledger, and recovery accounting; legitimate context changes
-  are resealed only through pinned native observer/committer paths. Compact
+  endpoint, full ordered progress count/aggregate, grant ledger, and recovery
+  accounting; legitimate context changes are resealed only through pinned
+  native observer/committer paths. Compact evidence rejects a suffix even when
+  it reaches the live endpoint. Compact
   recovery state no longer advertises material strategy change without a live
   prior strategy identity.
 - structural in-process `IBAE-CONTINUATION-CHECKPOINT-V1`, fixed-shape

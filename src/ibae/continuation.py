@@ -1737,6 +1737,8 @@ class ContinuationState:
     strategy_recoveries: int
     current_strategy_material_id: str | None
     last_progress_id: str | None
+    progress_event_count: int
+    progress_aggregate_id: str
     last_consumed_progress_id: str | None
     last_external_progress_endpoint_id: str | None
     last_consumed_external_progress_endpoint_id: str | None
@@ -1773,6 +1775,7 @@ class ContinuationState:
             ("leases_denied", self.leases_denied),
             ("continuation_logical_tick", self.continuation_logical_tick),
             ("strategy_recoveries", self.strategy_recoveries),
+            ("progress_event_count", self.progress_event_count),
         ):
             _u64(name, value)
         if self.lease_requests != self.leases_granted + self.leases_denied:
@@ -1796,6 +1799,13 @@ class ContinuationState:
             )
         if self.last_progress_id is not None:
             require_fingerprint("last progress id", self.last_progress_id)
+        require_fingerprint(
+            "continuation progress aggregate id", self.progress_aggregate_id
+        )
+        if (self.progress_event_count == 0) != (self.last_progress_id is None):
+            raise ValueError(
+                "continuation progress count must match the live progress endpoint"
+            )
         if self.last_consumed_progress_id is not None:
             require_fingerprint(
                 "last consumed progress id", self.last_consumed_progress_id
@@ -1977,6 +1987,10 @@ class ContinuationState:
             ),
             last_progress_id=(
                 None if progress is None else progress.progress_id
+            ),
+            progress_event_count=0 if progress is None else 1,
+            progress_aggregate_id=_progress_aggregate(
+                () if progress is None else (progress,)
             ),
             last_consumed_progress_id=None,
             last_external_progress_endpoint_id=(
@@ -2172,6 +2186,8 @@ class ContinuationState:
                 self.last_consumed_external_progress_endpoint_id
             ),
             "last_progress_id": self.last_progress_id,
+            "progress_event_count": self.progress_event_count,
+            "progress_aggregate_id": self.progress_aggregate_id,
             "last_external_progress_endpoint_id": (
                 self.last_external_progress_endpoint_id
             ),
@@ -2261,6 +2277,8 @@ def _observe_continuation_context(
             raise ValueError(
                 "external progress does not continue from the live endpoint"
             )
+        if state.progress_event_count >= policy.max_lease_requests + 1:
+            raise ValueError("progress history exceeds the bounded evidence capacity")
     elif orchestration_state.state_id != state.orchestration_state_id:
         raise ValueError(
             "orchestration state cannot advance without exact progress lineage"
@@ -2279,6 +2297,20 @@ def _observe_continuation_context(
         ),
         last_progress_id=(
             state.last_progress_id if progress is None else progress.progress_id
+        ),
+        progress_event_count=(
+            state.progress_event_count
+            if progress is None
+            else state.progress_event_count + 1
+        ),
+        progress_aggregate_id=(
+            state.progress_aggregate_id
+            if progress is None
+            else _advance_progress_aggregate(
+                state.progress_aggregate_id,
+                progress.progress_id,
+                state.progress_event_count,
+            )
         ),
         last_external_progress_endpoint_id=(
             state.last_external_progress_endpoint_id
@@ -3595,21 +3627,34 @@ def resume_continuation_checkpoint(
     return live_state
 
 
-def _progress_aggregate(records: tuple[ProgressRecord, ...]) -> str:
-    prior = domain_fingerprint(
+def _initial_progress_aggregate() -> str:
+    return domain_fingerprint(
         CONTINUATION_EVIDENCE_PROGRESS_AGGREGATE_DOMAIN,
         {"item_type": "seed", "protocol_version": CONTINUATION_EVIDENCE_VERSION},
     )
+
+
+def _advance_progress_aggregate(
+    prior: str, progress_id: str, ordinal: int
+) -> str:
+    require_fingerprint("prior continuation progress aggregate", prior)
+    require_fingerprint("continuation progress id", progress_id)
+    _u64("continuation progress ordinal", ordinal)
+    return domain_fingerprint(
+        CONTINUATION_EVIDENCE_PROGRESS_AGGREGATE_DOMAIN,
+        {
+            "item_type": "progress",
+            "ordinal": ordinal,
+            "prior": prior,
+            "progress_id": progress_id,
+        },
+    )
+
+
+def _progress_aggregate(records: tuple[ProgressRecord, ...]) -> str:
+    prior = _initial_progress_aggregate()
     for ordinal, record in enumerate(records):
-        prior = domain_fingerprint(
-            CONTINUATION_EVIDENCE_PROGRESS_AGGREGATE_DOMAIN,
-            {
-                "item_type": "progress",
-                "ordinal": ordinal,
-                "prior": prior,
-                "progress_id": record.progress_id,
-            },
-        )
+        prior = _advance_progress_aggregate(prior, record.progress_id, ordinal)
     return prior
 
 
@@ -3674,6 +3719,11 @@ class ContinuationEvidenceReceipt:
             != state.orchestration_state_id
         ):
             raise ValueError("progress evidence endpoint orchestration is stale")
+        if len(records) != state.progress_event_count:
+            raise ValueError("progress evidence does not contain the full live history")
+        progress_aggregate_id = _progress_aggregate(records)
+        if progress_aggregate_id != state.progress_aggregate_id:
+            raise ValueError("progress evidence aggregate does not match live history")
         if compact_execution_evidence_receipt_id is not None:
             require_fingerprint(
                 "compact execution evidence receipt id",
@@ -3691,7 +3741,7 @@ class ContinuationEvidenceReceipt:
             "leases_denied": state.leases_denied,
             "final_lease_index": state.leases_granted,
             "continuation_status": state.progress_state,
-            "progress_aggregate_id": _progress_aggregate(records),
+            "progress_aggregate_id": progress_aggregate_id,
             "decision_aggregate_id": state.decision_aggregate_id,
             "final_progress_id": (
                 None if not records else records[-1].progress_id
@@ -3943,6 +3993,7 @@ _native_runtime._register_continuation_engine(
     _observe_continuation_context,
     _commit_lease_application,
     ContinuationState,
+    ContinuationRequest,
     RuntimeSnapshot,
 )
 delattr(_native_runtime, "_register_continuation_engine")
