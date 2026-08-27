@@ -1207,8 +1207,12 @@ def evaluate_progress(
         task_complete=task_complete,
         _prior_state=prior_state,
         _current_state=current_state,
-        _prior_external_evidence=tuple(prior_external.values()),
-        _current_external_evidence=tuple(current_external.values()),
+        _prior_external_evidence=tuple(
+            prior_external[key] for key in sorted(prior_external)
+        ),
+        _current_external_evidence=tuple(
+            current_external[key] for key in sorted(current_external)
+        ),
     )
 
 
@@ -1671,15 +1675,6 @@ def _advance_decision_aggregate(
     )
 
 
-class _ContinuationDecisionLineageCapability:
-    """Non-public evaluator proof for one exact continuation decision ledger."""
-
-    __slots__ = ("__authority", "__canonical_lineage")
-
-    def __new__(cls) -> _ContinuationDecisionLineageCapability:
-        raise TypeError("continuation decision lineage is not constructible")
-
-
 @dataclass(frozen=True, slots=True)
 class ContinuationState:
     task_id: str
@@ -1701,6 +1696,7 @@ class ContinuationState:
     strategy_recoveries: int
     current_strategy_material_id: str | None
     last_progress_id: str | None
+    last_consumed_progress_id: str | None
     last_progress_classification: ProgressClassification | None
     last_decision: str
     last_denial_reason: LeaseDenialReason | None
@@ -1757,6 +1753,10 @@ class ContinuationState:
             )
         if self.last_progress_id is not None:
             require_fingerprint("last progress id", self.last_progress_id)
+        if self.last_consumed_progress_id is not None:
+            require_fingerprint(
+                "last consumed progress id", self.last_consumed_progress_id
+            )
         if self.last_progress_classification is not None:
             _enum(
                 "last progress classification",
@@ -1781,15 +1781,25 @@ class ContinuationState:
             raise ValueError("a denied last decision requires a denial reason")
         if self.last_decision != "denied" and self.last_denial_reason is not None:
             raise ValueError("only a denied last decision may carry a denial reason")
+        if (self.lease_requests == 0) != (self.last_decision == "none"):
+            raise ValueError("last decision must match the recorded decision ledger")
+        if self.last_decision == "granted" and self.leases_granted == 0:
+            raise ValueError("a granted last decision requires a recorded grant")
+        if self.last_decision == "denied" and self.leases_denied == 0:
+            raise ValueError("a denied last decision requires a recorded denial")
+        if self.last_consumed_progress_id is not None and self.leases_granted == 0:
+            raise ValueError("consumed progress requires a recorded grant")
+        if self.strategy_recoveries > self.leases_granted:
+            raise ValueError("strategy recoveries cannot exceed recorded grants")
         if self._decision_lineage_capability is not None:
-            if (
-                type(self._decision_lineage_capability)
-                is not _ContinuationDecisionLineageCapability
-            ):
+            from ._runtime import NativeContinuationStateSeal
+
+            if type(self._decision_lineage_capability) is not NativeContinuationStateSeal:
                 raise TypeError("continuation decision lineage is not trusted")
-            if not _validate_continuation_state_lineage(
-                self._decision_lineage_capability,
-                canonical_json(self._decision_lineage_record()),
+            if not bool(
+                self._decision_lineage_capability.validates(
+                    self._decision_lineage_text()
+                )
             ):
                 raise ValueError("continuation decision lineage does not match state")
 
@@ -1892,6 +1902,7 @@ class ContinuationState:
             last_progress_id=(
                 None if progress is None else progress.progress_id
             ),
+            last_consumed_progress_id=None,
             last_progress_classification=(
                 None if progress is None else progress.classification
             ),
@@ -2008,31 +2019,72 @@ class ContinuationState:
         return {
             "continuation_logical_tick": self.continuation_logical_tick,
             "continuation_policy_id": self.continuation_policy_id,
+            "continuation_policy_receipt_id": self.continuation_policy_receipt_id,
             "cumulative_granted": self.cumulative_granted.canonical_record(),
+            "current_strategy_material_id": self.current_strategy_material_id,
             "decision_aggregate_id": self.decision_aggregate_id,
             "decision_receipt_ids": list(self.decision_receipt_ids),
             "governance_id": self.governance_id,
+            "governance_receipt_id": self.governance_receipt_id,
+            "last_consumed_progress_id": self.last_consumed_progress_id,
+            "last_decision": self.last_decision,
+            "last_denial_reason": (
+                None
+                if self.last_denial_reason is None
+                else self.last_denial_reason.value
+            ),
+            "last_progress_classification": (
+                None
+                if self.last_progress_classification is None
+                else self.last_progress_classification.value
+            ),
+            "last_progress_id": self.last_progress_id,
             "lease_requests": self.lease_requests,
             "leases_denied": self.leases_denied,
             "leases_granted": self.leases_granted,
+            "orchestration_state_id": self.orchestration_state_id,
+            "progress_contract_id": self.progress_contract_id,
+            "runtime_session_id": self.runtime_session_id,
             "strategy_recoveries": self.strategy_recoveries,
             "task_id": self.task_id,
+            "progress_state": self.progress_state.value,
         }
+
+    def _decision_lineage_text(self) -> str:
+        return canonical_json(self._decision_lineage_record())
+
+    def _with_native_lineage(self, seal: Any) -> ContinuationState:
+        from ._runtime import NativeContinuationStateSeal
+
+        if self._decision_lineage_capability is not None:
+            raise ValueError("continuation state already carries decision lineage")
+        if type(seal) is not NativeContinuationStateSeal:
+            raise TypeError("continuation decision lineage seal is not trusted")
+        if not bool(seal.validates(self._decision_lineage_text())):
+            raise ValueError("continuation decision lineage does not match state")
+        return replace(self, _decision_lineage_capability=seal)
+
+    def _native_lineage_seal(self) -> Any | None:
+        self._require_decision_lineage()
+        return self._decision_lineage_capability
 
     def _require_decision_lineage(self) -> None:
         capability = self._decision_lineage_capability
         if self.lease_requests == 0 and self.strategy_recoveries == 0:
             if capability is None:
                 return
-        if type(capability) is not _ContinuationDecisionLineageCapability:
+        from ._runtime import NativeContinuationStateSeal
+
+        if type(capability) is not NativeContinuationStateSeal:
             raise ValueError("continuation state lacks evaluated decision lineage")
-        if not _validate_continuation_state_lineage(
-            capability, canonical_json(self._decision_lineage_record())
-        ):
+        if not bool(capability.validates(self._decision_lineage_text())):
             raise ValueError("continuation decision lineage does not match state")
 
     def canonical_record(self) -> dict[str, Any]:
         self._require_decision_lineage()
+        return self._canonical_record_unchecked()
+
+    def _canonical_record_unchecked(self) -> dict[str, Any]:
         return {
             "continuation_logical_tick": self.continuation_logical_tick,
             "continuation_policy_id": self.continuation_policy_id,
@@ -2055,6 +2107,7 @@ class ContinuationState:
                 if self.last_progress_classification is None
                 else self.last_progress_classification.value
             ),
+            "last_consumed_progress_id": self.last_consumed_progress_id,
             "last_progress_id": self.last_progress_id,
             "lease_requests": self.lease_requests,
             "leases_denied": self.leases_denied,
@@ -2071,7 +2124,7 @@ class ContinuationState:
         }
 
 
-def observe_continuation_context(
+def _observe_continuation_context(
     state: ContinuationState,
     *,
     policy: ContinuationPolicy,
@@ -2142,6 +2195,7 @@ def observe_continuation_context(
         raise TypeError("strategy must be exact StrategyMaterialization or None")
     return replace(
         state,
+        _decision_lineage_capability=None,
         orchestration_state_id=orchestration_state.state_id,
         runtime_state_id=runtime_snapshot.state_id,
         current_strategy_material_id=(
@@ -2172,6 +2226,42 @@ def observe_continuation_context(
             )
         ),
     )
+
+
+def observe_continuation_context(
+    state: ContinuationState,
+    *,
+    policy: ContinuationPolicy,
+    orchestration_state: OrchestrationState,
+    runtime_snapshot: RuntimeSnapshot,
+    progress: ProgressRecord | None = None,
+    strategy: StrategyMaterialization | None = None,
+) -> ContinuationState:
+    """Rebind context and preserve native evaluator lineage when it exists."""
+
+    if type(state) is not ContinuationState:
+        raise TypeError("state must be an exact ContinuationState")
+    lineage = state._native_lineage_seal()
+    if lineage is None:
+        return _observe_continuation_context(
+            state,
+            policy=policy,
+            orchestration_state=orchestration_state,
+            runtime_snapshot=runtime_snapshot,
+            progress=progress,
+            strategy=strategy,
+        )
+    observed = lineage.observe(
+        state,
+        policy,
+        orchestration_state,
+        runtime_snapshot,
+        progress,
+        strategy,
+    )
+    if type(observed) is not ContinuationState:
+        raise TypeError("native observer returned an invalid continuation state")
+    return observed
 
 
 def commit_lease_application(
@@ -2276,6 +2366,9 @@ class ContinuationRequest:
     requested_resources: BudgetVector
     requester: ContinuationRequester | PrincipalAuthority
     strategy_change_id: str | None = None
+    _native_request_seal: Any | None = field(
+        default=None, repr=False, compare=False
+    )
 
     def __post_init__(self) -> None:
         for name, value in (
@@ -2301,6 +2394,17 @@ class ContinuationRequest:
             require_fingerprint(
                 "continuation request strategy change id", self.strategy_change_id
             )
+        if self._native_request_seal is not None:
+            from ._runtime import NativeContinuationRequestSeal
+
+            if self.requester is not ContinuationRequester.OPENAI_SUPERVISOR:
+                raise ValueError("only the supervisor may carry request authority")
+            if type(self._native_request_seal) is not NativeContinuationRequestSeal:
+                raise TypeError("continuation request authority is not trusted")
+            if not bool(
+                self._native_request_seal.validates(self._canonical_text())
+            ):
+                raise ValueError("continuation request authority does not match")
 
     @classmethod
     def from_state(
@@ -2310,6 +2414,7 @@ class ContinuationRequest:
         progress: ProgressRecord,
         requested_resources: BudgetVector,
         requester: ContinuationRequester | PrincipalAuthority,
+        requester_authority: Any | None = None,
         strategy_change: StrategyChangeReceipt | None = None,
     ) -> ContinuationRequest:
         if type(state) is not ContinuationState:
@@ -2329,7 +2434,7 @@ class ContinuationRequest:
             or progress.progress_id != state.last_progress_id
         ):
             raise ValueError("progress does not match the live continuation ledger")
-        return cls(
+        request = cls(
             task_id=state.task_id,
             governance_id=state.governance_id,
             continuation_policy_id=state.continuation_policy_id,
@@ -2347,6 +2452,21 @@ class ContinuationRequest:
                 else strategy_change.strategy_change_id
             ),
         )
+        if requester_authority is None:
+            return request
+        return request._with_request_authority(requester_authority)
+
+    def _with_request_authority(self, requester_authority: Any) -> ContinuationRequest:
+        from ._runtime import NativeContinuationSupervisorAuthority
+
+        if type(requester_authority) is not NativeContinuationSupervisorAuthority:
+            raise TypeError("requester_authority is not trusted")
+        if self.requester is not ContinuationRequester.OPENAI_SUPERVISOR:
+            raise ValueError("non-supervisor requesters cannot use supervisor authority")
+        seal = requester_authority.authorize_request(
+            self._canonical_text(),
+        )
+        return replace(self, _native_request_seal=seal)
 
     @property
     def continuation_request_id(self) -> str:
@@ -2371,14 +2491,20 @@ class ContinuationRequest:
             "task_id": self.task_id,
         }
 
+    def _canonical_text(self) -> str:
+        return canonical_json(self.canonical_record())
 
-class _GovernanceDecisionCapability:
-    """Non-public in-process capability for one exact evaluated grant."""
+    def _native_request_authority(self) -> Any | None:
+        seal = self._native_request_seal
+        if seal is None:
+            return None
+        from ._runtime import NativeContinuationRequestSeal
 
-    __slots__ = ("__authority", "__canonical_grant")
-
-    def __new__(cls) -> _GovernanceDecisionCapability:
-        raise TypeError("governance decision capabilities are not constructible")
+        if type(seal) is not NativeContinuationRequestSeal or not bool(
+            seal.validates(self._canonical_text())
+        ):
+            raise ValueError("continuation request lacks exact native authority")
+        return seal
 
 
 @dataclass(frozen=True, slots=True)
@@ -2400,9 +2526,6 @@ class LeaseGrantReceipt:
     cumulative_granted: BudgetVector
     total_ceiling: BudgetVector
     decision_logical_tick: int
-    _governance_capability: Any | None = field(
-        default=None, repr=False, compare=False
-    )
     _native_seal: Any | None = field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
@@ -2442,17 +2565,7 @@ class LeaseGrantReceipt:
             raise ValueError("v0.5 lease grants cannot authorize mutations")
         if not self.cumulative_granted.is_within(self.total_ceiling):
             raise ValueError("cumulative lease resources exceed the total ceiling")
-        if self._governance_capability is not None:
-            if type(self._governance_capability) is not _GovernanceDecisionCapability:
-                raise TypeError("lease grant governance capability is not trusted")
-            if not _validate_governance_capability(
-                self._governance_capability,
-                canonical_json(self.canonical_record())
-            ):
-                raise ValueError("lease grant governance capability does not match")
         if self._native_seal is not None:
-            if not self.governance_bound:
-                raise ValueError("native lease grant seal requires governance authority")
             from ._runtime import NativeLeaseGrantSeal
 
             if type(self._native_seal) is not NativeLeaseGrantSeal:
@@ -2502,46 +2615,43 @@ class LeaseGrantReceipt:
 
     @property
     def source_bound(self) -> bool:
-        return self.governance_bound and self._native_seal is not None
+        return self.governance_bound
 
     @property
     def governance_bound(self) -> bool:
-        capability = self._governance_capability
-        return bool(
-            _validate_governance_capability(
-                capability, canonical_json(self.canonical_record())
-            )
+        from ._runtime import NativeLeaseGrantSeal
+
+        return (
+            type(self._native_seal) is NativeLeaseGrantSeal
+            and bool(self._native_seal.validates(self._canonical_text()))
         )
 
     def _with_native_seal(self, seal: Any) -> LeaseGrantReceipt:
-        if not self.governance_bound:
-            raise ValueError("lease grant lacks evaluated governance authority")
         if self._native_seal is not None:
             raise ValueError("lease grant is already source-bound")
+        from ._runtime import NativeLeaseGrantSeal
+
+        if type(seal) is not NativeLeaseGrantSeal:
+            raise TypeError("lease grant native authority is not trusted")
+        if not bool(seal.validates(self._canonical_text())):
+            raise ValueError("lease grant native authority does not match")
         return replace(self, _native_seal=seal)
 
     def _native_source_seal(self) -> Any | None:
         if self._native_seal is None:
             return None
-        if not self.governance_bound:
-            raise ValueError("lease grant lacks evaluated governance authority")
         from ._runtime import NativeLeaseGrantSeal
 
         if type(self._native_seal) is not NativeLeaseGrantSeal:
             raise ValueError("lease grant native source seal is not trusted")
         if not bool(
-            self._native_seal.validates(canonical_json(self.canonical_record()))
+            self._native_seal.validates(self._canonical_text())
         ):
             raise ValueError("lease grant native source seal no longer matches")
         return self._native_seal
 
-    def _governance_source_capability(self) -> _GovernanceDecisionCapability:
-        capability = self._governance_capability
-        if not _validate_governance_capability(
-            capability, canonical_json(self.canonical_record())
-        ):
-            raise ValueError("lease grant lacks evaluated governance authority")
-        return capability
+    def _canonical_text(self) -> str:
+        return canonical_json(self.canonical_record())
 
 
 @dataclass(frozen=True, slots=True)
@@ -2623,6 +2733,36 @@ class LeaseDenyReceipt:
 
 
 @dataclass(frozen=True, slots=True)
+class _ContinuationEvaluationResult:
+    """Unsigned deterministic result finalized only by native request authority."""
+
+    next_state: ContinuationState
+    receipt: LeaseGrantReceipt | LeaseDenyReceipt
+
+    @property
+    def granted(self) -> bool:
+        return type(self.receipt) is LeaseGrantReceipt
+
+    def _finalize(
+        self,
+        next_state: ContinuationState,
+        receipt: LeaseGrantReceipt | LeaseDenyReceipt,
+    ) -> ContinuationDecision:
+        if type(next_state) is not ContinuationState:
+            raise TypeError("finalized state must be exact ContinuationState")
+        if type(receipt) is not type(self.receipt):
+            raise TypeError("finalized receipt type does not match evaluation")
+        if (
+            next_state._canonical_record_unchecked()
+            != self.next_state._canonical_record_unchecked()
+        ):
+            raise ValueError("finalized state does not match evaluation")
+        if receipt.canonical_record() != self.receipt.canonical_record():
+            raise ValueError("finalized receipt does not match evaluation")
+        return ContinuationDecision(next_state, receipt)
+
+
+@dataclass(frozen=True, slots=True)
 class ContinuationDecision:
     next_state: ContinuationState
     receipt: LeaseGrantReceipt | LeaseDenyReceipt
@@ -2667,7 +2807,7 @@ def _deny_continuation(
     policy: ContinuationPolicy,
     blocking_evidence_id: str | None = None,
     record_decision: bool = True,
-) -> ContinuationDecision:
+) -> _ContinuationEvaluationResult:
     if blocking_evidence_id is not None:
         require_fingerprint("blocking governance evidence id", blocking_evidence_id)
     decision_tick = state.continuation_logical_tick + (
@@ -2689,7 +2829,7 @@ def _deny_continuation(
         blocking_evidence_id=blocking_evidence_id,
     )
     if not record_decision:
-        return ContinuationDecision(state, denial)
+        return _ContinuationEvaluationResult(state, denial)
     ordinal = state.lease_requests
     next_state = replace(
         state,
@@ -2725,7 +2865,7 @@ def _deny_continuation(
     # precommitted request ceiling.
     if next_state.lease_requests > policy.max_lease_requests:
         raise AssertionError("continuation request accounting exceeded policy")
-    return ContinuationDecision(next_state, denial)
+    return _ContinuationEvaluationResult(next_state, denial)
 
 
 def _evaluate_continuation(
@@ -2740,8 +2880,8 @@ def _evaluate_continuation(
     cycle_evidence: CycleEvidence | None = None,
     blocking_governance_violation_id: str | None = None,
     benchmark_observation: Any | None = None,
-    _grant_capability_issuer: Any,
-) -> ContinuationDecision:
+    _request_authorized: bool,
+) -> _ContinuationEvaluationResult:
     """Return a deterministic finite GRANT or DENY decision.
 
     ``benchmark_observation`` is copied through the bounded canonical-value
@@ -2761,6 +2901,8 @@ def _evaluate_continuation(
         raise TypeError("policy_receipt must be an exact policy receipt")
     if type(progress) is not ProgressRecord:
         raise TypeError("progress must be an exact ProgressRecord")
+    if type(_request_authorized) is not bool:
+        raise TypeError("request authorization must be an exact boolean")
     if strategy_change is not None and type(
         strategy_change
     ) is not StrategyChangeReceipt:
@@ -2790,7 +2932,12 @@ def _evaluate_continuation(
 
     reason: LeaseDenialReason | None = None
     blocking_id: str | None = None
-    if request.continuation_state_id != state.continuation_state_id:
+    if (
+        request.requester is not ContinuationRequester.OPENAI_SUPERVISOR
+        or not _request_authorized
+    ):
+        reason = LeaseDenialReason.UNAUTHORIZED_REQUESTER
+    elif request.continuation_state_id != state.continuation_state_id:
         reason = LeaseDenialReason.STALE_CONTINUATION_STATE
     elif (
         request.task_id != state.task_id
@@ -2807,8 +2954,6 @@ def _evaluate_continuation(
         or live_runtime_snapshot.state_id != state.runtime_state_id
     ):
         reason = LeaseDenialReason.STALE_RUNTIME_STATE
-    elif request.requester is not ContinuationRequester.OPENAI_SUPERVISOR:
-        reason = LeaseDenialReason.UNAUTHORIZED_REQUESTER
     elif state.has_pending_grant:
         reason = LeaseDenialReason.PENDING_LEASE_APPLICATION
     elif (
@@ -2875,7 +3020,10 @@ def _evaluate_continuation(
         # A receipt not bound into the request cannot confer authority.
         reason = LeaseDenialReason.STRATEGY_CHANGE_NOT_MATERIAL
 
-    progress_admitted = progress.classification in policy.admitted_progress
+    progress_admitted = (
+        progress.classification in policy.admitted_progress
+        and progress.progress_id != state.last_consumed_progress_id
+    )
     if reason is None and live_cycle_evidence is not None and not strategy_admitted:
         reason = LeaseDenialReason.TERMINAL_CYCLE
     elif reason is None and not progress_admitted and not strategy_admitted:
@@ -2916,7 +3064,10 @@ def _evaluate_continuation(
             reason,
             policy=policy,
             blocking_evidence_id=blocking_id,
-            record_decision=state.lease_requests < policy.max_lease_requests,
+            record_decision=(
+                reason is not LeaseDenialReason.UNAUTHORIZED_REQUESTER
+                and state.lease_requests < policy.max_lease_requests
+            ),
         )
 
     assert next_cumulative is not None
@@ -2942,15 +3093,6 @@ def _evaluate_continuation(
         total_ceiling=policy.total_ceiling,
         decision_logical_tick=decision_tick,
     )
-    grant = replace(
-        grant,
-        _governance_capability=_grant_capability_issuer(
-            canonical_json(grant.canonical_record())
-        ),
-    )
-    grant = grant._with_native_seal(
-        runtime_session._bind_evaluated_lease_grant(grant)
-    )
     used_strategy_recovery = strategy_admitted and (
         live_cycle_evidence is not None or not progress_admitted
     )
@@ -2974,6 +3116,11 @@ def _evaluate_continuation(
             else state.current_strategy_material_id
         ),
         last_progress_id=progress.progress_id,
+        last_consumed_progress_id=(
+            progress.progress_id
+            if progress_admitted
+            else state.last_consumed_progress_id
+        ),
         last_progress_classification=progress.classification,
         last_decision="granted",
         last_denial_reason=None,
@@ -2985,96 +3132,29 @@ def _evaluate_continuation(
         pending_grant_id=grant.lease_grant_id,
         pending_grant_receipt_id=grant.receipt_id,
     )
-    return ContinuationDecision(next_state, grant)
+    return _ContinuationEvaluationResult(next_state, grant)
 
 
-def _build_continuation_evaluator(
-    internal_evaluator: Any,
-) -> tuple[Any, Any, Any]:
-    authority = object()
+def evaluate_continuation(
+    state: ContinuationState,
+    request: ContinuationRequest,
+    *,
+    runtime_session: RustRuntimeSession,
+    policy: ContinuationPolicy,
+    policy_receipt: ContinuationPolicyReceipt,
+    progress: ProgressRecord,
+    strategy_change: StrategyChangeReceipt | None = None,
+    cycle_evidence: CycleEvidence | None = None,
+    blocking_governance_violation_id: str | None = None,
+    benchmark_observation: Any | None = None,
+) -> ContinuationDecision:
+    """Return one deterministic decision under exact native request authority."""
 
-    def issue_capability(canonical_grant: str) -> _GovernanceDecisionCapability:
-        if type(canonical_grant) is not str:
-            raise TypeError("canonical grant must be exact text")
-        capability = object.__new__(_GovernanceDecisionCapability)
-        object.__setattr__(
-            capability,
-            "_GovernanceDecisionCapability__authority",
-            authority,
-        )
-        object.__setattr__(
-            capability,
-            "_GovernanceDecisionCapability__canonical_grant",
-            canonical_grant,
-        )
-        return capability
-
-    def validate_capability(capability: Any, canonical_grant: str) -> bool:
-        if type(capability) is not _GovernanceDecisionCapability:
-            return False
-        try:
-            bound_authority = object.__getattribute__(
-                capability, "_GovernanceDecisionCapability__authority"
-            )
-            bound_grant = object.__getattribute__(
-                capability, "_GovernanceDecisionCapability__canonical_grant"
-            )
-        except AttributeError:
-            return False
-        return bound_authority is authority and bound_grant == canonical_grant
-
-    def issue_state_lineage(
-        canonical_lineage: str,
-    ) -> _ContinuationDecisionLineageCapability:
-        if type(canonical_lineage) is not str:
-            raise TypeError("canonical continuation lineage must be exact text")
-        capability = object.__new__(_ContinuationDecisionLineageCapability)
-        object.__setattr__(
-            capability,
-            "_ContinuationDecisionLineageCapability__authority",
-            authority,
-        )
-        object.__setattr__(
-            capability,
-            "_ContinuationDecisionLineageCapability__canonical_lineage",
-            canonical_lineage,
-        )
-        return capability
-
-    def validate_state_lineage(capability: Any, canonical_lineage: str) -> bool:
-        if type(capability) is not _ContinuationDecisionLineageCapability:
-            return False
-        try:
-            bound_authority = object.__getattribute__(
-                capability,
-                "_ContinuationDecisionLineageCapability__authority",
-            )
-            bound_lineage = object.__getattribute__(
-                capability,
-                "_ContinuationDecisionLineageCapability__canonical_lineage",
-            )
-        except AttributeError:
-            return False
-        return (
-            bound_authority is authority and bound_lineage == canonical_lineage
-        )
-
-    def public_evaluator(
-        state: ContinuationState,
-        request: ContinuationRequest,
-        *,
-        runtime_session: RustRuntimeSession,
-        policy: ContinuationPolicy,
-        policy_receipt: ContinuationPolicyReceipt,
-        progress: ProgressRecord,
-        strategy_change: StrategyChangeReceipt | None = None,
-        cycle_evidence: CycleEvidence | None = None,
-        blocking_governance_violation_id: str | None = None,
-        benchmark_observation: Any | None = None,
-    ) -> ContinuationDecision:
-        """Return one deterministic, finite governance GRANT or DENY."""
-
-        decision = internal_evaluator(
+    if type(request) is not ContinuationRequest:
+        raise TypeError("request must be an exact ContinuationRequest")
+    request_authority = request._native_request_authority()
+    if request_authority is None:
+        unsigned = _evaluate_continuation(
             state,
             request,
             runtime_session=runtime_session,
@@ -3085,34 +3165,27 @@ def _build_continuation_evaluator(
             cycle_evidence=cycle_evidence,
             blocking_governance_violation_id=blocking_governance_violation_id,
             benchmark_observation=benchmark_observation,
-            _grant_capability_issuer=issue_capability,
+            _request_authorized=False,
         )
-        next_state = decision.next_state
-        if next_state is state:
-            return decision
-        if next_state.lease_requests > 0 or next_state.strategy_recoveries > 0:
-            next_state = replace(
-                next_state,
-                _decision_lineage_capability=issue_state_lineage(
-                    canonical_json(next_state._decision_lineage_record())
-                ),
-            )
-        return ContinuationDecision(next_state, decision.receipt)
+        if unsigned.granted or unsigned.next_state is not state:
+            raise AssertionError("unauthorized requests must be state-neutral denials")
+        return unsigned._finalize(unsigned.next_state, unsigned.receipt)
 
-    public_evaluator.__name__ = "evaluate_continuation"
-    public_evaluator.__qualname__ = "evaluate_continuation"
-    return public_evaluator, validate_capability, validate_state_lineage
-
-
-(
-    evaluate_continuation,
-    _validate_governance_capability,
-    _validate_continuation_state_lineage,
-) = (
-    _build_continuation_evaluator(_evaluate_continuation)
-)
-del _build_continuation_evaluator
-del _evaluate_continuation
+    decision = runtime_session._evaluate_continuation_request(
+        request_authority,
+        state,
+        request,
+        policy,
+        policy_receipt,
+        progress,
+        strategy_change,
+        cycle_evidence,
+        blocking_governance_violation_id,
+        benchmark_observation,
+    )
+    if type(decision) is not ContinuationDecision:
+        raise TypeError("native evaluator returned an invalid continuation decision")
+    return decision
 
 
 @dataclass(frozen=True, slots=True, init=False)

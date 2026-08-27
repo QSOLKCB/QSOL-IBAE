@@ -86,8 +86,17 @@ from ibae.runtime import (
 )
 
 
+# Test-harness lookup only; this object identity never enters protocol state.
+_REQUEST_AUTHORITIES: dict[int, object] = {}
+_ACTIVE_REQUEST_AUTHORITY = object()
+
+
 def _id(label: str) -> str:
     return canonical_fingerprint({"label": label})
+
+
+def _authority(runtime: RustRuntimeSession) -> object:
+    return _REQUEST_AUTHORITIES[id(runtime)]
 
 
 def _governed_runtime(profile: str = "tiny", *, session: str = "continuation"):
@@ -121,11 +130,12 @@ def _governed_runtime(profile: str = "tiny", *, session: str = "continuation"):
     policy_receipt = ContinuationPolicyReceipt(
         continuation_policy, governance_policy, governance
     )
-    runtime = RustRuntimeSession(
+    runtime, requester_authority = RustRuntimeSession.create_continuation(
         session,
         continuation_policy=continuation_policy,
         continuation_policy_receipt=policy_receipt,
     )
+    _REQUEST_AUTHORITIES[id(runtime)] = requester_authority
     return (
         continuation_policy,
         governance_policy,
@@ -285,7 +295,15 @@ def _request_and_decide(
     strategy_change=None,
     cycle_evidence=None,
     benchmark_observation=None,
+    requester_authority=_ACTIVE_REQUEST_AUTHORITY,
 ):
+    if requester_authority is _ACTIVE_REQUEST_AUTHORITY:
+        normalized_requester = ContinuationRequester.normalize(requester)
+        requester_authority = (
+            _REQUEST_AUTHORITIES[id(runtime)]
+            if normalized_requester is ContinuationRequester.OPENAI_SUPERVISOR
+            else None
+        )
     request = ContinuationRequest.from_state(
         state,
         progress=progress,
@@ -295,6 +313,7 @@ def _request_and_decide(
             else requested_resources
         ),
         requester=requester,
+        requester_authority=requester_authority,
         strategy_change=strategy_change,
     )
     decision = evaluate_continuation(
@@ -526,6 +545,7 @@ def test_model_confidence_theatre_cannot_change_no_progress_denial():
         progress=progress,
         requested_resources=policy.lease_schedule[0],
         requester=PrincipalAuthority.OPENAI_SUPERVISOR,
+        requester_authority=_authority(runtime),
     )
     plain = evaluate_continuation(
         state,
@@ -557,6 +577,7 @@ def test_benchmark_observations_are_non_authoritative_for_grants():
         progress=progress,
         requested_resources=policy.lease_schedule[0],
         requester=PrincipalAuthority.OPENAI_SUPERVISOR,
+        requester_authority=_authority(runtime),
     )
     left = evaluate_continuation(
         state,
@@ -673,6 +694,22 @@ def test_regression_new_information_and_incomparable_are_distinct():
         current_evidence=current_evidence,
     )
     assert mixed.classification is ProgressClassification.INCOMPARABLE
+    reordered = evaluate_progress(
+        task_id=task.task_id,
+        governance_id=governance.governance_id,
+        contract=contract,
+        prior_state=fewer_satisfied,
+        current_state=fewer_satisfied,
+        prior_evidence={
+            "gates": prior_evidence["gates"],
+            "failing": prior_evidence["failing"],
+        },
+        current_evidence={
+            "gates": current_evidence["gates"],
+            "failing": current_evidence["failing"],
+        },
+    )
+    assert reordered.canonical_record() == mixed.canonical_record()
 
 
 def test_model_proposed_external_counter_is_rejected():
@@ -792,6 +829,75 @@ def test_only_supervisor_principal_may_request_a_lease(requester):
     assert runtime.snapshot.canonical_record() == before
 
 
+def test_supervisor_label_without_native_request_authority_is_denied():
+    policy, _, _, _, policy_receipt, runtime, _, _, progress, state = (
+        _state_and_progress()
+    )
+    request = ContinuationRequest.from_state(
+        state,
+        progress=progress,
+        requested_resources=policy.lease_schedule[0],
+        requester=PrincipalAuthority.OPENAI_SUPERVISOR,
+    )
+    decision = evaluate_continuation(
+        state,
+        request,
+        runtime_session=runtime,
+        policy=policy,
+        policy_receipt=policy_receipt,
+        progress=progress,
+    )
+    assert decision.receipt.denial_reason is LeaseDenialReason.UNAUTHORIZED_REQUESTER
+    assert decision.next_state is state
+    with pytest.raises(TypeError, match="requester_authority is not trusted"):
+        ContinuationRequest.from_state(
+            state,
+            progress=progress,
+            requested_resources=policy.lease_schedule[0],
+            requester=PrincipalAuthority.OPENAI_SUPERVISOR,
+            requester_authority=object(),
+        )
+    native = object.__getattribute__(runtime, "_RustRuntimeSession__native")
+    with pytest.raises(ValueError, match="already issued"):
+        native.take_continuation_request_authority()
+
+
+def test_native_session_pins_continuation_engine_before_request(monkeypatch):
+    policy, _, _, _, policy_receipt, runtime, _, current, progress, state = (
+        _state_and_progress()
+    )
+    import ibae.continuation as continuation_module
+
+    def substituted_engine(*_args, **_kwargs):
+        raise AssertionError("mutable module evaluator must not be consulted")
+
+    monkeypatch.setattr(
+        continuation_module, "_evaluate_continuation", substituted_engine
+    )
+    monkeypatch.setattr(
+        continuation_module, "_observe_continuation_context", substituted_engine
+    )
+    _, decision = _request_and_decide(
+        policy, policy_receipt, runtime, progress, state
+    )
+    assert isinstance(decision.receipt, LeaseGrantReceipt)
+    application = runtime.apply_lease(decision.receipt)
+    committed = commit_lease_application(
+        decision.next_state,
+        policy=policy,
+        grant=decision.receipt,
+        application=application,
+        runtime_snapshot=runtime.snapshot,
+    )
+    observed = observe_continuation_context(
+        committed,
+        policy=policy,
+        orchestration_state=current,
+        runtime_snapshot=runtime.snapshot,
+    )
+    assert observed.continuation_state_id == committed.continuation_state_id
+
+
 def test_runtime_cannot_self_extend_or_apply_without_opt_in_policy():
     runtime = RustRuntimeSession("legacy-no-continuation", RuntimeLimits(2, 2, 1, 2))
     prior = runtime.snapshot
@@ -834,17 +940,12 @@ def test_stale_governance_and_progress_identities_are_denied():
         requester=PrincipalAuthority.OPENAI_SUPERVISOR,
     )
     stale_governance = replace(valid, governance_id=_id("foreign-governance"))
-    denied = evaluate_continuation(
-        state,
-        stale_governance,
-        runtime_session=runtime,
-        policy=policy,
-        policy_receipt=policy_receipt,
-        progress=progress,
-    )
-    assert denied.receipt.denial_reason is LeaseDenialReason.STALE_GOVERNANCE
+    with pytest.raises(ValueError, match="not bound to supervisor authority"):
+        stale_governance._with_request_authority(_authority(runtime))
 
-    stale_progress = replace(valid, progress_id=_id("stale-progress"))
+    stale_progress = replace(
+        valid, progress_id=_id("stale-progress")
+    )._with_request_authority(_authority(runtime))
     denied = evaluate_continuation(
         state,
         stale_progress,
@@ -866,7 +967,9 @@ def test_skipped_lease_index_is_denied_by_governance_and_rust():
         requested_resources=policy.lease_schedule[0],
         requester=PrincipalAuthority.OPENAI_SUPERVISOR,
     )
-    skipped_request = replace(request, lease_index=2)
+    skipped_request = replace(request, lease_index=2)._with_request_authority(
+        _authority(runtime)
+    )
     denied = evaluate_continuation(
         state,
         skipped_request,
@@ -877,6 +980,7 @@ def test_skipped_lease_index_is_denied_by_governance_and_rust():
     )
     assert denied.receipt.denial_reason is LeaseDenialReason.LEASE_INDEX_MISMATCH
 
+    request = request._with_request_authority(_authority(runtime))
     valid = evaluate_continuation(
         state,
         request,
@@ -886,7 +990,7 @@ def test_skipped_lease_index_is_denied_by_governance_and_rust():
         progress=progress,
     )
     assert isinstance(valid.receipt, LeaseGrantReceipt)
-    with pytest.raises(ValueError, match="governance capability"):
+    with pytest.raises(ValueError, match="native lease grant seal does not match"):
         replace(valid.receipt, lease_index=2)
     unissued_grant = _structural_grant(
         valid.receipt,
@@ -901,7 +1005,9 @@ def test_skipped_lease_index_is_denied_by_governance_and_rust():
     assert runtime.snapshot.continuation.leases_applied == 0
 
 
-def test_hash_consistent_but_unissued_grant_cannot_extend_native_limits():
+def test_hash_consistent_but_unissued_grant_cannot_extend_native_limits(
+    monkeypatch,
+):
     policy, _, _, _, policy_receipt, runtime, _, _, progress, state = (
         _state_and_progress()
     )
@@ -912,8 +1018,6 @@ def test_hash_consistent_but_unissued_grant_cannot_extend_native_limits():
     structural_exact = _structural_grant(decision.receipt)
     assert structural_exact.canonical_record() == decision.receipt.canonical_record()
     assert not structural_exact.governance_bound
-    with pytest.raises(ValueError, match="not issued by governance evaluation"):
-        runtime._bind_evaluated_lease_grant(structural_exact)
     fabricated = _structural_grant(
         decision.receipt,
         continuation_request_id=_id("fabricated-request"),
@@ -929,28 +1033,62 @@ def test_hash_consistent_but_unissued_grant_cannot_extend_native_limits():
         == "IBAE-RT-LEASE-REJECT-UNISSUED-GRANT"
     )
     assert runtime.snapshot.canonical_record() == before
-    with pytest.raises(ValueError, match="not issued by governance evaluation"):
-        runtime._bind_evaluated_lease_grant(fabricated)
 
     native = object.__getattribute__(runtime, "_RustRuntimeSession__native")
-    canonical_fabricated = canonical_json(fabricated.canonical_record())
-    with pytest.raises(TypeError):
-        native.issue_lease_grant(canonical_fabricated)
-    with pytest.raises(ValueError, match="requires evaluator authority"):
-        native.issue_lease_grant(canonical_fabricated, object())
-    with pytest.raises(ValueError, match="requires evaluator authority"):
-        native.issue_lease_grant(
-            canonical_fabricated,
-            decision.receipt._governance_source_capability(),
-        )
+    assert not hasattr(runtime, "_native_continuation_session")
+    assert not hasattr(native, "issue_lease_grant")
+    import ibae.continuation as continuation_module
 
-    from ibae._runtime import NativeLeaseGrantSeal
-    from ibae.continuation import _GovernanceDecisionCapability
+    monkeypatch.setattr(
+        continuation_module,
+        "_validate_governance_capability",
+        lambda *_: True,
+        raising=False,
+    )
+    assert not hasattr(native, "issue_lease_grant")
+
+    duplicate, duplicate_authority = RustRuntimeSession.create_continuation(
+        "state-tiny-True",
+        continuation_policy=policy,
+        continuation_policy_receipt=policy_receipt,
+    )
+    duplicate_request = ContinuationRequest.from_state(
+        state,
+        progress=progress,
+        requested_resources=policy.lease_schedule[0],
+        requester=PrincipalAuthority.OPENAI_SUPERVISOR,
+        requester_authority=duplicate_authority,
+    )
+    duplicate_decision = evaluate_continuation(
+        state,
+        duplicate_request,
+        runtime_session=duplicate,
+        policy=policy,
+        policy_receipt=policy_receipt,
+        progress=progress,
+    )
+    cross_session = runtime.apply_lease_transition(duplicate_decision.receipt)
+    assert cross_session.receipt.status == "rejected"
+    assert (
+        cross_session.receipt.rejection_reason
+        == "IBAE-RT-LEASE-REJECT-UNISSUED-GRANT"
+    )
+
+    from ibae._runtime import (
+        NativeContinuationRequestSeal,
+        NativeContinuationStateSeal,
+        NativeContinuationSupervisorAuthority,
+        NativeLeaseGrantSeal,
+    )
 
     with pytest.raises(TypeError):
         NativeLeaseGrantSeal()
     with pytest.raises(TypeError):
-        _GovernanceDecisionCapability()
+        NativeContinuationSupervisorAuthority()
+    with pytest.raises(TypeError):
+        NativeContinuationRequestSeal()
+    with pytest.raises(TypeError):
+        NativeContinuationStateSeal()
 
 
 def test_stale_grant_and_duplicate_application_are_state_neutral():
@@ -1058,6 +1196,7 @@ def test_mutation_resource_is_represented_but_unsupported():
         progress=progress,
         requested_resources=BudgetVector(mutation_delta=1),
         requester=PrincipalAuthority.OPENAI_SUPERVISOR,
+        requester_authority=_authority(runtime),
     )
     denied = evaluate_continuation(
         state,
@@ -1450,10 +1589,11 @@ def test_strategy_recovery_count_is_finite():
     )
     assert state.strategy_recoveries == policy.max_strategy_recoveries
 
-    from ibae.continuation import _ContinuationDecisionLineageCapability
+    from ibae._runtime import NativeContinuationStateSeal
 
     with pytest.raises(TypeError):
-        _ContinuationDecisionLineageCapability()
+        NativeContinuationStateSeal()
+    assert evaluate_continuation.__closure__ is None
     with pytest.raises(ValueError, match="decision lineage does not match"):
         replace(state, strategy_recoveries=0)
     reconstructed = replace(
@@ -1473,6 +1613,7 @@ def test_strategy_recovery_count_is_finite():
         progress=progress,
         requested_resources=policy.lease_schedule[state.leases_granted],
         requester=PrincipalAuthority.OPENAI_SUPERVISOR,
+        requester_authority=_authority(runtime),
         strategy_change=second_change,
     )
     with pytest.raises(ValueError, match="lacks evaluated decision lineage"):
@@ -1498,6 +1639,52 @@ def test_strategy_recovery_count_is_finite():
         decision.receipt.denial_reason
         is LeaseDenialReason.STRATEGY_RECOVERY_EXHAUSTED
     )
+
+
+def test_decision_lineage_binds_semantic_decision_state():
+    policy, _, _, _, policy_receipt, runtime, _, current, progress, state = (
+        _state_and_progress("standard")
+    )
+    with pytest.raises(ValueError, match="last decision must match"):
+        replace(
+            state,
+            last_decision="denied",
+            last_denial_reason=LeaseDenialReason.NO_MEASURABLE_PROGRESS,
+            last_progress_classification=ProgressClassification.NO_PROGRESS,
+            progress_state=ProgressState.STALLED,
+        )
+    _, granted = _request_and_decide(
+        policy, policy_receipt, runtime, progress, state
+    )
+    application = runtime.apply_lease(granted.receipt)
+    state = commit_lease_application(
+        granted.next_state,
+        policy=policy,
+        grant=granted.receipt,
+        application=application,
+        runtime_snapshot=runtime.snapshot,
+    )
+    with pytest.raises(ValueError, match="decision lineage does not match"):
+        replace(
+            state,
+            last_progress_classification=ProgressClassification.NO_PROGRESS,
+            progress_state=ProgressState.STALLED,
+        )
+    reconstructed = replace(
+        state,
+        _decision_lineage_capability=None,
+        last_progress_classification=ProgressClassification.NO_PROGRESS,
+        progress_state=ProgressState.STALLED,
+    )
+    with pytest.raises(ValueError, match="lacks evaluated decision lineage"):
+        ContinuationCheckpoint(
+            state=reconstructed,
+            policy=policy,
+            orchestration_state=current,
+            runtime_snapshot=runtime.snapshot,
+            progress=progress,
+            partial_reason=ContinuationPartialReason.NO_PROGRESS,
+        )
 
 
 def test_complete_task_never_receives_unnecessary_continuation():
@@ -1535,6 +1722,7 @@ def test_pending_grant_blocks_another_request_until_rust_applies_it():
         progress=progress,
         requested_resources=policy.lease_schedule[1],
         requester=PrincipalAuthority.OPENAI_SUPERVISOR,
+        requester_authority=_authority(runtime),
     )
     second = evaluate_continuation(
         first.next_state,
@@ -1548,6 +1736,53 @@ def test_pending_grant_blocks_another_request_until_rust_applies_it():
         second.receipt.denial_reason
         is LeaseDenialReason.PENDING_LEASE_APPLICATION
     )
+
+
+def test_one_measurable_progress_endpoint_authorizes_at_most_one_grant():
+    (
+        policy,
+        _,
+        task,
+        governance,
+        policy_receipt,
+        runtime,
+        _,
+        current,
+        progress,
+        state,
+    ) = _state_and_progress("standard")
+    _, first = _request_and_decide(
+        policy, policy_receipt, runtime, progress, state
+    )
+    application = runtime.apply_lease(first.receipt)
+    state = commit_lease_application(
+        first.next_state,
+        policy=policy,
+        grant=first.receipt,
+        application=application,
+        runtime_snapshot=runtime.snapshot,
+    )
+    assert state.last_consumed_progress_id == progress.progress_id
+
+    _, reused = _request_and_decide(
+        policy, policy_receipt, runtime, progress, state
+    )
+    assert reused.receipt.denial_reason is LeaseDenialReason.NO_MEASURABLE_PROGRESS
+
+    later = _obligation_states(total=3, satisfied=2)
+    fresh_progress = _progress(task, governance, current, later)
+    state = observe_continuation_context(
+        reused.next_state,
+        policy=policy,
+        orchestration_state=later,
+        runtime_snapshot=runtime.snapshot,
+        progress=fresh_progress,
+    )
+    _, fresh = _request_and_decide(
+        policy, policy_receipt, runtime, fresh_progress, state
+    )
+    assert isinstance(fresh.receipt, LeaseGrantReceipt)
+    assert fresh.next_state.last_consumed_progress_id == fresh_progress.progress_id
 
 
 def test_governance_ceiling_exhaustion_is_deterministic():
@@ -1623,6 +1858,7 @@ def test_governance_ceiling_exhaustion_is_deterministic():
         progress=progress,
         requested_resources=BudgetVector(request_delta=1),
         requester=PrincipalAuthority.OPENAI_SUPERVISOR,
+        requester_authority=_authority(runtime),
     )
     exhausted = evaluate_continuation(
         state,
@@ -1670,6 +1906,7 @@ def test_requested_amount_cannot_exceed_schedule_or_cumulative_ceiling():
         progress=progress,
         requested_resources=BudgetVector(request_delta=1),
         requester=PrincipalAuthority.OPENAI_SUPERVISOR,
+        requester_authority=_authority(runtime),
     )
     denied = evaluate_continuation(
         fabricated,
@@ -1712,6 +1949,7 @@ def test_denials_are_finitely_bounded_by_request_policy():
         progress=progress,
         requested_resources=policy.lease_schedule[0],
         requester=PrincipalAuthority.OPENAI_SUPERVISOR,
+        requester_authority=_authority(runtime),
     )
     final = evaluate_continuation(
         state,
@@ -1934,7 +2172,7 @@ def test_policy_rejects_progress_from_an_unapproved_contract():
             requester=PrincipalAuthority.OPENAI_SUPERVISOR,
         ),
         progress_id=foreign.progress_id,
-    )
+    )._with_request_authority(_authority(runtime))
     denied = evaluate_continuation(
         state,
         request,
@@ -2219,6 +2457,7 @@ def _partial_context(reason):
         progress=progress,
         requested_resources=BudgetVector(request_delta=1),
         requester=PrincipalAuthority.OPENAI_SUPERVISOR,
+        requester_authority=_authority(runtime),
     )
     denied = evaluate_continuation(
         state,
@@ -2445,6 +2684,12 @@ def test_continuation_session_requires_exact_policy_receipt_pair():
     with pytest.raises(ValueError, match="supplied together"):
         RustRuntimeSession(
             "missing-policy", continuation_policy_receipt=policy_receipt
+        )
+    with pytest.raises(ValueError, match="create_continuation"):
+        RustRuntimeSession(
+            "direct-continuation",
+            continuation_policy=policy,
+            continuation_policy_receipt=policy_receipt,
         )
 
 

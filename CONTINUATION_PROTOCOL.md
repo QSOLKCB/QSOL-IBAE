@@ -21,6 +21,9 @@ OpenAI supervisor requests
 ```
 
 - The supervisor may request a lease but cannot grant one.
+- A supervisor principal label is descriptive, not request authority. Creation
+  of one continuation-enabled native session returns a separate once-issued,
+  session-scoped, non-constructible supervisor capability.
 - Governance owns the continuation policy and every grant/deny decision.
 - Orchestration owns objective progress and structured strategy semantics.
 - Rust owns runtime limits, counters, logical ticks, and lease application.
@@ -31,6 +34,19 @@ OpenAI supervisor requests
 A request is not a grant. A grant is not applied runtime capacity. An applied
 lease is not evidence of task progress. A strategy change may justify one
 bounded recovery attempt, but is not itself progress.
+
+At session creation, the deterministic evaluator and context observer are
+pinned in a Rust-private, non-serialized per-instance authority binding. The
+supervisor capability can seal an exact canonical request but cannot select or
+replace those functions. The request seal is likewise non-constructible and is
+the only entry to the pinned evaluator. Its native binding uses live object
+capability identity solely for in-process authorization; memory identity never
+enters canonical correctness records. A separately created session with equal
+canonical IDs therefore cannot issue authority for the original live session.
+The supported Python API creates continuation sessions only through the
+dedicated factory, which extracts the capability before returning the runtime;
+the generic constructor rejects continuation arguments and the runtime facade
+does not expose its native handle.
 
 ## Versioned records
 
@@ -106,7 +122,13 @@ count, elapsed time, and model confidence do not participate.
 
 The version-1 continuation profiles admit only `measurable_progress`. Missing,
 new, incomparable, regressed, or unchanged evidence cannot independently
-authorize a lease.
+authorize a lease. External evidence mappings are consumed in canonical
+dimension-key order, so caller insertion order cannot change dimension/evidence
+pairing. A measurable `progress_id` is consumed when it authorizes a grant and
+cannot independently authorize another grant. Another progress-based grant
+requires a newly observed progress endpoint with a different identity. A
+separately admitted strategy recovery remains governed by its own finite cap
+and does not relabel the consumed endpoint as progress.
 
 ## Strategy materiality and cycles
 
@@ -203,10 +225,11 @@ For one exact continuation state, request, policy receipt, progress record,
 strategy receipt, live runtime-derived cycle state, and blocking-governance
 input, decision order is deterministic and fail closed. It checks, in order:
 
-1. state, task, governance, policy, orchestration, runtime, and progress
-   lineage, including the policy-bound contract and exact live progress-ledger
-   endpoint and evaluator-issued continuation-decision lineage;
-2. supervisor requester authority;
+1. exact native supervisor request authority, not merely the requester label;
+2. state, task, governance, policy, orchestration, runtime, and progress
+   lineage, including the policy-bound contract, exact live progress-ledger
+   endpoint, consumed-progress endpoint, and native evaluator-issued
+   continuation-decision lineage;
 3. absence of a pending unapplied grant;
 4. incomplete task and absence of a blocking governance violation;
 5. request-count, lease-index, lease-count, and cumulative ceilings;
@@ -232,19 +255,29 @@ It does not itself change native runtime limits or consume runtime request,
 execution, retry, mutation, cache-hit, or history resources. No second request
 can be admitted while a grant remains pending.
 
+The native decision-lineage seal binds the exact task/governance/policy
+identity; request, grant, denial, and recovery accounting; cumulative grant and
+decision receipt aggregate; current strategy material; last decision and
+denial; last progress identity and classification; progress control state; and
+last consumed progress identity. Erasing or changing any of those public fields
+cannot mint another valid state. Legitimate context observation enters the
+observer pinned at session creation and receives a new native seal for the
+resulting exact lineage. The issuer is not held in a Python closure or exposed
+as a mutable module validator.
+
 ## Rust lease application
 
 `apply_lease` is accepted only by an opt-in continuation-enabled native
 session. Rust independently parses the full canonical governance grant and
-recomputes both grant and receipt identities. The complete Python governance
-evaluator first attaches a non-serialized, non-constructible decision
-capability bound to the exact canonical grant. The runtime facade cannot bind a
-structural grant without that capability. The exported native issuer also
-validates the same exact evaluator capability before it may mint its separate
-non-constructible seal for that grant, session, and prior runtime state. Direct
-native-session access therefore cannot bypass governance. Rust refuses a
-hash-consistent but unissued grant. It then
-validates:
+recomputes both grant and receipt identities. A per-instance native request
+seal first validates its exact authorized request, invokes the evaluator pinned
+at session creation, and passes the resulting grant directly to a Rust-private
+issuer. That issuer independently validates the request identity, complete
+grant, and live native session/state before it may mint a separate
+non-constructible seal. The Python runtime facade exposes no grant issuer, and
+a structural grant or grant issued by an equal-ID duplicate session lacks the
+original session's native binding. Rust therefore refuses a hash-consistent but
+unissued grant. It then validates:
 
 - task, governance, governance receipt, policy, and policy receipt bindings;
 - native session and exact prior runtime state;
@@ -273,11 +306,11 @@ policy/governance/runtime state, wrong or replayed index, schedule/ceiling
 violation, unsupported resource, unissued grant, and arithmetic overflow.
 
 The Rust application receipt is a separate execution-authority record. The
-evaluator capability and native grant seal are in-process application
-prerequisites and are not serialized. The application receipt itself
-deliberately has no v0.3 native source seal: the supported checkpoint scope is
-in-process structural lineage, not durable producer authentication or remote
-attestation.
+supervisor request capability, request seal, native decision-lineage seal, and
+native grant seal are in-process prerequisites and are not serialized. The
+application receipt itself deliberately has no v0.3 native source seal: the
+supported checkpoint scope is in-process structural lineage, not durable
+producer authentication or remote attestation.
 
 Python may commit an accepted application into continuation lineage only after
 matching every task/governance/policy/session/grant/index/cumulative/ceiling
@@ -306,13 +339,17 @@ frozen.
 task/governance/policy/progress-contract/orchestration/runtime lineage,
 request/grant/denial counts, cumulative grants, decision aggregate, bounded
 decision receipt IDs, strategy recovery count, progress state, pending
-application, and continuation logical tick. Advancing orchestration state
-requires a progress record whose prior endpoint is the ledger's current state;
+application, last consumed progress identity, and continuation logical tick.
+Advancing orchestration state requires a progress record whose prior endpoint
+is the ledger's current state;
 lease requests must reuse the exact last committed progress identity.
-Every evaluator-produced decision state also carries non-constructible lineage
-over the decision/recovery ledger, so replacing or erasing the public recovery
-counter cannot authorize another recovery. Binding a new progress record
-immediately derives `complete`, `progressing`, or `stalled` control state.
+Every evaluator-produced decision state also carries non-constructible native
+lineage over its decision/recovery and decision/progress semantics, so replacing
+or erasing a public counter, decision, denial, classification, progress state,
+or consumed endpoint cannot authorize another grant or forge a semantic partial
+reason. Binding a new progress record through the pinned observer immediately
+derives `complete`, `progressing`, or `stalled` control state and reseals the
+new lineage.
 
 The compact AI projection exposes remaining request decisions, remaining lease
 schedule slots, their effective minimum, total continuation capacity, the last

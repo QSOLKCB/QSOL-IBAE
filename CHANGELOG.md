@@ -28,11 +28,22 @@ All notable changes to QSOL-IBAE will be documented here.
   governance grant/receipt identities, policy/session/state lineage, schedule,
   replay index, and checked ceiling before changing exact limits. Accepted
   application consumes one runtime logical tick and no tool counters/history;
-  rejection is state-neutral. An evaluator-only governance capability gates
-  issuance of the separate non-constructible native grant seal. The exported
-  native issuer independently requires and validates that exact evaluator
-  capability, preventing direct native callers with hash-consistent but
-  unissued records from extending limits.
+  rejection is state-neutral. Continuation-session creation pins the evaluator
+  and observer in a Rust-private per-instance authority and returns a separate
+  once-issued, session-scoped supervisor request capability. The principal
+  label alone cannot authorize a request; the resulting exact request seal is
+  the only path to native evaluation and grant-seal issuance. Rust independently validates the
+  authorized request and complete grant, and a duplicate session with equal
+  canonical IDs cannot use its distinct native authority against the original
+  session. There is no raw exported grant issuer or mutable Python capability
+  validator.
+- single-use measurable-progress endpoints: one exact progress identity may
+  justify at most one progress-based grant, after which another such grant
+  requires freshly observed progress. External evidence is paired with
+  dimensions in canonical key order. Native decision lineage now binds the
+  last decision/denial, progress identity/classification/state, consumed
+  endpoint, grant ledger, and recovery accounting; legitimate context changes
+  are resealed only through the pinned native observer.
 - structural in-process `IBAE-CONTINUATION-CHECKPOINT-V1`, fixed-shape
   continuation evidence capped at 4,096 bytes, semantic continuation partial
   receipts, and non-authoritative watchdog observations that cannot establish

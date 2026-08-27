@@ -56,9 +56,16 @@ evidence; paraphrase is excluded from identity. Governance precommits an exact
 initial budget, finite indexed schedule, cumulative ceiling, request cap, and
 strategy-recovery cap. The supervisor requests, governance grants or denies,
 and an opt-in Rust session applies only a full validated governance-issued
-grant after the exported native issuer validates an evaluator-only capability
-for its separate non-constructible native seal, using an exact `apply_lease`
-transition. Evaluator-issued lineage protects recovery accounting. An accepted
+grant. Session creation pins the evaluator/observer into a non-serialized
+per-instance native authority and returns a separate once-issued,
+session-scoped supervisor request capability; a public principal label,
+reconstructed record, mutable Python validator, or equal-ID duplicate session
+is insufficient. An exact
+request seal enters the pinned evaluator, then Rust validates the request and
+grant against the live session before issuing the grant seal used by
+`apply_lease`. Native lineage protects recovery and decision/progress semantics,
+and each measurable progress identity is single-use for progress-based
+admission. An accepted
 application changes exact limits plus one runtime logical tick while consuming no
 tool/runtime resource counter or history; rejection is state-neutral. The
 compact state exposes effective remaining request and schedule decisions.

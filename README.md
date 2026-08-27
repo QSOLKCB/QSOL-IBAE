@@ -108,15 +108,19 @@ continuation without changing those frozen v0.2-v0.4 records:
   finite lease schedules, checked cumulative ceilings, request caps, and a
   finite strategy-recovery allowance;
 - one task/session continuation ledger with deterministic grant/deny receipts,
-  evaluator-bound recovery accounting, request-and-schedule-aware compact AI
-  recovery state, live progress-state refresh, and no self-extension by runtime,
-  tools, or future workers;
-- an opt-in Rust `apply_lease` transition and native seal issuer that
-  independently validate a full governance-issued grant whose evaluator-only
-  capability gates a separate
-  non-constructible native seal, changes only exact limits plus one runtime
-  logical tick, and rejects unissued/replayed/forged/stale state without
-  mutation;
+  native-bound decision/recovery semantics, single-use measurable-progress
+  endpoints, request-and-schedule-aware compact AI recovery state, live
+  progress-state refresh, and no self-extension by runtime, tools, or future
+  workers;
+- a once-issued, session-scoped native supervisor request capability separate
+  from the public requester label, with the evaluator/observer pinned by the
+  dedicated continuation-session factory, exact request seals, and an opt-in
+  Rust `apply_lease` transition
+  that independently validates the authorized request and full governance
+  grant against the live per-instance session before issuing its
+  non-constructible grant seal; it changes only exact limits plus one runtime
+  logical tick and rejects unissued/replayed/forged/stale or equal-ID
+  cross-session authority without mutation;
 - in-process structural checkpoints, a separate fixed-shape continuation
   evidence receipt, checkpoint-evidence-bound semantic continuation partial
   receipts, and watchdog observations whose exact lease-exhaustion flag is

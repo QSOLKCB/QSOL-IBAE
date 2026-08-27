@@ -8,7 +8,7 @@
 
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
-use pyo3::types::{PyAny, PyBool, PyModule};
+use pyo3::types::{PyAny, PyBool, PyDict, PyModule};
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -26,6 +26,7 @@ const LEASE_GRANT_RECEIPT_VERSION: &str = "IBAE-CONTINUATION-LEASE-GRANT-V1";
 const LEASE_APPLICATION_RECEIPT_VERSION: &str = "IBAE-RUNTIME-LEASE-APPLICATION-RECEIPT-V1";
 const CONTINUATION_POLICY_ID_DOMAIN: &str = "ibae.continuation-policy-id.v1";
 const CONTINUATION_POLICY_RECEIPT_ID_DOMAIN: &str = "ibae.continuation-policy-receipt-id.v1";
+const CONTINUATION_REQUEST_ID_DOMAIN: &str = "ibae.continuation-request-id.v1";
 const LEASE_GRANT_ID_DOMAIN: &str = "ibae.continuation-lease-grant-id.v1";
 const LEASE_GRANT_RECEIPT_ID_DOMAIN: &str = "ibae.continuation-lease-grant-receipt-id.v1";
 const LEASE_APPLICATION_ID_DOMAIN: &str = "ibae.runtime-lease-application-id.v1";
@@ -971,6 +972,7 @@ struct LeaseGrant {
     governance_receipt_id: String,
     continuation_policy_id: String,
     continuation_policy_receipt_id: String,
+    continuation_request_id: String,
     receipt_id: String,
     lease_grant_id: String,
     prior_runtime_state_id: String,
@@ -1084,6 +1086,7 @@ impl LeaseGrant {
             governance_receipt_id: identity("governance_receipt_id")?,
             continuation_policy_id: identity("continuation_policy_id")?,
             continuation_policy_receipt_id: identity("continuation_policy_receipt_id")?,
+            continuation_request_id: identity("continuation_request_id")?,
             receipt_id,
             lease_grant_id: lease_grant_id.clone(),
             prior_runtime_state_id: identity("prior_runtime_state_id")?,
@@ -1108,15 +1111,20 @@ struct NativeLeaseGrantSeal {
     lease_grant_id: String,
     prior_runtime_state_id: String,
     runtime_session_id: String,
+    continuation_authority: Option<Arc<ContinuationAuthorityBinding>>,
 }
 
 impl NativeLeaseGrantSeal {
-    fn from_grant(grant: &LeaseGrant) -> Self {
+    fn from_grant(
+        grant: &LeaseGrant,
+        continuation_authority: Option<Arc<ContinuationAuthorityBinding>>,
+    ) -> Self {
         Self {
             canonical_grant: Arc::clone(&grant.canonical_receipt),
             lease_grant_id: grant.lease_grant_id.clone(),
             prior_runtime_state_id: grant.prior_runtime_state_id.clone(),
             runtime_session_id: grant.runtime_session_id.clone(),
+            continuation_authority,
         }
     }
 
@@ -1132,6 +1140,341 @@ impl NativeLeaseGrantSeal {
 impl NativeLeaseGrantSeal {
     fn validates(&self, canonical_grant: &str) -> bool {
         self.canonical_grant.as_ref() == canonical_grant
+    }
+}
+
+/// Rust-private binding shared only by one live continuation session and the
+/// supervisor authority handed out once when that session is created.  The
+/// pointer identity is deliberately excluded from every canonical record.
+struct ContinuationAuthorityBinding {
+    task_id: String,
+    governance_id: String,
+    continuation_policy_id: String,
+    runtime_session_id: String,
+    evaluator: Py<PyAny>,
+    observer: Py<PyAny>,
+}
+
+impl ContinuationAuthorityBinding {
+    fn authorize_request(&self, canonical_request: &str) -> Result<String, &'static str> {
+        let value = parse_runtime_canonical(canonical_request)
+            .map_err(|_| "continuation request must be canonical JSON")?;
+        let mapping = value
+            .as_object()
+            .ok_or("continuation request must be an object")?;
+        if !object_has_exact_keys(
+            mapping,
+            &[
+                "continuation_policy_id",
+                "continuation_state_id",
+                "governance_id",
+                "lease_index",
+                "orchestration_state_id",
+                "progress_id",
+                "protocol_version",
+                "requested_resources",
+                "requester",
+                "runtime_session_id",
+                "runtime_state_id",
+                "strategy_change_id",
+                "task_id",
+            ],
+        ) {
+            return Err("continuation request does not match the v1 schema");
+        }
+        if mapping.get("protocol_version").and_then(Value::as_str)
+            != Some(CONTINUATION_PROTOCOL_VERSION)
+            || mapping.get("requester").and_then(Value::as_str) != Some("openai_supervisor")
+            || mapping.get("task_id").and_then(Value::as_str) != Some(self.task_id.as_str())
+            || mapping.get("governance_id").and_then(Value::as_str)
+                != Some(self.governance_id.as_str())
+            || mapping
+                .get("continuation_policy_id")
+                .and_then(Value::as_str)
+                != Some(self.continuation_policy_id.as_str())
+            || mapping.get("runtime_session_id").and_then(Value::as_str)
+                != Some(self.runtime_session_id.as_str())
+        {
+            return Err("continuation request is not bound to supervisor authority");
+        }
+        for name in [
+            "continuation_state_id",
+            "orchestration_state_id",
+            "progress_id",
+            "runtime_state_id",
+        ] {
+            if !mapping
+                .get(name)
+                .and_then(Value::as_str)
+                .is_some_and(is_fingerprint)
+            {
+                return Err("continuation request identity is invalid");
+            }
+        }
+        if !mapping
+            .get("lease_index")
+            .and_then(Value::as_u64)
+            .is_some_and(|item| item > 0)
+        {
+            return Err("continuation request lease index is invalid");
+        }
+        Ok(domain_fingerprint(
+            CONTINUATION_REQUEST_ID_DOMAIN,
+            canonical_request,
+        ))
+    }
+}
+
+/// Non-constructible supervisor capability returned separately from one new
+/// continuation runtime.  Possessing a runtime object or public principal
+/// label does not provide this capability.
+#[pyclass(
+    name = "NativeContinuationSupervisorAuthority",
+    module = "ibae._runtime",
+    unsendable
+)]
+struct NativeContinuationSupervisorAuthority {
+    binding: Arc<ContinuationAuthorityBinding>,
+}
+
+#[pymethods]
+impl NativeContinuationSupervisorAuthority {
+    fn authorize_request(
+        &self,
+        py: Python<'_>,
+        canonical_request: &str,
+    ) -> PyResult<Py<NativeContinuationRequestSeal>> {
+        let continuation_request_id = self
+            .binding
+            .authorize_request(canonical_request)
+            .map_err(PyValueError::new_err)?;
+        Py::new(
+            py,
+            NativeContinuationRequestSeal {
+                binding: Arc::clone(&self.binding),
+                canonical_request: Arc::from(canonical_request),
+                continuation_request_id,
+                evaluator: self.binding.evaluator.clone_ref(py),
+                observer: self.binding.observer.clone_ref(py),
+            },
+        )
+    }
+}
+
+/// Exact one-request supervisor authorization.  The captured evaluator and
+/// native authority remain in Rust-private fields and are not available via a
+/// Python closure or mutable module validator.
+#[pyclass(
+    name = "NativeContinuationRequestSeal",
+    module = "ibae._runtime",
+    unsendable
+)]
+struct NativeContinuationRequestSeal {
+    binding: Arc<ContinuationAuthorityBinding>,
+    canonical_request: Arc<str>,
+    continuation_request_id: String,
+    evaluator: Py<PyAny>,
+    observer: Py<PyAny>,
+}
+
+#[pymethods]
+impl NativeContinuationRequestSeal {
+    fn validates(&self, canonical_request: &str) -> bool {
+        self.canonical_request.as_ref() == canonical_request
+    }
+
+    #[pyo3(signature = (
+        native_session,
+        state,
+        request,
+        runtime_session,
+        policy,
+        policy_receipt,
+        progress,
+        strategy_change=None,
+        cycle_evidence=None,
+        blocking_governance_violation_id=None,
+        benchmark_observation=None
+    ))]
+    #[allow(clippy::too_many_arguments)]
+    fn evaluate(
+        &self,
+        py: Python<'_>,
+        native_session: &Bound<'_, PyAny>,
+        state: &Bound<'_, PyAny>,
+        request: &Bound<'_, PyAny>,
+        runtime_session: &Bound<'_, PyAny>,
+        policy: &Bound<'_, PyAny>,
+        policy_receipt: &Bound<'_, PyAny>,
+        progress: &Bound<'_, PyAny>,
+        strategy_change: Option<&Bound<'_, PyAny>>,
+        cycle_evidence: Option<&Bound<'_, PyAny>>,
+        blocking_governance_violation_id: Option<&str>,
+        benchmark_observation: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<Py<PyAny>> {
+        let canonical_request: String = request.call_method0("_canonical_text")?.extract()?;
+        if canonical_request != self.canonical_request.as_ref() {
+            return Err(PyValueError::new_err(
+                "continuation request seal does not match request",
+            ));
+        }
+        {
+            let native: PyRef<'_, NativeRuntimeSession> = native_session.extract()?;
+            if !native.matches_continuation_authority(&self.binding) {
+                return Err(PyValueError::new_err(
+                    "continuation request authority does not bind native session",
+                ));
+            }
+        }
+        let lineage = state.call_method0("_native_lineage_seal")?;
+        if !lineage.is_none() {
+            let lineage: PyRef<'_, NativeContinuationStateSeal> = lineage.extract()?;
+            if !lineage.matches_continuation_authority(&self.binding) {
+                return Err(PyValueError::new_err(
+                    "continuation state lineage does not bind native session",
+                ));
+            }
+        }
+
+        let kwargs = PyDict::new_bound(py);
+        kwargs.set_item("runtime_session", runtime_session)?;
+        kwargs.set_item("policy", policy)?;
+        kwargs.set_item("policy_receipt", policy_receipt)?;
+        kwargs.set_item("progress", progress)?;
+        kwargs.set_item("_request_authorized", true)?;
+        if let Some(value) = strategy_change {
+            kwargs.set_item("strategy_change", value)?;
+        }
+        if let Some(value) = cycle_evidence {
+            kwargs.set_item("cycle_evidence", value)?;
+        }
+        if let Some(value) = blocking_governance_violation_id {
+            kwargs.set_item("blocking_governance_violation_id", value)?;
+        }
+        if let Some(value) = benchmark_observation {
+            kwargs.set_item("benchmark_observation", value)?;
+        }
+        let raw = self
+            .evaluator
+            .bind(py)
+            .call((state, request), Some(&kwargs))?;
+        let next_state = raw.getattr("next_state")?;
+        let receipt = raw.getattr("receipt")?;
+        let granted: bool = raw.getattr("granted")?.extract()?;
+
+        let sealed_receipt = if granted {
+            let canonical_grant: String = receipt.call_method0("_canonical_text")?.extract()?;
+            let native_seal = {
+                let native: PyRef<'_, NativeRuntimeSession> = native_session.extract()?;
+                native.issue_evaluated_lease_grant(
+                    &canonical_grant,
+                    &self.binding,
+                    &self.continuation_request_id,
+                )?
+            };
+            let native_seal = Py::new(py, native_seal)?;
+            receipt.call_method1("_with_native_seal", (native_seal,))?
+        } else {
+            receipt
+        };
+
+        let sealed_state = if next_state.is(state) {
+            next_state
+        } else {
+            let canonical_lineage: String = next_state
+                .call_method0("_decision_lineage_text")?
+                .extract()?;
+            let lineage_seal = Py::new(
+                py,
+                NativeContinuationStateSeal {
+                    binding: Arc::clone(&self.binding),
+                    canonical_lineage: Arc::from(canonical_lineage),
+                    observer: self.observer.clone_ref(py),
+                },
+            )?;
+            next_state.call_method1("_with_native_lineage", (lineage_seal,))?
+        };
+        Ok(raw
+            .call_method1("_finalize", (sealed_state, sealed_receipt))?
+            .unbind())
+    }
+}
+
+/// Non-constructible evaluator lineage for the exact authoritative decision
+/// ledger.  Validation is native and its issuer is reachable only while Rust
+/// is finalizing one authorized evaluation.
+#[pyclass(
+    name = "NativeContinuationStateSeal",
+    module = "ibae._runtime",
+    unsendable
+)]
+struct NativeContinuationStateSeal {
+    binding: Arc<ContinuationAuthorityBinding>,
+    canonical_lineage: Arc<str>,
+    observer: Py<PyAny>,
+}
+
+#[pymethods]
+impl NativeContinuationStateSeal {
+    fn validates(&self, canonical_lineage: &str) -> bool {
+        self.canonical_lineage.as_ref() == canonical_lineage
+    }
+
+    #[pyo3(signature = (
+        state,
+        policy,
+        orchestration_state,
+        runtime_snapshot,
+        progress=None,
+        strategy=None
+    ))]
+    #[allow(clippy::too_many_arguments)]
+    fn observe(
+        &self,
+        py: Python<'_>,
+        state: &Bound<'_, PyAny>,
+        policy: &Bound<'_, PyAny>,
+        orchestration_state: &Bound<'_, PyAny>,
+        runtime_snapshot: &Bound<'_, PyAny>,
+        progress: Option<&Bound<'_, PyAny>>,
+        strategy: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<Py<PyAny>> {
+        let current_lineage: String = state.call_method0("_decision_lineage_text")?.extract()?;
+        if current_lineage != self.canonical_lineage.as_ref() {
+            return Err(PyValueError::new_err(
+                "continuation observation state does not match native lineage",
+            ));
+        }
+        let kwargs = PyDict::new_bound(py);
+        kwargs.set_item("policy", policy)?;
+        kwargs.set_item("orchestration_state", orchestration_state)?;
+        kwargs.set_item("runtime_snapshot", runtime_snapshot)?;
+        if let Some(value) = progress {
+            kwargs.set_item("progress", value)?;
+        }
+        if let Some(value) = strategy {
+            kwargs.set_item("strategy", value)?;
+        }
+        let observed = self.observer.bind(py).call((state,), Some(&kwargs))?;
+        let canonical_lineage: String =
+            observed.call_method0("_decision_lineage_text")?.extract()?;
+        let lineage_seal = Py::new(
+            py,
+            NativeContinuationStateSeal {
+                binding: Arc::clone(&self.binding),
+                canonical_lineage: Arc::from(canonical_lineage),
+                observer: self.observer.clone_ref(py),
+            },
+        )?;
+        Ok(observed
+            .call_method1("_with_native_lineage", (lineage_seal,))?
+            .unbind())
+    }
+}
+
+impl NativeContinuationStateSeal {
+    fn matches_continuation_authority(&self, supplied: &Arc<ContinuationAuthorityBinding>) -> bool {
+        Arc::ptr_eq(&self.binding, supplied)
     }
 }
 
@@ -3912,6 +4255,8 @@ impl NativeEvidenceAccumulator {
 #[pyclass(name = "NativeRuntimeSession", module = "ibae._runtime", unsendable)]
 struct NativeRuntimeSession {
     core: RuntimeCore,
+    continuation_authority: Option<Arc<ContinuationAuthorityBinding>>,
+    supervisor_authority_issued: bool,
 }
 
 #[pymethods]
@@ -3923,16 +4268,47 @@ impl NativeRuntimeSession {
         max_executions=None,
         max_retries=None,
         max_history=None,
-        continuation_context=None
+        continuation_context=None,
+        continuation_evaluator=None,
+        continuation_observer=None
     ))]
+    #[allow(clippy::too_many_arguments)]
     fn new(
+        py: Python<'_>,
         session_key: &str,
         max_requests: Option<&Bound<'_, PyAny>>,
         max_executions: Option<&Bound<'_, PyAny>>,
         max_retries: Option<&Bound<'_, PyAny>>,
         max_history: Option<&Bound<'_, PyAny>>,
         continuation_context: Option<&str>,
+        continuation_evaluator: Option<Py<PyAny>>,
+        continuation_observer: Option<Py<PyAny>>,
     ) -> PyResult<Self> {
+        if continuation_context.is_some()
+            != (continuation_evaluator.is_some() && continuation_observer.is_some())
+        {
+            return Err(PyValueError::new_err(
+                "continuation context requires its exact evaluator and observer",
+            ));
+        }
+        if continuation_context.is_none()
+            && (continuation_evaluator.is_some() || continuation_observer.is_some())
+        {
+            return Err(PyValueError::new_err(
+                "continuation engine cannot be bound without continuation context",
+            ));
+        }
+        if continuation_evaluator
+            .as_ref()
+            .is_some_and(|value| !value.bind(py).is_callable())
+            || continuation_observer
+                .as_ref()
+                .is_some_and(|value| !value.bind(py).is_callable())
+        {
+            return Err(PyValueError::new_err(
+                "continuation evaluator and observer must be callable",
+            ));
+        }
         let limits = Limits {
             requests: exact_u64(max_requests, 32, "max_requests")?,
             executions: exact_u64(max_executions, 16, "max_executions")?,
@@ -3950,7 +4326,44 @@ impl NativeRuntimeSession {
             }
         }
         .map_err(PyValueError::new_err)?;
-        Ok(Self { core })
+        let continuation_authority = match core.continuation.as_ref() {
+            None => None,
+            Some(active) => Some(Arc::new(ContinuationAuthorityBinding {
+                task_id: active.context.task_id.clone(),
+                governance_id: active.context.governance_id.clone(),
+                continuation_policy_id: active.context.policy.policy_id.clone(),
+                runtime_session_id: core.session_id.clone(),
+                evaluator: continuation_evaluator.expect("validated evaluator"),
+                observer: continuation_observer.expect("validated observer"),
+            })),
+        };
+        Ok(Self {
+            core,
+            continuation_authority,
+            supervisor_authority_issued: false,
+        })
+    }
+
+    fn take_continuation_request_authority(
+        &mut self,
+        py: Python<'_>,
+    ) -> PyResult<Py<NativeContinuationSupervisorAuthority>> {
+        let binding = self
+            .continuation_authority
+            .as_ref()
+            .ok_or_else(|| PyValueError::new_err("native runtime has no continuation authority"))?;
+        if self.supervisor_authority_issued {
+            return Err(PyValueError::new_err(
+                "continuation supervisor authority was already issued",
+            ));
+        }
+        self.supervisor_authority_issued = true;
+        Py::new(
+            py,
+            NativeContinuationSupervisorAuthority {
+                binding: Arc::clone(binding),
+            },
+        )
     }
 
     #[pyo3(signature = (command_json, operation=None, lease_grant_seal=None))]
@@ -3961,9 +4374,12 @@ impl NativeRuntimeSession {
         operation: Option<Py<PyAny>>,
         lease_grant_seal: Option<PyRef<'_, NativeLeaseGrantSeal>>,
     ) -> PyResult<(String, Option<Py<NativeRuntimeReceiptSeal>>)> {
+        let trusted_lease_grant_seal = lease_grant_seal
+            .as_deref()
+            .filter(|seal| self.matches_lease_grant_authority(seal));
         let outcome = self
             .core
-            .dispatch(command_json, lease_grant_seal.as_deref(), || {
+            .dispatch(command_json, trusted_lease_grant_seal, || {
                 let Some(callback) = operation else {
                     return Invocation::OperationFailed;
                 };
@@ -3987,26 +4403,54 @@ impl NativeRuntimeSession {
         Ok((outcome, seal))
     }
 
-    fn issue_lease_grant(
+    fn snapshot(&self) -> PyResult<String> {
+        self.core.snapshot_json().map_err(|_| {
+            PyValueError::new_err("runtime snapshot exceeds the declared deterministic envelope")
+        })
+    }
+
+    fn terminal_cycle_period(&self) -> Option<u8> {
+        self.core.terminal_cycle_period()
+    }
+}
+
+impl NativeRuntimeSession {
+    fn matches_continuation_authority(&self, supplied: &Arc<ContinuationAuthorityBinding>) -> bool {
+        self.continuation_authority
+            .as_ref()
+            .is_some_and(|active| Arc::ptr_eq(active, supplied))
+    }
+
+    fn matches_lease_grant_authority(&self, seal: &NativeLeaseGrantSeal) -> bool {
+        match (
+            self.continuation_authority.as_ref(),
+            seal.continuation_authority.as_ref(),
+        ) {
+            (Some(active), Some(supplied)) => Arc::ptr_eq(active, supplied),
+            _ => false,
+        }
+    }
+
+    fn issue_evaluated_lease_grant(
         &self,
-        py: Python<'_>,
         canonical_grant: &str,
-        governance_capability: &Bound<'_, PyAny>,
-    ) -> PyResult<Py<NativeLeaseGrantSeal>> {
-        let continuation = PyModule::import_bound(py, "ibae.continuation")?;
-        let evaluator_authorized: bool = continuation
-            .getattr("_validate_governance_capability")?
-            .call1((governance_capability, canonical_grant))?
-            .extract()?;
-        if !evaluator_authorized {
+        supplied_authority: &Arc<ContinuationAuthorityBinding>,
+        continuation_request_id: &str,
+    ) -> PyResult<NativeLeaseGrantSeal> {
+        if !self.matches_continuation_authority(supplied_authority) {
             return Err(PyValueError::new_err(
-                "native lease grant issuance requires evaluator authority",
+                "native lease grant authority does not bind this session",
             ));
         }
         let value = parse_runtime_canonical(canonical_grant)
             .map_err(|_| PyValueError::new_err("lease grant must be canonical JSON"))?;
         let grant = LeaseGrant::parse(&value)
             .map_err(|_| PyValueError::new_err("lease grant record is invalid"))?;
+        if grant.continuation_request_id != continuation_request_id {
+            return Err(PyValueError::new_err(
+                "native lease grant does not bind the authorized request",
+            ));
+        }
         let prior_state_id = self.core.state_id().map_err(|_| {
             PyValueError::new_err("native runtime state cannot issue a lease grant")
         })?;
@@ -4018,17 +4462,10 @@ impl NativeRuntimeSession {
                     reason.code()
                 ))
             })?;
-        Py::new(py, NativeLeaseGrantSeal::from_grant(&grant))
-    }
-
-    fn snapshot(&self) -> PyResult<String> {
-        self.core.snapshot_json().map_err(|_| {
-            PyValueError::new_err("runtime snapshot exceeds the declared deterministic envelope")
-        })
-    }
-
-    fn terminal_cycle_period(&self) -> Option<u8> {
-        self.core.terminal_cycle_period()
+        Ok(NativeLeaseGrantSeal::from_grant(
+            &grant,
+            Some(Arc::clone(supplied_authority)),
+        ))
     }
 }
 
@@ -4045,6 +4482,9 @@ fn _runtime(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<NativeRuntimeSession>()?;
     module.add_class::<NativeRuntimeReceiptSeal>()?;
     module.add_class::<NativeLeaseGrantSeal>()?;
+    module.add_class::<NativeContinuationSupervisorAuthority>()?;
+    module.add_class::<NativeContinuationRequestSeal>()?;
+    module.add_class::<NativeContinuationStateSeal>()?;
     module.add_class::<NativeEvidenceAccumulator>()?;
     module.add_class::<NativeEvidenceSummarySeal>()?;
     module.add_class::<NativeEvidenceReceiptSeal>()?;
@@ -4240,7 +4680,7 @@ mod tests {
     {
         let value = parse_runtime_canonical(command).unwrap();
         let grant = LeaseGrant::parse(&value["grant_receipt"]).unwrap();
-        let seal = NativeLeaseGrantSeal::from_grant(&grant);
+        let seal = NativeLeaseGrantSeal::from_grant(&grant, None);
         runtime.dispatch(command, Some(&seal), invoke).unwrap()
     }
 

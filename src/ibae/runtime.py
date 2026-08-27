@@ -1260,41 +1260,11 @@ class RustRuntimeSession:
             raise ValueError(
                 "continuation policy and policy receipt must be supplied together"
             )
-        continuation_context: str | None = None
         if continuation_policy is not None:
-            from .continuation import ContinuationPolicy, ContinuationPolicyReceipt
-
-            if type(continuation_policy) is not ContinuationPolicy:
-                raise TypeError("continuation_policy must be an exact policy")
-            if type(continuation_policy_receipt) is not ContinuationPolicyReceipt:
-                raise TypeError(
-                    "continuation_policy_receipt must be an exact policy receipt"
-                )
-            if (
-                continuation_policy_receipt.continuation_policy_id
-                != continuation_policy.continuation_policy_id
-            ):
-                raise ValueError("continuation policy receipt identity mismatch")
-            base = continuation_policy.initial_budget
-            policy_limits = RuntimeLimits(
-                max_requests=base.request_delta,
-                max_executions=base.execution_delta,
-                max_retries=base.retry_delta,
-                max_history=base.history_delta,
+            raise ValueError(
+                "continuation sessions require RustRuntimeSession.create_continuation"
             )
-            if limits is not None and limits != policy_limits:
-                raise ValueError("runtime limits must match continuation base budget")
-            active_limits = policy_limits
-            continuation_context = canonical_json(
-                {
-                    "continuation_policy": continuation_policy.canonical_record(),
-                    "continuation_policy_receipt": (
-                        continuation_policy_receipt.canonical_record()
-                    ),
-                }
-            )
-        else:
-            active_limits = limits or RuntimeLimits()
+        active_limits = limits or RuntimeLimits()
         if not isinstance(active_limits, RuntimeLimits):
             raise TypeError("limits must be RuntimeLimits")
         from ._runtime import NativeRuntimeSession
@@ -1305,7 +1275,108 @@ class RustRuntimeSession:
             active_limits.max_executions,
             active_limits.max_retries,
             active_limits.max_history,
+            None,
+            None,
+            None,
+        )
+
+    @classmethod
+    def create_continuation(
+        cls,
+        session_key: str,
+        *,
+        continuation_policy: Any,
+        continuation_policy_receipt: Any,
+        limits: RuntimeLimits | None = None,
+    ) -> tuple[RustRuntimeSession, Any]:
+        """Create one runtime and separately return its supervisor capability."""
+
+        if cls is not RustRuntimeSession:
+            raise TypeError("continuation runtimes require exact RustRuntimeSession")
+        if not isinstance(session_key, str) or not session_key:
+            raise ValueError("session_key must be a non-empty string")
+        from .continuation import (
+            ContinuationPolicy,
+            ContinuationPolicyReceipt,
+            _evaluate_continuation,
+            _observe_continuation_context,
+        )
+
+        if type(continuation_policy) is not ContinuationPolicy:
+            raise TypeError("continuation_policy must be an exact policy")
+        if type(continuation_policy_receipt) is not ContinuationPolicyReceipt:
+            raise TypeError(
+                "continuation_policy_receipt must be an exact policy receipt"
+            )
+        if (
+            continuation_policy_receipt.continuation_policy_id
+            != continuation_policy.continuation_policy_id
+        ):
+            raise ValueError("continuation policy receipt identity mismatch")
+        base = continuation_policy.initial_budget
+        policy_limits = RuntimeLimits(
+            max_requests=base.request_delta,
+            max_executions=base.execution_delta,
+            max_retries=base.retry_delta,
+            max_history=base.history_delta,
+        )
+        if limits is not None and limits != policy_limits:
+            raise ValueError("runtime limits must match continuation base budget")
+        continuation_context = canonical_json(
+            {
+                "continuation_policy": continuation_policy.canonical_record(),
+                "continuation_policy_receipt": (
+                    continuation_policy_receipt.canonical_record()
+                ),
+            }
+        )
+        from ._runtime import NativeRuntimeSession
+
+        session = object.__new__(cls)
+        session.__native = NativeRuntimeSession(
+            session_key,
+            policy_limits.max_requests,
+            policy_limits.max_executions,
+            policy_limits.max_retries,
+            policy_limits.max_history,
             continuation_context,
+            _evaluate_continuation,
+            _observe_continuation_context,
+        )
+        authority = session.__native.take_continuation_request_authority()
+        return session, authority
+
+    def _evaluate_continuation_request(
+        self,
+        request_authority: Any,
+        state: Any,
+        request: Any,
+        policy: Any,
+        policy_receipt: Any,
+        progress: Any,
+        strategy_change: Any | None,
+        cycle_evidence: Any | None,
+        blocking_governance_violation_id: str | None,
+        benchmark_observation: Any | None,
+    ) -> Any:
+        """Enter the native request seal without exposing the native session."""
+
+        from ._runtime import NativeContinuationRequestSeal
+
+        if type(request_authority) is not NativeContinuationRequestSeal:
+            raise TypeError("continuation request authority is not trusted")
+        return request_authority.evaluate(
+            self.__native,
+            state,
+            request,
+            self,
+            policy,
+            policy_receipt,
+            progress,
+            strategy_change,
+            cycle_evidence,
+            blocking_governance_violation_id,
+            benchmark_observation,
         )
 
     @property
@@ -1554,28 +1625,6 @@ class RustRuntimeSession:
         return self.dispatch_canonical(
             envelope.text,
             _lease_grant_seal=grant._native_source_seal(),
-        )
-
-    def _bind_evaluated_lease_grant(self, grant: Any) -> Any:
-        """Bind one evaluator-capability-bearing grant to the native session.
-
-        A structural receipt cannot call this bridge successfully: the grant
-        must already carry the non-constructible capability created by the
-        complete governance evaluator. The native session then independently
-        verifies state, policy, schedule, ceiling, and canonical bytes.
-        """
-
-        from .continuation import LeaseGrantReceipt
-
-        if type(grant) is not LeaseGrantReceipt:
-            raise TypeError("grant must be an exact LeaseGrantReceipt")
-        if not grant.governance_bound:
-            raise ValueError("lease grant was not issued by governance evaluation")
-        if grant.source_bound:
-            raise ValueError("lease grant is already source-bound")
-        return self.__native.issue_lease_grant(
-            canonical_json(grant.canonical_record()),
-            grant._governance_source_capability(),
         )
 
     def apply_lease(self, grant: Any) -> RuntimeLeaseApplicationReceipt:

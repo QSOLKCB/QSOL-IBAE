@@ -123,12 +123,19 @@ lineage, a schedule-bounded mutation-free vector, checked cumulative grant,
 and no duplicate/replayed grant ID.
 
 Rust does not decide whether progress justifies a lease and exposes no
-`request_lease` command. The Python runtime facade also refuses to ask native
-code to seal a structural grant unless the complete governance evaluator has
-already attached its exact non-constructible decision capability. The exported
-native issuer validates that capability against the same canonical grant, so
-direct native-session access cannot bypass governance. Governance grants; Rust
-seals and applies only that decision.
+`request_lease` command. Continuation-session creation pins the deterministic
+evaluator and context observer inside a Rust-private per-instance binding and
+returns a separate once-issued, session-scoped supervisor request capability.
+The dedicated continuation factory extracts it before returning the runtime;
+the generic constructor rejects continuation arguments, and the runtime facade
+does not expose its native handle. The requester label alone is not authority.
+That capability seals one exact request; the seal
+invokes only the pinned evaluator, after which Rust independently validates the
+authorized request and full canonical grant against the live native
+session/state before issuing the non-constructible grant seal. There is no raw
+exported grant issuer. A structurally identical duplicate session has distinct
+non-serialized native authority and cannot issue a seal usable by the original
+session. Governance grants; Rust seals and applies only that decision.
 
 Unknown variants—including `request_lease` and `finalize`—reject without runtime mutation. Each canonical attempted command, command type, and valid admission ID remains bound into its distinct rejection receipt. Those command semantics are not reserved by implementation and require their later roadmap phase.
 
@@ -226,11 +233,12 @@ v0.3 source seal; `IBAE-CONTINUATION-CHECKPOINT-V1` supports structural
 in-process lineage, not authentication or durable reconstruction.
 
 An accepted application additionally requires two non-serialized in-process
-bindings: the evaluator-only governance decision capability that gates seal
-issuance, and the non-constructible native seal bound to the exact grant and
-live native state. Canonical hash consistency alone cannot authorize a lease;
-a structural caller cannot use the runtime facade to mint the missing seal, and
-a missing or mismatched binding is state-neutral.
+bindings: the exact supervisor-authorized native request seal that enters the
+pinned evaluator, and the non-constructible native grant seal bound to the
+resulting grant and live per-instance native state. Canonical hash consistency
+alone cannot authorize a lease; a structural caller or equal-ID duplicate
+session cannot mint a usable seal, and a missing or mismatched binding is
+state-neutral.
 
 ## Rejection taxonomy
 

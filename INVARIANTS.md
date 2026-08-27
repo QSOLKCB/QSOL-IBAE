@@ -212,14 +212,17 @@ ceiling before changing limits.
 No model, local worker, tool backend, runtime, GPU kernel, or scheduler may grant itself additional execution budget.
 
 Current enforcement: only the closed OpenAI-supervisor principal can request;
-the complete governance evaluator alone attaches an exact non-constructible
-in-process decision capability, and the runtime facade requires it before Rust
-may emit the native seal for the exact live session/state. Rust accepts only
-that two-stage source-bound, identity-checked governance grant. A reconstructed
-hash-consistent grant is insufficient. Tool, runtime, orchestrator, and
-candidate-worker requesters deny deterministically. `request_lease` is not a
-Rust command, and a rejected or forged `apply_lease` transition is state-,
-tick-, limit-, and resource-neutral.
+continuation-session creation pins the evaluator/observer into a Rust-private
+per-instance authority and returns a separate once-issued, session-scoped,
+non-constructible supervisor request capability. The public principal label is
+insufficient. An exact native request seal invokes only the pinned evaluator, and Rust validates
+the authorized request plus full grant against the live session before issuing
+the grant seal. No raw grant issuer or mutable Python validator is exposed, and
+an equal-ID duplicate session carries distinct non-serialized authority. A
+reconstructed hash-consistent grant is insufficient. Tool, runtime,
+orchestrator, and candidate-worker requesters deny deterministically.
+`request_lease` is not a Rust command, and a rejected or forged `apply_lease`
+transition is state-, tick-, limit-, and resource-neutral.
 
 ## IBAE-BND-007 — Exact authority-bearing counters
 
@@ -372,7 +375,13 @@ schedule slots and request decisions and suppresses impossible recoveries when
 either is exhausted. Progress observation immediately refreshes the live
 stalled/progressing/complete control state. The built-in contract counts both
 unsatisfied and blocked obligations, so newly blocked work cannot authorize a
-lease.
+lease. External evidence is paired with declared dimensions in canonical key
+order. A measurable progress identity is consumed by its first
+progress-authorized grant, so a later progress-based grant requires a freshly
+observed endpoint. Native evaluator-issued lineage binds the decision ledger,
+last decision/denial, progress identity/classification/state, consumed endpoint,
+and recovery count; context observation is resealed through the pinned native
+observer.
 Repeated inputs produce byte-identical fixtures across hash seeds.
 
 ## IBAE-PROG-005 — Strategy identity is explicit

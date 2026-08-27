@@ -875,7 +875,7 @@ def v0_5_reference_fixture() -> dict[str, object]:
     continuation_policy_receipt = ContinuationPolicyReceipt(
         continuation_policy, governance_policy, governance
     )
-    runtime = RustRuntimeSession(
+    runtime, requester_authority = RustRuntimeSession.create_continuation(
         "v0.5-progress-continuation-reference",
         continuation_policy=continuation_policy,
         continuation_policy_receipt=continuation_policy_receipt,
@@ -901,6 +901,7 @@ def v0_5_reference_fixture() -> dict[str, object]:
         progress=first_progress,
         requested_resources=continuation_policy.lease_schedule[0],
         requester=PrincipalAuthority.OPENAI_SUPERVISOR,
+        requester_authority=requester_authority,
     )
     first_decision = evaluate_continuation(
         continuation_state,
@@ -940,6 +941,7 @@ def v0_5_reference_fixture() -> dict[str, object]:
         progress=stalled_progress,
         requested_resources=continuation_policy.lease_schedule[1],
         requester=PrincipalAuthority.OPENAI_SUPERVISOR,
+        requester_authority=requester_authority,
     )
     stalled_decision = evaluate_continuation(
         continuation_state,
@@ -963,6 +965,7 @@ def v0_5_reference_fixture() -> dict[str, object]:
         progress=stalled_progress,
         requested_resources=continuation_policy.lease_schedule[1],
         requester=PrincipalAuthority.OPENAI_SUPERVISOR,
+        requester_authority=requester_authority,
         strategy_change=strategy_change,
     )
     recovery_decision = evaluate_continuation(
@@ -1005,6 +1008,7 @@ def v0_5_reference_fixture() -> dict[str, object]:
         progress=final_progress,
         requested_resources=BudgetVector(request_delta=1),
         requester=PrincipalAuthority.OPENAI_SUPERVISOR,
+        requester_authority=requester_authority,
     )
     exhausted_decision = evaluate_continuation(
         continuation_state,

@@ -297,13 +297,23 @@ contract compares canonical prior/current measures and derives classification
 and completion from their bound sources. The built-in contract counts both
 unsatisfied and blocked obligations, so discovering a blocker cannot masquerade
 as satisfying work. Governed external counters require a source-bound native
-observation matched to its exact tool admission.
+observation matched to its exact tool admission and are paired with dimensions
+in canonical key order. A measurable progress endpoint is consumed by its
+first progress-authorized grant; another such grant requires a fresh observed
+endpoint.
 Governance binds an exact initial budget, finite indexed resource schedule,
-request cap, strategy-recovery cap, and total ceiling; evaluator-issued lineage
-protects the recovery ledger from reconstruction, the exported native issuer
-validates an evaluator-only capability, and Rust applies only the resulting
-full identity-checked grant. Every grant/deny decision advances a separate
-continuation logical tick.
+request cap, strategy-recovery cap, and total ceiling. Continuation-session
+creation pins the evaluator and observer inside a non-serialized per-instance
+native authority and returns a separate once-issued, session-scoped supervisor
+request capability.
+The public supervisor label cannot substitute for it. Exact request seals enter
+the pinned evaluator, and Rust independently validates the resulting full grant
+against the authorized request and live session before issuing a grant seal.
+An equal-ID duplicate session has distinct native authority and cannot issue for
+the original. Native decision lineage protects recovery accounting and the
+last decision/denial/progress semantics from reconstruction; legitimate context
+observation is resealed through the pinned observer. Every grant/deny decision
+advances a separate continuation logical tick.
 Accepted native application advances the runtime logical tick once while
 consuming no tool resource counter or execution history; rejected application
 is state-neutral.
@@ -643,10 +653,14 @@ policy, state, and native context bind one exact progress contract; progress
 rebinds preserve both prior and current orchestration endpoints, derive their
 claims from bound sources, and require source-bound governed provenance for
 external counters. Strategy receipts revalidate their exact material and live
-cycle evidence is recomputed internally. The exported Rust issuer validates an
-evaluator-only capability for the exact governance grant, so a self-consistent
-reconstructed grant cannot extend limits. Evaluator-issued decision lineage
-also protects the strategy-recovery counter. The candidate implements
+cycle evidence is recomputed internally. A separate native supervisor
+capability seals an exact request for the evaluator pinned at session creation;
+Rust then validates the authorized request and exact governance grant against
+the live per-instance session before issuing its non-constructible grant seal.
+A self-consistent reconstructed grant or equal-ID duplicate session cannot
+extend limits. Native decision lineage protects the strategy-recovery counter
+and decision/progress semantics, while each measurable progress identity is
+single-use for progress-based admission. The candidate implements
 endpoint-checked fixed-shape continuation evidence,
 request-and-schedule-aware compact AI recovery state, exact structural
 in-process checkpoint/resume,
