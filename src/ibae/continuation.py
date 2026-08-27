@@ -417,6 +417,7 @@ class ContinuationPolicy:
                 "only measurable_progress may independently justify continuation"
             )
         object.__setattr__(self, "admitted_progress", admitted)
+        self._validate_authority_fields()
 
         if self.initial_budget.mutation_delta != 0:
             raise ValueError("v0.5 does not support mutation budget")
@@ -430,6 +431,14 @@ class ContinuationPolicy:
                 "total_ceiling must exactly equal base budget plus the full schedule"
             )
         self._validate_runtime_hard_limits()
+
+    def _validate_authority_fields(self) -> None:
+        if type(self.admitted_progress) is not tuple:
+            raise TypeError("admitted_progress must remain an exact tuple")
+        if self.admitted_progress != (ProgressClassification.MEASURABLE_PROGRESS,):
+            raise ValueError(
+                "only measurable_progress may independently justify continuation"
+            )
 
     def _validate_runtime_hard_limits(self) -> None:
         record = self.total_ceiling.canonical_record()
@@ -471,6 +480,7 @@ class ContinuationPolicy:
         )
 
     def canonical_record(self) -> dict[str, Any]:
+        self._validate_authority_fields()
         return {
             "admitted_progress": [item.value for item in self.admitted_progress],
             "authority_layer": "governance",
@@ -2051,6 +2061,7 @@ class ContinuationState:
         self._require_decision_lineage()
         if type(policy) is not ContinuationPolicy:
             raise TypeError("policy must be an exact ContinuationPolicy")
+        policy._validate_authority_fields()
         if policy.continuation_policy_id != self.continuation_policy_id:
             raise ValueError("continuation state policy identity mismatch")
         if policy.progress_contract_id != self.progress_contract_id:
@@ -2072,21 +2083,23 @@ class ContinuationState:
             policy.max_lease_requests + 1 - self.progress_event_count
         )
         recovery_actions: list[str] = []
+        strategy_recovery_available = (
+            self.current_strategy_material_id is not None
+            and self.strategy_recoveries < policy.max_strategy_recoveries
+        )
         if request_decisions_remaining == 0 or schedule_slots_remaining == 0:
             recovery_actions = []
         elif self.progress_state is ProgressState.STALLED:
             if progress_observations_remaining > 0:
                 recovery_actions.append("provide_objective_progress")
-            if (
-                self.current_strategy_material_id is not None
-                and self.strategy_recoveries < policy.max_strategy_recoveries
-            ):
+            if strategy_recovery_available:
                 recovery_actions.append("propose_material_strategy_change")
         elif self.progress_state is ProgressState.CYCLE_BLOCKED:
-            if self.strategy_recoveries < policy.max_strategy_recoveries:
+            if strategy_recovery_available:
                 recovery_actions.append("propose_cycle_breaking_strategy")
         elif self.progress_state is ProgressState.STRATEGY_CHANGE_REJECTED:
-            recovery_actions.append("provide_material_semantic_difference")
+            if strategy_recovery_available:
+                recovery_actions.append("provide_material_semantic_difference")
         if self.has_pending_grant:
             recovery_actions = ["apply_pending_lease"]
         return {
@@ -3095,12 +3108,12 @@ def _evaluate_continuation(
     elif blocking_governance_violation_id is not None:
         reason = LeaseDenialReason.BLOCKING_GOVERNANCE_VIOLATION
         blocking_id = blocking_governance_violation_id
+    elif state.leases_granted >= policy.max_leases:
+        reason = LeaseDenialReason.LEASE_CEILING_REACHED
     elif state.lease_requests >= policy.max_lease_requests:
         reason = LeaseDenialReason.LEASE_REQUEST_LIMIT
     elif request.lease_index != state.leases_granted + 1:
         reason = LeaseDenialReason.LEASE_INDEX_MISMATCH
-    elif state.leases_granted >= policy.max_leases:
-        reason = LeaseDenialReason.LEASE_CEILING_REACHED
     elif not state.cumulative_granted.is_within(policy.continuation_capacity):
         reason = LeaseDenialReason.LEASE_CEILING_REACHED
     elif cycle_evidence is not None and (
@@ -3146,7 +3159,7 @@ def _evaluate_continuation(
         reason = LeaseDenialReason.STRATEGY_CHANGE_NOT_MATERIAL
 
     progress_admitted = (
-        progress.classification in policy.admitted_progress
+        progress.classification is ProgressClassification.MEASURABLE_PROGRESS
         and progress.progress_id != state.last_consumed_progress_id
     )
     if reason is None and live_cycle_evidence is not None and not strategy_admitted:
@@ -3182,7 +3195,12 @@ def _evaluate_continuation(
                 reason = LeaseDenialReason.AMOUNT_EXCEEDS_CEILING
 
     if reason is not None:
-        return _deny_continuation(
+        terminal_ceiling_without_request_slot = (
+            reason is LeaseDenialReason.LEASE_CEILING_REACHED
+            and state.leases_granted >= policy.max_leases
+            and state.lease_requests >= policy.max_lease_requests
+        )
+        denied = _deny_continuation(
             state,
             request,
             progress,
@@ -3191,8 +3209,21 @@ def _evaluate_continuation(
             blocking_evidence_id=blocking_id,
             record_decision=(
                 reason is not LeaseDenialReason.UNAUTHORIZED_REQUESTER
+                and not terminal_ceiling_without_request_slot
                 and state.lease_requests < policy.max_lease_requests
             ),
+        )
+        if not terminal_ceiling_without_request_slot:
+            return denied
+        if state.progress_state is ProgressState.LEASE_EXHAUSTED:
+            return denied
+        return _ContinuationEvaluationResult(
+            replace(
+                state,
+                _decision_lineage_capability=None,
+                progress_state=ProgressState.LEASE_EXHAUSTED,
+            ),
+            denied.receipt,
         )
 
     assert next_cumulative is not None
@@ -3328,6 +3359,12 @@ def _validate_semantic_partial_reason(
     """Require a semantic partial reason to describe the live decision ledger."""
 
     if reason is ContinuationPartialReason.WATCHDOG_EXPIRED:
+        return
+    if reason is ContinuationPartialReason.LEASE_CEILING_EXHAUSTED:
+        if state.progress_state is not ProgressState.LEASE_EXHAUSTED:
+            raise ValueError("partial reason does not match continuation progress state")
+        if leases_remaining != 0:
+            raise ValueError("lease-ceiling partial requires exhausted lease capacity")
         return
     required_state = {
         ContinuationPartialReason.LEASE_CEILING_EXHAUSTED: (

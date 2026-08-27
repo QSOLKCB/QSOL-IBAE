@@ -3656,3 +3656,251 @@ def test_v0_5_budget_fixture_matches_checked_in_canonical_bytes():
     assert checked_in == canonical_json(fixture) + "\n"
     assert fixture["benchmark_only"] is True
     assert fixture["correctness_authority"] is False
+
+
+
+def test_round3_hostile_admitted_progress_container_fails_closed():
+    class HostileTuple(tuple):
+        def __contains__(self, _item):
+            return True
+
+    policy, _, _, _, policy_receipt, runtime, _, _, progress, state = (
+        _state_and_progress(progressing=False)
+    )
+    object.__setattr__(policy, "admitted_progress", HostileTuple(policy.admitted_progress))
+    before = runtime.snapshot.canonical_record()
+    with pytest.raises((TypeError, ValueError), match="admitted_progress|measurable_progress"):
+        _request_and_decide(policy, policy_receipt, runtime, progress, state)
+    assert runtime.snapshot.canonical_record() == before
+
+
+def test_round3_strategy_change_rejected_projection_requires_live_recovery_capacity():
+    policy, _, task, governance, policy_receipt, runtime = _governed_runtime(
+        "standard", session="round3-strategy-projection"
+    )
+    orchestration, primary, alternate = _strategy_state()
+    stalled = _progress(task, governance, orchestration, orchestration)
+    state = ContinuationState.create(
+        policy=policy,
+        policy_receipt=policy_receipt,
+        runtime_session=runtime,
+        orchestration_state=orchestration,
+        runtime_snapshot=runtime.snapshot,
+        strategy=primary,
+        progress=stalled,
+    )
+    first_change = evaluate_strategy_change(
+        task_id=task.task_id,
+        governance_id=governance.governance_id,
+        orchestration_state=orchestration,
+        prior_strategy=primary,
+        proposed_strategy=alternate,
+    )
+    _, first = _request_and_decide(
+        policy, policy_receipt, runtime, stalled, state, strategy_change=first_change
+    )
+    application = runtime.apply_lease(first.receipt)
+    state = commit_lease_application(
+        first.next_state,
+        runtime_session=runtime,
+        policy=policy,
+        grant=first.receipt,
+        application=application,
+        runtime_snapshot=runtime.snapshot,
+    )
+    rejected_change = evaluate_strategy_change(
+        task_id=task.task_id,
+        governance_id=governance.governance_id,
+        orchestration_state=orchestration,
+        prior_strategy=alternate,
+        proposed_strategy=alternate,
+    )
+    _, rejected = _request_and_decide(
+        policy,
+        policy_receipt,
+        runtime,
+        stalled,
+        state,
+        strategy_change=rejected_change,
+    )
+    assert rejected.next_state.progress_state is ProgressState.STRATEGY_CHANGE_REJECTED
+    projection = rejected.next_state.compact_projection(policy)
+    assert "provide_material_semantic_difference" not in projection["legal_recovery_actions"]
+    assert projection["material_strategy_change_admissible"] is False
+
+    policy2, _, task2, governance2, receipt2, runtime2 = _governed_runtime(
+        "standard", session="round3-strategyless-rejected"
+    )
+    orchestration2, unrelated_prior, proposed = _strategy_state()
+    stalled2 = _progress(task2, governance2, orchestration2, orchestration2)
+    state2 = ContinuationState.create(
+        policy=policy2,
+        policy_receipt=receipt2,
+        runtime_session=runtime2,
+        orchestration_state=orchestration2,
+        runtime_snapshot=runtime2.snapshot,
+        progress=stalled2,
+    )
+    change2 = evaluate_strategy_change(
+        task_id=task2.task_id,
+        governance_id=governance2.governance_id,
+        orchestration_state=orchestration2,
+        prior_strategy=unrelated_prior,
+        proposed_strategy=proposed,
+    )
+    _, rejected2 = _request_and_decide(
+        policy2, receipt2, runtime2, stalled2, state2, strategy_change=change2
+    )
+    projection2 = rejected2.next_state.compact_projection(policy2)
+    assert rejected2.next_state.progress_state is ProgressState.STRATEGY_CHANGE_REJECTED
+    assert "provide_material_semantic_difference" not in projection2["legal_recovery_actions"]
+    assert projection2["material_strategy_change_admissible"] is False
+
+
+def test_round3_strategyless_cycle_projection_has_no_impossible_recovery():
+    policy, _, task, governance, policy_receipt, runtime = _governed_runtime(
+        "tiny", session="round3-strategyless-cycle"
+    )
+    for _ in range(2):
+        runtime.execute_read(
+            "read", {"path": "same"}, "cycle", lambda: {"value": "same"}
+        )
+    orchestration = _obligation_states(total=2)
+    stalled = _progress(task, governance, orchestration, orchestration)
+    state = ContinuationState.create(
+        policy=policy,
+        policy_receipt=policy_receipt,
+        runtime_session=runtime,
+        orchestration_state=orchestration,
+        runtime_snapshot=runtime.snapshot,
+        progress=stalled,
+    )
+    _, denied = _request_and_decide(
+        policy, policy_receipt, runtime, stalled, state
+    )
+    assert denied.receipt.denial_reason is LeaseDenialReason.TERMINAL_CYCLE
+    assert denied.next_state.progress_state is ProgressState.CYCLE_BLOCKED
+    projection = denied.next_state.compact_projection(policy)
+    assert "propose_cycle_breaking_strategy" not in projection["legal_recovery_actions"]
+    assert projection["material_strategy_change_admissible"] is False
+
+
+def test_round3_native_engine_rejects_mutated_closure_cell_contents():
+    closure = ContinuationState.__init__.__closure__
+    assert closure
+    cell = closure[0]
+    original = cell.cell_contents
+    try:
+        cell.cell_contents = object()
+        with pytest.raises(ValueError, match="engine integrity"):
+            _state_and_progress()
+    finally:
+        cell.cell_contents = original
+
+
+def test_round3_terminal_ceiling_survives_exhausted_ordinary_decision_budget():
+    policy, _, task, governance, policy_receipt, runtime = _governed_runtime(
+        "standard", session="round3-terminal-ceiling"
+    )
+    states = tuple(_obligation_states(total=4, satisfied=i) for i in range(4))
+    stalled = _progress(task, governance, states[0], states[0])
+    state = ContinuationState.create(
+        policy=policy,
+        policy_receipt=policy_receipt,
+        runtime_session=runtime,
+        orchestration_state=states[0],
+        runtime_snapshot=runtime.snapshot,
+        progress=stalled,
+    )
+    for _ in range(2):
+        _, denied = _request_and_decide(
+            policy, policy_receipt, runtime, stalled, state
+        )
+        assert denied.receipt.denial_reason is LeaseDenialReason.NO_MEASURABLE_PROGRESS
+        state = denied.next_state
+
+    for index in range(2):
+        fresh = _progress(task, governance, states[index], states[index + 1])
+        state = observe_continuation_context(
+            state,
+            runtime_session=runtime,
+            policy=policy,
+            orchestration_state=states[index + 1],
+            runtime_snapshot=runtime.snapshot,
+            progress=fresh,
+        )
+        _, granted = _request_and_decide(
+            policy, policy_receipt, runtime, fresh, state
+        )
+        application = runtime.apply_lease(granted.receipt)
+        state = commit_lease_application(
+            granted.next_state,
+            runtime_session=runtime,
+            policy=policy,
+            grant=granted.receipt,
+            application=application,
+            runtime_snapshot=runtime.snapshot,
+        )
+
+    assert state.lease_requests == policy.max_lease_requests
+    assert state.leases_granted == policy.max_leases
+    terminal_progress = _progress(task, governance, states[2], states[3])
+    state = observe_continuation_context(
+        state,
+        runtime_session=runtime,
+        policy=policy,
+        orchestration_state=states[3],
+        runtime_snapshot=runtime.snapshot,
+        progress=terminal_progress,
+    )
+    _, terminal = _request_and_decide(
+        policy,
+        policy_receipt,
+        runtime,
+        terminal_progress,
+        state,
+        requested_resources=BudgetVector(request_delta=1),
+    )
+    assert terminal.receipt.denial_reason is LeaseDenialReason.LEASE_CEILING_REACHED
+    assert terminal.next_state.progress_state is ProgressState.LEASE_EXHAUSTED
+    assert terminal.next_state.lease_requests == policy.max_lease_requests
+    checkpoint = ContinuationCheckpoint(
+        state=terminal.next_state,
+        runtime_session=runtime,
+        policy=policy,
+        orchestration_state=states[3],
+        runtime_snapshot=runtime.snapshot,
+        progress=terminal_progress,
+        partial_reason=ContinuationPartialReason.LEASE_CEILING_EXHAUSTED,
+    )
+    partial = ContinuationPartialReceipt(
+        state=terminal.next_state,
+        checkpoint=checkpoint,
+        reason=ContinuationPartialReason.LEASE_CEILING_EXHAUSTED,
+    )
+    assert partial.canonical_record()["status"] == "partial"
+    _, repeated = _request_and_decide(
+        policy,
+        policy_receipt,
+        runtime,
+        terminal_progress,
+        terminal.next_state,
+        requested_resources=BudgetVector(request_delta=1),
+    )
+    assert repeated.receipt.denial_reason is LeaseDenialReason.LEASE_CEILING_REACHED
+    assert repeated.next_state.continuation_state_id == terminal.next_state.continuation_state_id
+    assert repeated.next_state.lease_requests == policy.max_lease_requests
+
+
+def test_round3_budget_benchmark_preserves_exact_unmet_ceiling_demand():
+    report = run_budget_profile_benchmark()
+    partials = [
+        item
+        for item in report["results"]
+        if item["scenario"] == "ceiling_exhaustion"
+        and item["task_outcome"] == "partial"
+    ]
+    assert partials
+    expected = BudgetVector(request_delta=1).canonical_record()
+    assert all(item["unmet_lease_demand"] == expected for item in partials)
+    assert all("unmet_lease_demand" in item for item in report["results"])

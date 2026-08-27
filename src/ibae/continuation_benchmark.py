@@ -224,6 +224,7 @@ def _simulate(policy: ContinuationPolicy, scenario: _Scenario) -> dict[str, Any]
     no_progress_denials = 0
     denial_reason: str | None = None
     partial_reason: str | None = None
+    unmet_lease_demand = BudgetVector.zero()
     completed = scenario.completion_after_grants == 0
     base_consumed = _bounded_consumption(
         scenario.base_consumed, policy.initial_budget
@@ -272,6 +273,7 @@ def _simulate(policy: ContinuationPolicy, scenario: _Scenario) -> dict[str, Any]
             denial_reason = "no_measurable_progress"
             break
         if len(granted) >= policy.max_leases:
+            unmet_lease_demand = requested
             partial_reason = ContinuationPartialReason.LEASE_CEILING_EXHAUSTED.value
             break
         maximum = policy.lease_schedule[len(granted)]
@@ -309,6 +311,7 @@ def _simulate(policy: ContinuationPolicy, scenario: _Scenario) -> dict[str, Any]
         "scenario": scenario.key,
         "strategy_change_events": strategy_events,
         "task_outcome": outcome,
+        "unmet_lease_demand": unmet_lease_demand.canonical_record(),
         "unused_continuation_budget": unused.canonical_record(),
     }
 

@@ -1396,6 +1396,12 @@ struct PythonDictIntegrity {
     entries: Vec<(String, Py<PyAny>)>,
 }
 
+struct PythonClosureCellIntegrity {
+    cell: Py<PyAny>,
+    contents: Py<PyAny>,
+    nested: Option<Box<PythonIntegrityNode>>,
+}
+
 struct PythonFunctionIntegrity {
     function: Py<PyAny>,
     code: Py<PyAny>,
@@ -1403,6 +1409,7 @@ struct PythonFunctionIntegrity {
     defaults: Py<PyAny>,
     keyword_defaults: PythonDictIntegrity,
     closure: Py<PyAny>,
+    closure_cells: Vec<PythonClosureCellIntegrity>,
     dependencies: Vec<PythonIdentityBinding>,
 }
 
@@ -1534,13 +1541,33 @@ impl PythonFunctionIntegrity {
                 nested,
             });
         }
+        let closure = function.getattr("__closure__")?;
+        let mut closure_cells = Vec::new();
+        if !closure.is_none() {
+            let cells = closure
+                .downcast::<PyTuple>()
+                .map_err(|_| continuation_integrity_error())?;
+            closure_cells.reserve(cells.len());
+            for cell in cells.iter() {
+                let contents = cell
+                    .getattr("cell_contents")
+                    .map_err(|_| continuation_integrity_error())?;
+                let nested = capture_integrity_node(py, &contents, visited)?;
+                closure_cells.push(PythonClosureCellIntegrity {
+                    cell: cell.unbind(),
+                    contents: contents.unbind(),
+                    nested,
+                });
+            }
+        }
         Ok(Self {
             function: function.clone().unbind(),
             code: code.unbind(),
             globals: globals.clone().unbind(),
             defaults: function.getattr("__defaults__")?.unbind(),
             keyword_defaults: capture_dict_integrity(&function.getattr("__kwdefaults__")?)?,
-            closure: function.getattr("__closure__")?.unbind(),
+            closure: closure.unbind(),
+            closure_cells,
             dependencies,
         })
     }
@@ -1556,6 +1583,33 @@ impl PythonFunctionIntegrity {
         }
         self.keyword_defaults
             .validate(py, &function.getattr("__kwdefaults__")?)?;
+        let closure = function.getattr("__closure__")?;
+        if closure.is_none() {
+            if !self.closure_cells.is_empty() {
+                return Err(continuation_integrity_error());
+            }
+        } else {
+            let cells = closure
+                .downcast::<PyTuple>()
+                .map_err(|_| continuation_integrity_error())?;
+            if cells.len() != self.closure_cells.len() {
+                return Err(continuation_integrity_error());
+            }
+            for (cell, expected) in cells.iter().zip(self.closure_cells.iter()) {
+                if !cell.is(expected.cell.bind(py)) {
+                    return Err(continuation_integrity_error());
+                }
+                let contents = cell
+                    .getattr("cell_contents")
+                    .map_err(|_| continuation_integrity_error())?;
+                if !contents.is(expected.contents.bind(py)) {
+                    return Err(continuation_integrity_error());
+                }
+                if let Some(nested) = &expected.nested {
+                    nested.validate(py)?;
+                }
+            }
+        }
         let globals = self.globals.bind(py);
         for dependency in &self.dependencies {
             let current = globals
