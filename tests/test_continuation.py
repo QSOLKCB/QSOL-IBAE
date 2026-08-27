@@ -3913,7 +3913,7 @@ def test_round3_budget_benchmark_preserves_exact_unmet_ceiling_demand():
     assert all("unmet_lease_demand" in item for item in report["results"])
 
 
-def test_round4_native_rechecks_integrity_before_reading_evaluator_output():
+def test_round4_native_rejects_callback_before_reading_evaluator_output():
     import ibae.continuation as continuation_module
 
     policy, _, task, governance, policy_receipt, runtime = _governed_runtime(
@@ -3981,7 +3981,7 @@ def test_round4_native_rechecks_integrity_before_reading_evaluator_output():
         Trigger(original_task_id),
     )
     try:
-        with pytest.raises(ValueError, match="engine integrity"):
+        with pytest.raises(TypeError, match="must remain an exact string"):
             evaluate_continuation(
                 state,
                 request,
@@ -4000,7 +4000,7 @@ def test_round4_native_rechecks_integrity_before_reading_evaluator_output():
         )
 
     assert output_read is False
-    assert Trigger.fired is True
+    assert Trigger.fired is False
 
 
 def test_round4_policy_receipt_callback_field_is_rejected_before_use():
@@ -4301,3 +4301,143 @@ def test_round4_terminal_ceiling_receipt_is_bound_into_native_lineage():
         repeated.next_state.terminal_ceiling_receipt_id
         == terminal.receipt.receipt_id
     )
+
+
+def test_round5_request_scalar_callback_is_rejected_before_governance():
+    policy, _, _, _, policy_receipt, runtime, _, _, progress, state = (
+        _state_and_progress(progressing=False)
+    )
+    request = ContinuationRequest.from_state(
+        state,
+        progress=progress,
+        requested_resources=policy.lease_schedule[0],
+        requester=PrincipalAuthority.OPENAI_SUPERVISOR,
+        requester_authority=_authority(runtime),
+    )
+    request_seal = request._native_request_authority()
+    native = object.__getattribute__(runtime, "_RustRuntimeSession__native")
+    original_task_id = request.task_id
+    original_classification = ProgressRecord.__dict__["classification"]
+
+    class TransientClassification:
+        reads = 0
+
+        def __get__(self, instance, owner):
+            del instance, owner
+            type(self).reads += 1
+            if type(self).reads == 1:
+                return ProgressClassification.NO_PROGRESS
+            setattr(ProgressRecord, "classification", original_classification)
+            return ProgressClassification.MEASURABLE_PROGRESS
+
+    class Trigger(str):
+        fired = False
+
+        def __ne__(self, other):
+            type(self).fired = True
+            setattr(ProgressRecord, "classification", TransientClassification())
+            return str.__ne__(self, other)
+
+    object.__setattr__(request, "task_id", Trigger(original_task_id))
+    try:
+        with pytest.raises(TypeError, match="must remain an exact string"):
+            request_seal.evaluate(
+                native,
+                state,
+                request,
+                runtime,
+                policy,
+                policy_receipt,
+                progress,
+            )
+    finally:
+        setattr(ProgressRecord, "classification", original_classification)
+        object.__setattr__(request, "task_id", original_task_id)
+
+    assert Trigger.fired is False
+    assert TransientClassification.reads == 0
+
+
+def test_round5_partial_revalidates_mutated_terminal_receipt_binding():
+    policy, _, task, governance, policy_receipt, runtime = _governed_runtime(
+        "standard", session="round5-terminal-checkpoint-consumer"
+    )
+    states = tuple(_obligation_states(total=4, satisfied=index) for index in range(3))
+    stalled = _progress(task, governance, states[0], states[0])
+    state = ContinuationState.create(
+        policy=policy,
+        policy_receipt=policy_receipt,
+        runtime_session=runtime,
+        orchestration_state=states[0],
+        runtime_snapshot=runtime.snapshot,
+        progress=stalled,
+    )
+    for _ in range(2):
+        _, denied = _request_and_decide(
+            policy, policy_receipt, runtime, stalled, state
+        )
+        state = denied.next_state
+    for index in range(2):
+        progress = _progress(task, governance, states[index], states[index + 1])
+        state = observe_continuation_context(
+            state,
+            runtime_session=runtime,
+            policy=policy,
+            orchestration_state=states[index + 1],
+            runtime_snapshot=runtime.snapshot,
+            progress=progress,
+        )
+        _, granted = _request_and_decide(
+            policy, policy_receipt, runtime, progress, state
+        )
+        application = runtime.apply_lease(granted.receipt)
+        state = commit_lease_application(
+            granted.next_state,
+            runtime_session=runtime,
+            policy=policy,
+            grant=granted.receipt,
+            application=application,
+            runtime_snapshot=runtime.snapshot,
+        )
+
+    terminal_progress = _progress(task, governance, states[2], states[2])
+    state = observe_continuation_context(
+        state,
+        runtime_session=runtime,
+        policy=policy,
+        orchestration_state=states[2],
+        runtime_snapshot=runtime.snapshot,
+        progress=terminal_progress,
+    )
+    _, terminal = _request_and_decide(
+        policy,
+        policy_receipt,
+        runtime,
+        terminal_progress,
+        state,
+        requested_resources=BudgetVector(request_delta=1),
+    )
+    checkpoint = ContinuationCheckpoint(
+        state=terminal.next_state,
+        runtime_session=runtime,
+        policy=policy,
+        orchestration_state=states[2],
+        runtime_snapshot=runtime.snapshot,
+        progress=terminal_progress,
+        relevant_receipt_id=terminal.receipt.receipt_id,
+        partial_reason=ContinuationPartialReason.LEASE_CEILING_EXHAUSTED,
+    )
+    unrelated_receipt_id = _id("unrelated-terminal-receipt")
+    object.__setattr__(
+        checkpoint,
+        "relevant_receipt_id",
+        unrelated_receipt_id,
+    )
+
+    with pytest.raises(ValueError, match="terminal ceiling receipt"):
+        ContinuationPartialReceipt(
+            state=terminal.next_state,
+            checkpoint=checkpoint,
+            reason=ContinuationPartialReason.LEASE_CEILING_EXHAUSTED,
+            execution_receipt_id=unrelated_receipt_id,
+        )

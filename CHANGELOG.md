@@ -56,6 +56,12 @@ All notable changes to QSOL-IBAE will be documented here.
   creation and every evaluator/observer/committer entry. Native request entry
   requires the exact trusted type before callbacks and rechecks integrity
   immediately after evaluation, before reading or sealing evaluator output.
+  Authority-bearing request, progress, and strategy canonical fields—including
+  the progress contract and measures—require exact callback-free scalar, enum,
+  tuple, and registered-record types before governance comparisons. Rust
+  independently canonicalizes and rederives the
+  exact post-evaluator progress and optional admitted-strategy identities and
+  refuses to issue a grant seal unless one admission predicate holds.
   The complete initial zero-decision state receives a one-shot native session
   seal only after Rust derives its exact decision/progress aggregate seeds and
   validates exact registered orchestration/progress/strategy types plus the
@@ -89,7 +95,10 @@ All notable changes to QSOL-IBAE will be documented here.
   bindings, effective request/schedule capacity, and watchdog
   orchestration/runtime/lease-exhaustion identity fail closed. Semantic partial
   reasons are validated against the actual denial and exhausted counters when
-  the checkpoint itself is constructed. Checkpoint creation and resume also
+  the checkpoint itself is constructed. Terminal-ceiling checkpoint consumers
+  revalidate the cited receipt against the live state's lineage marker, so
+  frozen-object mutation plus a recomputed checkpoint hash cannot redirect the
+  partial. Checkpoint creation and resume also
   require the matching live native session to validate the complete supplied
   runtime snapshot. Compact AI state exposes remaining progress-observation
   capacity and suppresses objective-progress recovery when that bound is full.

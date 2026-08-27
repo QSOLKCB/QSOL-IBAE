@@ -230,6 +230,12 @@ globals and default/closure bindings, and reachable IBAE helper/class definition
 at session creation and every evaluator/observer/committer entry. Native request
 entry requires the exact trusted type before callbacks and rechecks integrity
 immediately after evaluation and before reading or sealing evaluator output.
+Authority-bearing request, progress, and strategy canonical fields—including
+the progress contract and measures—require exact callback-free scalar, enum,
+tuple, and registered-record types before the first governance comparison.
+Rust then rederives the post-evaluator progress
+identity and optional admitted-strategy identity and refuses to seal a grant
+unless one exact admission predicate holds.
 Every initial zero-decision state receives a one-shot native session seal over
 the complete canonical state after Rust derives the exact aggregate seed.
 Initial orchestration, progress, and strategy values require their exact
@@ -843,7 +849,9 @@ any supplied strategy must equal the live strategy even when that identity is
 absent, and remaining leases use the effective request/schedule minimum;
 checkpoint construction requires a semantic partial reason to match the actual
 last denial and any required lease/recovery exhaustion. A terminal ceiling
-marker path must cite that exact lineage-bound denial receipt; semantic partial
+marker path must cite that exact lineage-bound denial receipt, and checkpoint
+consumers revalidate the binding against live state after construction;
+semantic partial
 evidence IDs are derived from the cited checkpoint and cannot
 be replaced by unrelated fingerprints. Construction and resume require the
 matching live native session to validate the complete supplied runtime

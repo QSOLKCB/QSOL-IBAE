@@ -316,6 +316,11 @@ referenced globals and default/closure bindings, and reachable IBAE helper/class
 definitions; every authority entry fails closed on in-place mutation. Exact
 request typing precedes request callbacks, and evaluator integrity is rechecked
 again immediately after evaluation and before any output is read or sealed.
+Exact callback-free request/progress/strategy scalars, enums, containers, and
+records are validated before governance comparisons. After evaluation, Rust
+canonicalizes the exact progress and optional strategy authorities, rederives
+their identities, and independently rejects a grant without measurable progress
+or the cited admitted strategy before creating the grant seal.
 The complete initial zero-decision state is sealed once by the native session
 after Rust independently derives its exact decision and progress aggregate
 seeds. Initial orchestration, progress, and strategy inputs require their exact
@@ -707,7 +712,9 @@ request-and-schedule-aware compact AI recovery state, exact structural
 in-process checkpoint/resume,
 checkpoint-evidence-bound semantic continuation partials, and an exact-context
 watchdog record whose lease-exhaustion flag is identity-bearing, checked against
-effective checkpoint capacity, but cannot
+effective checkpoint capacity. Terminal-ceiling checkpoint consumers revalidate
+the cited receipt against the live lineage marker, even after frozen-object
+mutation. A watchdog observation cannot
 become completion authority. The existing v0.4 governance/evidence schema
 remains unchanged.
 

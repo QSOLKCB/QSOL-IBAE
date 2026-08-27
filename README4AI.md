@@ -70,7 +70,12 @@ a native integrity graph detects in-place mutation of their bound code, all
 reachable mutable Python function dependencies regardless of module, and
 descriptor-backed functions. Exact request typing precedes callbacks and native
 integrity is rechecked immediately after evaluation, before output is read or
-sealed. The complete initial zero-decision state accepts only exact registered
+sealed. Authority-bearing request, progress, and strategy canonical fields,
+including the progress contract and measures, are restricted to exact
+callback-free scalar/container/record types before the first governance
+comparison; after evaluation Rust rederives the exact progress
+and optional admitted-strategy identities and predicate before issuing a grant
+seal. The complete initial zero-decision state accepts only exact registered
 context types and rederived progress bound to the native authority, then is
 sealed only after Rust derives its exact decision/progress seeds; each reseal
 advances the sole live native generation and retires its predecessor; and
@@ -96,7 +101,8 @@ Structural in-process checkpoints require live status, strategy, and that same
 effective capacity and reject a false semantic partial reason at checkpoint
 construction; semantic partial evidence derives from the
 checkpoint, terminal ceiling partials cite the exact lineage marker receipt,
-and watchdog lease exhaustion is identity-bearing, checked against
+and partial construction revalidates that marker against the live state even
+if a frozen checkpoint was mutated. Watchdog lease exhaustion is identity-bearing, checked against
 effective checkpoint capacity, but
 non-authoritative. Existing v0.2-v0.4 schemas and fixture bytes remain
 unchanged.

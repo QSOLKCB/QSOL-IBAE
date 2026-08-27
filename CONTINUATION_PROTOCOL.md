@@ -60,9 +60,14 @@ dedicated factory, which extracts the capability before returning the runtime;
 the generic constructor rejects continuation arguments and the runtime facade
 does not expose its native handle.
 
-Authority-bearing policy-receipt fingerprints and profile fields must remain
-exact built-in strings and integers. They are validated before comparison, so
-a callback-bearing scalar subclass cannot execute while governance is deciding.
+Authority-bearing policy-receipt, request, progress, and strategy canonical
+fields—including the progress contract and measures—must remain exact built-in
+scalars, enums, tuples, and registered records. They are validated before the
+first authority comparison, so a callback-bearing scalar or container
+substitution cannot execute while governance is deciding. After the evaluator returns, Rust canonicalizes the
+exact progress record and optional strategy receipt, rederives their identities,
+and independently requires measurable progress or the cited admitted strategy
+before it can issue a grant seal.
 
 ## Versioned records
 
@@ -445,7 +450,9 @@ a semantic partial reason is supplied, checkpoint construction itself requires
 the matching last ordinary denial or, for the special terminal ceiling path,
 the exact lineage-bound `terminal_ceiling_receipt_id` as its relevant receipt,
 plus any required lease/recovery exhaustion. A false reason can never become a
-structurally valid checkpoint.
+structurally valid checkpoint. Resume reconstruction and partial finalization
+revalidate that terminal marker binding when they consume a checkpoint; frozen
+slots and a recomputed checkpoint hash do not substitute for the live marker.
 
 Checkpoint construction and resume require the matching live native session;
 Rust compares the complete supplied runtime snapshot with that session before
@@ -502,7 +509,9 @@ Reason, continuation status, exact last denial, and relevant exhausted
 lease/recovery counter must agree. Every partial binds its checkpoint,
 continuation state, decision aggregate, and optional execution/compact evidence
 receipts. Those evidence IDs are derived from the cited checkpoint; unrelated
-supplied IDs fail closed. It always has `status = partial` and
+supplied IDs fail closed. Terminal-ceiling partial construction also rechecks
+the checkpoint's relevant receipt against the live state's canonical terminal
+marker. It always has `status = partial` and
 `task_complete = false`; a complete continuation state cannot be relabelled
 partial, and a partial cannot be relabelled accepted.
 

@@ -23,11 +23,15 @@ const STATE_DOMAIN: &str = "ibae.runtime-state-id.v1";
 
 const CONTINUATION_PROTOCOL_VERSION: &str = "IBAE-CONTINUATION-LEASE-V1";
 const CONTINUATION_POLICY_RECEIPT_VERSION: &str = "IBAE-CONTINUATION-POLICY-RECEIPT-V1";
+const PROGRESS_PROTOCOL_VERSION: &str = "IBAE-OBJECTIVE-PROGRESS-V1";
+const STRATEGY_CHANGE_PROTOCOL_VERSION: &str = "IBAE-STRATEGY-CHANGE-V1";
 const LEASE_GRANT_RECEIPT_VERSION: &str = "IBAE-CONTINUATION-LEASE-GRANT-V1";
 const LEASE_APPLICATION_RECEIPT_VERSION: &str = "IBAE-RUNTIME-LEASE-APPLICATION-RECEIPT-V1";
 const CONTINUATION_POLICY_ID_DOMAIN: &str = "ibae.continuation-policy-id.v1";
 const CONTINUATION_POLICY_RECEIPT_ID_DOMAIN: &str = "ibae.continuation-policy-receipt-id.v1";
 const CONTINUATION_REQUEST_ID_DOMAIN: &str = "ibae.continuation-request-id.v1";
+const PROGRESS_RECORD_ID_DOMAIN: &str = "ibae.progress-record-id.v1";
+const STRATEGY_CHANGE_ID_DOMAIN: &str = "ibae.strategy-change-id.v1";
 const CONTINUATION_DECISION_AGGREGATE_DOMAIN: &str = "ibae.continuation-decision-aggregate.v1";
 const CONTINUATION_EVIDENCE_VERSION: &str = "IBAE-CONTINUATION-EVIDENCE-V1";
 const CONTINUATION_EVIDENCE_PROGRESS_AGGREGATE_DOMAIN: &str =
@@ -1001,6 +1005,8 @@ struct LeaseGrant {
     continuation_request_id: String,
     receipt_id: String,
     lease_grant_id: String,
+    progress_id: String,
+    strategy_change_id: Option<String>,
     prior_runtime_state_id: String,
     runtime_session_id: String,
     lease_index: u64,
@@ -1066,11 +1072,11 @@ impl LeaseGrant {
         ] {
             identity(name)?;
         }
-        match mapping.get("strategy_change_id") {
-            Some(Value::Null) => {}
-            Some(Value::String(item)) if is_fingerprint(item) => {}
+        let strategy_change_id = match mapping.get("strategy_change_id") {
+            Some(Value::Null) => None,
+            Some(Value::String(item)) if is_fingerprint(item) => Some(item.clone()),
             _ => return Err(Reason::InvalidCommand),
-        }
+        };
         if mapping
             .get("decision_logical_tick")
             .and_then(Value::as_u64)
@@ -1115,6 +1121,8 @@ impl LeaseGrant {
             continuation_request_id: identity("continuation_request_id")?,
             receipt_id,
             lease_grant_id: lease_grant_id.clone(),
+            progress_id: identity("progress_id")?,
+            strategy_change_id,
             prior_runtime_state_id: identity("prior_runtime_state_id")?,
             runtime_session_id: identity("runtime_session_id")?,
             lease_index,
@@ -1126,6 +1134,95 @@ impl LeaseGrant {
             canonical_receipt: Arc::from(canonical_receipt),
         })
     }
+}
+
+fn validate_evaluated_progress_authority(
+    canonical_progress: &str,
+    grant: &LeaseGrant,
+    task_id: &str,
+    governance_id: &str,
+    progress_contract_id: &str,
+) -> Result<bool, ()> {
+    let value = parse_runtime_canonical(canonical_progress).map_err(|_| ())?;
+    let mapping = value.as_object().ok_or(())?;
+    if !object_has_exact_keys(
+        mapping,
+        &[
+            "classification",
+            "current_measures",
+            "current_orchestration_state_id",
+            "evidence_ids",
+            "governance_id",
+            "measure_contract",
+            "measure_contract_id",
+            "prior_measures",
+            "prior_orchestration_state_id",
+            "protocol_version",
+            "task_complete",
+            "task_id",
+        ],
+    ) || mapping.get("protocol_version").and_then(Value::as_str)
+        != Some(PROGRESS_PROTOCOL_VERSION)
+        || mapping.get("task_id").and_then(Value::as_str) != Some(task_id)
+        || mapping.get("governance_id").and_then(Value::as_str) != Some(governance_id)
+        || mapping.get("measure_contract_id").and_then(Value::as_str) != Some(progress_contract_id)
+        || mapping.get("task_complete").and_then(Value::as_bool) != Some(false)
+    {
+        return Err(());
+    }
+    let canonical = canonical_value(&value).map_err(|_| ())?;
+    if domain_fingerprint(PROGRESS_RECORD_ID_DOMAIN, &canonical) != grant.progress_id {
+        return Err(());
+    }
+    match mapping.get("classification").and_then(Value::as_str) {
+        Some("measurable_progress") => Ok(true),
+        Some("no_progress")
+        | Some("regression")
+        | Some("new_information")
+        | Some("incomparable") => Ok(false),
+        _ => Err(()),
+    }
+}
+
+fn validate_evaluated_strategy_authority(
+    canonical_strategy_change: &str,
+    expected_strategy_change_id: &str,
+    task_id: &str,
+    governance_id: &str,
+) -> Result<(), ()> {
+    let value = parse_runtime_canonical(canonical_strategy_change).map_err(|_| ())?;
+    let mapping = value.as_object().ok_or(())?;
+    if !object_has_exact_keys(
+        mapping,
+        &[
+            "authority_layer",
+            "cycle_evidence_id",
+            "governance_id",
+            "orchestration_state_id",
+            "prior_strategy_material_id",
+            "proposed_strategy_id",
+            "proposed_strategy_material_id",
+            "protocol_version",
+            "reason",
+            "status",
+            "task_id",
+        ],
+    ) || mapping.get("authority_layer").and_then(Value::as_str) != Some("orchestration")
+        || mapping.get("protocol_version").and_then(Value::as_str)
+            != Some(STRATEGY_CHANGE_PROTOCOL_VERSION)
+        || mapping.get("task_id").and_then(Value::as_str) != Some(task_id)
+        || mapping.get("governance_id").and_then(Value::as_str) != Some(governance_id)
+        || mapping.get("status").and_then(Value::as_str) != Some("admitted")
+        || mapping.get("reason").and_then(Value::as_str)
+            != Some("IBAE-STRATEGY-ADMIT-MATERIAL-CHANGE")
+    {
+        return Err(());
+    }
+    let canonical = canonical_value(&value).map_err(|_| ())?;
+    if domain_fingerprint(STRATEGY_CHANGE_ID_DOMAIN, &canonical) != expected_strategy_change_id {
+        return Err(());
+    }
+    Ok(())
 }
 
 /// Non-constructible in-process proof that the exact live native session
@@ -1915,6 +2012,17 @@ impl NativeContinuationRequestSeal {
                 "continuation state must have the exact trusted type",
             ));
         }
+        if !progress
+            .get_type()
+            .is(self.binding.progress_record_type.bind(py))
+        {
+            return Err(PyValueError::new_err(
+                "continuation progress must have the exact trusted type",
+            ));
+        }
+        self.binding.evaluator_integrity.validate(py)?;
+        request.call_method0("_validate_authority_fields")?;
+        progress.call_method0("_validate_authority_fields")?;
         self.binding.evaluator_integrity.validate(py)?;
         let canonical_request: String = request.call_method0("_canonical_text")?.extract()?;
         self.binding.evaluator_integrity.validate(py)?;
@@ -1979,11 +2087,24 @@ impl NativeContinuationRequestSeal {
         let granted: bool = raw.getattr("granted")?.extract()?;
 
         let sealed_receipt = if granted {
+            // Reconstruct the exact progress and optional strategy authorities
+            // after governance returns. Rust independently verifies the
+            // predicate that could authorize a grant before creating its
+            // process-local source seal.
+            let canonical_progress: String = progress.call_method0("_canonical_text")?.extract()?;
+            let canonical_strategy_change: Option<String> = match strategy_change {
+                Some(value) => Some(value.call_method0("_canonical_text")?.extract()?),
+                None => None,
+            };
+            self.binding.evaluator_integrity.validate(py)?;
             let canonical_grant: String = receipt.call_method0("_canonical_text")?.extract()?;
+            self.binding.evaluator_integrity.validate(py)?;
             let native_seal = {
                 let native: PyRef<'_, NativeRuntimeSession> = native_session.extract()?;
                 native.issue_evaluated_lease_grant(
                     &canonical_grant,
+                    &canonical_progress,
+                    canonical_strategy_change.as_deref(),
                     &self.binding,
                     &self.continuation_request_id,
                 )?
@@ -5518,6 +5639,8 @@ impl NativeRuntimeSession {
     fn issue_evaluated_lease_grant(
         &self,
         canonical_grant: &str,
+        canonical_progress: &str,
+        canonical_strategy_change: Option<&str>,
         supplied_authority: &Arc<ContinuationAuthorityBinding>,
         continuation_request_id: &str,
     ) -> PyResult<NativeLeaseGrantSeal> {
@@ -5533,6 +5656,48 @@ impl NativeRuntimeSession {
         if grant.continuation_request_id != continuation_request_id {
             return Err(PyValueError::new_err(
                 "native lease grant does not bind the authorized request",
+            ));
+        }
+        let progress_admitted = validate_evaluated_progress_authority(
+            canonical_progress,
+            &grant,
+            &supplied_authority.task_id,
+            &supplied_authority.governance_id,
+            &supplied_authority.progress_contract_id,
+        )
+        .map_err(|_| {
+            PyValueError::new_err(
+                "native lease grant does not bind exact objective progress authority",
+            )
+        })?;
+        let strategy_admitted = match (
+            grant.strategy_change_id.as_deref(),
+            canonical_strategy_change,
+        ) {
+            (Some(expected), Some(canonical)) => {
+                validate_evaluated_strategy_authority(
+                    canonical,
+                    expected,
+                    &supplied_authority.task_id,
+                    &supplied_authority.governance_id,
+                )
+                .map_err(|_| {
+                    PyValueError::new_err(
+                        "native lease grant does not bind exact admitted strategy authority",
+                    )
+                })?;
+                true
+            }
+            (None, None) => false,
+            _ => {
+                return Err(PyValueError::new_err(
+                    "native lease grant strategy authority is inconsistent",
+                ));
+            }
+        };
+        if !progress_admitted && !strategy_admitted {
+            return Err(PyValueError::new_err(
+                "native lease grant lacks measurable progress or an admitted strategy",
             ));
         }
         let prior_state_id = self.core.state_id().map_err(|_| {

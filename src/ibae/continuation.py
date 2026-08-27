@@ -288,6 +288,9 @@ class BudgetVector:
     history_delta: int = 0
 
     def __post_init__(self) -> None:
+        self._validate_authority_fields()
+
+    def _validate_authority_fields(self) -> None:
         for name, value in self.canonical_record().items():
             _u64(name, value)
 
@@ -639,6 +642,17 @@ class ProgressDimension:
             if expected is not None:
                 object.__setattr__(self, "completion_threshold", expected)
 
+    def _validate_authority_fields(self) -> None:
+        if type(self.key) is not str:
+            raise TypeError("progress dimension key must remain an exact string")
+        require_symbol("progress dimension key", self.key)
+        if type(self.source) is not ProgressSource:
+            raise TypeError("progress dimension source must remain exact")
+        if type(self.direction) is not ProgressDirection:
+            raise TypeError("progress dimension direction must remain exact")
+        if self.completion_threshold is not None:
+            _u64("progress completion threshold", self.completion_threshold)
+
     def canonical_record(self) -> dict[str, Any]:
         return {
             "completion_threshold": self.completion_threshold,
@@ -668,6 +682,23 @@ class ProgressMeasureContract:
         if len({item.key for item in dimensions}) != len(dimensions):
             raise ValueError("progress dimension keys must be unique")
         object.__setattr__(self, "dimensions", dimensions)
+        self._validate_authority_fields()
+
+    def _validate_authority_fields(self) -> None:
+        if type(self.contract_key) is not str:
+            raise TypeError("progress contract key must remain an exact string")
+        require_symbol("progress contract key", self.contract_key)
+        if type(self.contract_version) is not int:
+            raise TypeError("progress contract version must remain an exact integer")
+        require_positive_int("progress contract version", self.contract_version)
+        if type(self.dimensions) is not tuple or not self.dimensions:
+            raise TypeError("progress dimensions must remain a non-empty exact tuple")
+        if len(self.dimensions) > MAX_PROGRESS_DIMENSIONS:
+            raise ValueError("progress dimensions exceed the protocol bound")
+        for dimension in self.dimensions:
+            if type(dimension) is not ProgressDimension:
+                raise TypeError("progress dimensions must remain exact records")
+            dimension._validate_authority_fields()
 
     @property
     def contract_id(self) -> str:
@@ -873,6 +904,21 @@ class ProgressMeasure:
             require_fingerprint("progress measure basis identity", self.basis_identity)
             require_fingerprint("progress measure evidence id", self.evidence_id)
 
+    def _validate_authority_fields(self) -> None:
+        if type(self.dimension_key) is not str:
+            raise TypeError("progress measure key must remain an exact string")
+        require_symbol("progress measure dimension key", self.dimension_key)
+        if self.value is not None:
+            _u64("progress measure value", self.value)
+        for name, value in (
+            ("progress measure basis identity", self.basis_identity),
+            ("progress measure evidence id", self.evidence_id),
+        ):
+            if value is not None:
+                if type(value) is not str:
+                    raise TypeError(f"{name} must remain an exact string")
+                require_fingerprint(name, value)
+
     def canonical_record(self) -> dict[str, Any]:
         return {
             "basis_identity": self.basis_identity,
@@ -1018,6 +1064,45 @@ class ProgressRecord:
             object.__setattr__(self, attribute, active)
         self._validate_bound_claims()
 
+    def _validate_authority_fields(self) -> None:
+        for name, value in (
+            ("progress task id", self.task_id),
+            ("progress governance id", self.governance_id),
+            ("prior orchestration state id", self.prior_orchestration_state_id),
+            ("current orchestration state id", self.current_orchestration_state_id),
+        ):
+            if type(value) is not str:
+                raise TypeError(f"{name} must remain an exact string")
+            require_fingerprint(name, value)
+        if type(self.contract) is not ProgressMeasureContract:
+            raise TypeError("progress contract must remain exact")
+        self.contract._validate_authority_fields()
+        for name, values in (
+            ("prior measures", self.prior_measures),
+            ("current measures", self.current_measures),
+        ):
+            if type(values) is not tuple:
+                raise TypeError(f"{name} must remain an exact tuple")
+            for measure in values:
+                if type(measure) is not ProgressMeasure:
+                    raise TypeError(f"{name} must contain exact records")
+                measure._validate_authority_fields()
+        if type(self.classification) is not ProgressClassification:
+            raise TypeError("progress classification must remain exact")
+        _bool("task_complete", self.task_complete)
+        if type(self._prior_state) is not OrchestrationState or type(
+            self._current_state
+        ) is not OrchestrationState:
+            raise TypeError("progress bound states must remain exact")
+        for name, values in (
+            ("prior external evidence", self._prior_external_evidence),
+            ("current external evidence", self._current_external_evidence),
+        ):
+            if type(values) is not tuple or any(
+                type(item) is not ProgressCounterEvidence for item in values
+            ):
+                raise TypeError(f"{name} must remain an exact tuple of records")
+
     def _validate_bound_claims(self) -> None:
         if type(self._prior_state) is not OrchestrationState or type(
             self._current_state
@@ -1133,6 +1218,7 @@ class ProgressRecord:
         )
 
     def canonical_record(self) -> dict[str, Any]:
+        self._validate_authority_fields()
         self._validate_bound_claims()
         return {
             "classification": self.classification.value,
@@ -1148,6 +1234,9 @@ class ProgressRecord:
             "task_complete": self.task_complete,
             "task_id": self.task_id,
         }
+
+    def _canonical_text(self) -> str:
+        return canonical_json(self.canonical_record())
 
 
 def _obligation_definition_identity(state: OrchestrationState) -> str:
@@ -1534,6 +1623,27 @@ class StrategyChangeReceipt:
             raise ValueError("strategy change status and reason are inconsistent")
         self._validate_bound_material()
 
+    def _validate_authority_fields(self) -> None:
+        for name, value in (
+            ("strategy change task id", self.task_id),
+            ("strategy change governance id", self.governance_id),
+            ("strategy change orchestration state id", self.orchestration_state_id),
+            ("prior strategy material id", self.prior_strategy_material_id),
+            ("proposed strategy material id", self.proposed_strategy_material_id),
+            ("proposed strategy id", self.proposed_strategy_id),
+        ):
+            if type(value) is not str:
+                raise TypeError(f"{name} must remain an exact string")
+            require_fingerprint(name, value)
+        if type(self.status) is not StrategyChangeStatus:
+            raise TypeError("strategy change status must remain exact")
+        if type(self.reason) is not StrategyChangeReason:
+            raise TypeError("strategy change reason must remain exact")
+        if self.cycle_evidence_id is not None:
+            if type(self.cycle_evidence_id) is not str:
+                raise TypeError("strategy cycle evidence id must remain an exact string")
+            require_fingerprint("strategy cycle evidence id", self.cycle_evidence_id)
+
     def _validate_bound_material(self) -> None:
         if type(self._orchestration_state) is not OrchestrationState:
             raise TypeError("strategy receipt requires exact orchestration state")
@@ -1580,6 +1690,7 @@ class StrategyChangeReceipt:
         return domain_fingerprint(STRATEGY_CHANGE_ID_DOMAIN, self.canonical_record())
 
     def canonical_record(self) -> dict[str, Any]:
+        self._validate_authority_fields()
         self._validate_bound_material()
         return {
             "authority_layer": "orchestration",
@@ -1594,6 +1705,9 @@ class StrategyChangeReceipt:
             "status": self.status.value,
             "task_id": self.task_id,
         }
+
+    def _canonical_text(self) -> str:
+        return canonical_json(self.canonical_record())
 
 
 def evaluate_strategy_change(
@@ -2621,6 +2735,38 @@ class ContinuationRequest:
                 self._native_request_seal.validates(self._canonical_text())
             ):
                 raise ValueError("continuation request authority does not match")
+        self._validate_authority_fields()
+
+    def _validate_authority_fields(self) -> None:
+        for name, value in (
+            ("continuation request task id", self.task_id),
+            ("continuation request governance id", self.governance_id),
+            ("continuation request policy id", self.continuation_policy_id),
+            ("continuation request state id", self.continuation_state_id),
+            ("continuation request orchestration id", self.orchestration_state_id),
+            ("continuation request runtime session id", self.runtime_session_id),
+            ("continuation request runtime state id", self.runtime_state_id),
+            ("continuation request progress id", self.progress_id),
+        ):
+            if type(value) is not str:
+                raise TypeError(f"{name} must remain an exact string")
+            require_fingerprint(name, value)
+        _u64("continuation request lease index", self.lease_index)
+        if self.lease_index == 0:
+            raise ValueError("continuation request lease index must be positive")
+        if type(self.requested_resources) is not BudgetVector:
+            raise TypeError("requested_resources must remain an exact BudgetVector")
+        self.requested_resources._validate_authority_fields()
+        if type(self.requester) is not ContinuationRequester:
+            raise TypeError("continuation requester must remain exact")
+        if self.strategy_change_id is not None:
+            if type(self.strategy_change_id) is not str:
+                raise TypeError(
+                    "continuation request strategy change id must remain an exact string"
+                )
+            require_fingerprint(
+                "continuation request strategy change id", self.strategy_change_id
+            )
 
     @classmethod
     def from_state(
@@ -2691,6 +2837,7 @@ class ContinuationRequest:
         )
 
     def canonical_record(self) -> dict[str, Any]:
+        self._validate_authority_fields()
         return {
             "continuation_policy_id": self.continuation_policy_id,
             "continuation_state_id": self.continuation_state_id,
@@ -3115,6 +3262,16 @@ def _evaluate_continuation(
             blocking_governance_violation_id,
         )
 
+    # Reject callback-bearing scalar/container substitutions before the first
+    # authority comparison.  Native integrity protects the pinned evaluator
+    # graph; these exact-field checks make its caller-supplied data inert.
+    request._validate_authority_fields()
+    progress._validate_authority_fields()
+    progress._validate_bound_claims()
+    if strategy_change is not None:
+        strategy_change._validate_authority_fields()
+        strategy_change._validate_bound_material()
+    policy._validate_authority_fields()
     policy_receipt._validate_authority_fields()
     state._require_policy(policy)
     if (
@@ -4010,6 +4167,26 @@ class ContinuationPartialReceipt:
             raise ValueError("partial checkpoint reason does not match finalization")
         if state.progress_state is ProgressState.COMPLETE:
             raise ValueError("a complete task cannot be finalized as partial")
+        if (
+            reason is ContinuationPartialReason.LEASE_CEILING_EXHAUSTED
+            and state.terminal_ceiling_receipt_id is not None
+        ):
+            terminal_receipt_id = state.terminal_ceiling_receipt_id
+            checkpoint_receipt_id = checkpoint.relevant_receipt_id
+            if type(terminal_receipt_id) is not str or type(
+                checkpoint_receipt_id
+            ) is not str:
+                raise TypeError(
+                    "terminal ceiling receipt binding must remain exact"
+                )
+            require_fingerprint("terminal ceiling receipt id", terminal_receipt_id)
+            require_fingerprint(
+                "partial checkpoint relevant receipt id", checkpoint_receipt_id
+            )
+            if checkpoint_receipt_id != terminal_receipt_id:
+                raise ValueError(
+                    "partial checkpoint no longer binds the terminal ceiling receipt"
+                )
         _validate_semantic_partial_reason(
             state,
             reason=reason,

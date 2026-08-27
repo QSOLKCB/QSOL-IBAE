@@ -120,8 +120,10 @@ continuation without changing those frozen v0.2-v0.4 records:
   and application committer captured once in native storage during trusted
   module initialization and cloned by the dedicated continuation-session
   factory, integrity checks over mutable Python function dependencies even
-  outside the package and behind descriptors, exact request typing plus
-  post-evaluation revalidation before evaluator output is read or sealed,
+  outside the package and behind descriptors, callback-free exact
+  request/progress/strategy fields before governance comparison plus
+  post-evaluation integrity checks and native rederivation of the exact
+  progress-or-admitted-strategy predicate before a grant is sealed,
   one-shot native sealing of the complete initial state only from exact
   registered context types and rederived, authority-bound progress after Rust
   derives its decision/progress seeds, one live native lineage
@@ -143,7 +145,8 @@ continuation without changing those frozen v0.2-v0.4 records:
   evidence receipt whose count/aggregate must match the sealed full progress
   history, checkpoint-evidence-bound semantic continuation partial
   receipts whose reason is validated when the checkpoint is created and whose
-  terminal lease-ceiling path cites the exact lineage-bound denial marker, and
+  terminal lease-ceiling path cites—and revalidates on consumption—the exact
+  lineage-bound denial marker, and
   watchdog observations whose exact lease-exhaustion flag is
   identity-bearing but cannot claim completion;
 - exact experimental `tiny`, `standard`, `extended`, and `repository` profiles
