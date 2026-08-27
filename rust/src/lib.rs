@@ -1836,6 +1836,9 @@ impl NativeContinuationRequestSeal {
         blocking_governance_violation_id: Option<&str>,
         benchmark_observation: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Py<PyAny>> {
+        // Benchmark data is deliberately outside correctness authority.  Do
+        // not call into it or expose it to the pinned governance evaluator.
+        let _ = benchmark_observation;
         if !request
             .get_type()
             .is(self.binding.continuation_request_type.bind(py))
@@ -1901,9 +1904,6 @@ impl NativeContinuationRequestSeal {
         }
         if let Some(value) = blocking_governance_violation_id {
             kwargs.set_item("blocking_governance_violation_id", value)?;
-        }
-        if let Some(value) = benchmark_observation {
-            kwargs.set_item("benchmark_observation", value)?;
         }
         let raw = self
             .evaluator
@@ -1988,6 +1988,24 @@ impl NativeContinuationStateSeal {
             && self
                 .binding
                 .validates_live_lineage(self.generation, canonical_lineage)
+    }
+
+    fn validate_checkpoint_snapshot(
+        &self,
+        py: Python<'_>,
+        native_session: &Bound<'_, PyAny>,
+        state: &Bound<'_, PyAny>,
+        runtime_snapshot: &Bound<'_, PyAny>,
+    ) -> PyResult<()> {
+        self.binding.observer_integrity.validate(py)?;
+        self.require_current_lineage(py, state)?;
+        self.binding.observer_integrity.validate(py)?;
+        {
+            let native: PyRef<'_, NativeRuntimeSession> = native_session.extract()?;
+            native.require_live_continuation_snapshot(py, runtime_snapshot, &self.binding)?;
+        }
+        self.binding.observer_integrity.validate(py)?;
+        Ok(())
     }
 
     #[pyo3(signature = (
@@ -2143,6 +2161,14 @@ impl NativeContinuationStateSeal {
         if current_lineage != self.canonical_lineage.as_ref() {
             return Err(PyValueError::new_err(
                 "continuation state does not match native lineage",
+            ));
+        }
+        if !self
+            .binding
+            .validates_live_lineage(self.generation, current_lineage.as_str())
+        {
+            return Err(PyValueError::new_err(
+                "continuation state seal is superseded by the live native state",
             ));
         }
         Ok(())

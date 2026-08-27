@@ -69,8 +69,9 @@ descriptor-backed functions. Exact request typing precedes callbacks and native
 integrity is rechecked afterward. The complete initial zero-decision state is
 sealed only after Rust derives its exact decision/progress seeds; each reseal
 advances the sole live native generation and retires its predecessor; and
-context observation/application commit require the matching live native session
-and snapshot;
+context observation/application commit and checkpoint construction/resume
+require the matching live native session and complete snapshot; benchmark
+objects are not inspected or forwarded into governance evaluation;
 a public principal label,
 reconstructed record, mutable Python validator, or equal-ID duplicate session
 is insufficient. An exact
@@ -81,7 +82,9 @@ including the full ordered progress count/aggregate, and each measurable
 progress identity is single-use for progress-based admission. An accepted
 application changes exact limits plus one runtime logical tick while consuming no
 tool/runtime resource counter or history; rejection is state-neutral. The
-compact state exposes effective remaining request and schedule decisions.
+compact state exposes effective remaining request and schedule decisions plus
+remaining progress-observation capacity, suppressing objective-progress
+recovery when that evidence bound is full.
 Structural in-process checkpoints require live status, strategy, and that same
 effective capacity and reject a false semantic partial reason at checkpoint
 construction; semantic partial evidence derives from the

@@ -338,7 +338,9 @@ two-period window and reserve at least one request decision beyond scheduled
 leases for the terminal ceiling denial. The compact projection exposes both
 remaining schedule slots and remaining request decisions, so exhausted request
 or schedule capacity cannot advertise an impossible recovery; a missing prior
-strategy identity likewise suppresses material-strategy recovery. Checkpoints
+strategy identity likewise suppresses material-strategy recovery. It exposes
+remaining bounded progress-observation capacity and suppresses objective
+progress recovery when that capacity is full. Checkpoints
 use that same effective minimum and cannot bind a strategy absent from live state;
 ordinary progress observation refreshes stalled/progressing/complete state.
 The sealed state also advances an ordered progress-event count and aggregate,
@@ -354,7 +356,9 @@ candidate, not an architectural law.
 Checkpoint/resume support is intentionally structural and in-process. It
 revalidates exact live task, governance, orchestration, native runtime,
 progress, strategy, policy, status, checkpoint-bound evidence IDs, and lease
-lineage. Checkpoint creation itself validates any semantic partial reason
+lineage. Both construction and resume compare the complete supplied snapshot
+with the matching live native session. Checkpoint creation itself validates
+any semantic partial reason
 against the actual last denial and required exhaustion. Semantic partials
 derive their evidence IDs from that checkpoint, and
 watchdog identity includes its independently checked lease-exhaustion flag. A

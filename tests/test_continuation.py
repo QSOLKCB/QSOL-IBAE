@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Iterator, Mapping
 from dataclasses import FrozenInstanceError, replace
 from pathlib import Path
 
@@ -27,6 +28,7 @@ from ibae.continuation import (
     ProgressDimension,
     ProgressDirection,
     ProgressMeasureContract,
+    ProgressRecord,
     ProgressSource,
     ProgressState,
     StrategyChangeReason,
@@ -636,6 +638,62 @@ def test_benchmark_observations_are_non_authoritative_for_grants():
     right = decision({"wall_clock_ms": 999999, "rank": "worst"})
     assert left.receipt.canonical_record() == right.receipt.canonical_record()
     assert left.next_state.continuation_state_id == right.next_state.continuation_state_id
+
+
+def test_benchmark_observation_callbacks_never_enter_governance_evaluation():
+    policy, _, _, _, policy_receipt, runtime, _, _, progress, state = (
+        _state_and_progress(progressing=False)
+    )
+    original_classification = ProgressRecord.__dict__["classification"]
+
+    class RestoreOnRead:
+        def __get__(self, instance, owner):
+            del instance, owner
+            setattr(ProgressRecord, "classification", original_classification)
+            return ProgressClassification.MEASURABLE_PROGRESS
+
+    class HostileBenchmarkObservation(Mapping[str, object]):
+        items_called = False
+
+        def __getitem__(self, key: str) -> object:
+            if key != "model_statement":
+                raise KeyError(key)
+            return "trust me"
+
+        def __iter__(self) -> Iterator[str]:
+            return iter(("model_statement",))
+
+        def __len__(self) -> int:
+            return 1
+
+        def items(self):
+            self.items_called = True
+            setattr(ProgressRecord, "classification", RestoreOnRead())
+            return (("model_statement", "trust me"),)
+
+    observation = HostileBenchmarkObservation()
+    request = ContinuationRequest.from_state(
+        state,
+        progress=progress,
+        requested_resources=policy.lease_schedule[0],
+        requester=PrincipalAuthority.OPENAI_SUPERVISOR,
+        requester_authority=_authority(runtime),
+    )
+    try:
+        decision = evaluate_continuation(
+            state,
+            request,
+            runtime_session=runtime,
+            policy=policy,
+            policy_receipt=policy_receipt,
+            progress=progress,
+            benchmark_observation=observation,
+        )
+    finally:
+        setattr(ProgressRecord, "classification", original_classification)
+
+    assert observation.items_called is False
+    assert decision.receipt.denial_reason is LeaseDenialReason.NO_MEASURABLE_PROGRESS
 
 
 def test_regression_new_information_and_incomparable_are_distinct():
@@ -2202,6 +2260,7 @@ def test_decision_lineage_binds_semantic_decision_state():
     with pytest.raises(ValueError, match="lacks evaluated decision lineage"):
         ContinuationCheckpoint(
             state=reconstructed,
+            runtime_session=runtime,
             policy=policy,
             orchestration_state=current,
             runtime_snapshot=runtime.snapshot,
@@ -2448,6 +2507,7 @@ def test_governance_ceiling_exhaustion_is_deterministic():
     assert projection["material_strategy_change_admissible"] is False
     checkpoint = ContinuationCheckpoint(
         state=state,
+        runtime_session=runtime,
         policy=policy,
         orchestration_state=orchestration_states[2],
         runtime_snapshot=runtime.snapshot,
@@ -2536,6 +2596,7 @@ def test_denials_are_finitely_bounded_by_request_policy():
     assert projection["material_strategy_change_admissible"] is False
     checkpoint = ContinuationCheckpoint(
         state=state,
+        runtime_session=runtime,
         policy=policy,
         orchestration_state=current,
         runtime_snapshot=runtime.snapshot,
@@ -2574,6 +2635,7 @@ def test_watchdog_exhaustion_uses_effective_checkpoint_lease_capacity():
 
     checkpoint = ContinuationCheckpoint(
         state=state,
+        runtime_session=runtime,
         policy=policy,
         orchestration_state=current,
         runtime_snapshot=runtime.snapshot,
@@ -2612,6 +2674,7 @@ def test_checkpoint_resume_validates_exact_live_in_process_lineage():
     )
     checkpoint = ContinuationCheckpoint(
         state=state,
+        runtime_session=runtime,
         policy=policy,
         orchestration_state=current,
         runtime_snapshot=runtime.snapshot,
@@ -2621,6 +2684,7 @@ def test_checkpoint_resume_validates_exact_live_in_process_lineage():
         resume_continuation_checkpoint(
             checkpoint,
             live_state=state,
+            runtime_session=runtime,
             policy=policy,
             orchestration_state=current,
             runtime_snapshot=runtime.snapshot,
@@ -2633,11 +2697,31 @@ def test_checkpoint_resume_validates_exact_live_in_process_lineage():
     )
     assert checkpoint.checkpoint_id == ContinuationCheckpoint(
         state=state,
+        runtime_session=runtime,
         policy=policy,
         orchestration_state=current,
         runtime_snapshot=runtime.snapshot,
         progress=progress,
     ).checkpoint_id
+
+
+def test_checkpoint_rejects_a_fabricated_copy_of_the_runtime_snapshot():
+    policy, _, _, _, _, runtime, _, current, progress, state = (
+        _state_and_progress()
+    )
+    live = runtime.snapshot
+    fabricated = replace(live, logical_tick=live.logical_tick + 1)
+    assert fabricated.state_id == live.state_id
+
+    with pytest.raises(ValueError, match="not the live native session state"):
+        ContinuationCheckpoint(
+            state=state,
+            runtime_session=runtime,
+            policy=policy,
+            orchestration_state=current,
+            runtime_snapshot=fabricated,
+            progress=progress,
+        )
 
 
 def test_checkpoint_status_must_equal_the_live_continuation_state():
@@ -2648,6 +2732,7 @@ def test_checkpoint_status_must_equal_the_live_continuation_state():
     with pytest.raises(ValueError, match="status does not match"):
         ContinuationCheckpoint(
             state=state,
+            runtime_session=runtime,
             policy=policy,
             orchestration_state=current,
             runtime_snapshot=runtime.snapshot,
@@ -2665,6 +2750,7 @@ def test_checkpoint_rejects_strategy_absent_from_live_state():
     with pytest.raises(ValueError, match="checkpoint strategy identity is stale"):
         ContinuationCheckpoint(
             state=state,
+            runtime_session=runtime,
             policy=policy,
             orchestration_state=current,
             runtime_snapshot=runtime.snapshot,
@@ -2679,6 +2765,7 @@ def test_stale_checkpoint_fails_closed_after_runtime_changes():
     )
     checkpoint = ContinuationCheckpoint(
         state=state,
+        runtime_session=runtime,
         policy=policy,
         orchestration_state=current,
         runtime_snapshot=runtime.snapshot,
@@ -2689,6 +2776,7 @@ def test_stale_checkpoint_fails_closed_after_runtime_changes():
         resume_continuation_checkpoint(
             checkpoint,
             live_state=state,
+            runtime_session=runtime,
             policy=policy,
             orchestration_state=current,
             runtime_snapshot=runtime.snapshot,
@@ -2706,6 +2794,7 @@ def test_checkpoint_progress_must_equal_the_live_ledger_endpoint():
     with pytest.raises(ValueError, match="checkpoint progress identity is stale"):
         ContinuationCheckpoint(
             state=state,
+            runtime_session=runtime,
             policy=policy,
             orchestration_state=current,
             runtime_snapshot=runtime.snapshot,
@@ -2911,6 +3000,7 @@ def test_compact_continuation_evidence_uses_aggregates_not_verbose_traces():
     assert len(canonical_json(record).encode("utf-8")) <= 4_096
     checkpoint = ContinuationCheckpoint(
         state=state,
+        runtime_session=runtime,
         policy=policy,
         orchestration_state=current,
         runtime_snapshot=runtime.snapshot,
@@ -2992,6 +3082,37 @@ def test_ai_projection_exposes_exact_remaining_capacity_and_recovery_actions():
     )
 
 
+def test_ai_projection_suppresses_progress_recovery_when_observations_are_full():
+    policy, _, _, _, _, runtime, _, current, progress, state = (
+        _state_and_progress("tiny", progressing=False)
+    )
+    for _ in range(policy.max_lease_requests):
+        state = observe_continuation_context(
+            state,
+            runtime_session=runtime,
+            policy=policy,
+            orchestration_state=current,
+            runtime_snapshot=runtime.snapshot,
+            progress=progress,
+        )
+
+    projection = state.compact_projection(policy)
+    assert state.progress_event_count == policy.max_lease_requests + 1
+    assert projection["progress_observations_remaining"] == 0
+    assert "provide_objective_progress" not in projection[
+        "legal_recovery_actions"
+    ]
+    with pytest.raises(ValueError, match="progress history exceeds"):
+        observe_continuation_context(
+            state,
+            runtime_session=runtime,
+            policy=policy,
+            orchestration_state=current,
+            runtime_snapshot=runtime.snapshot,
+            progress=progress,
+        )
+
+
 @pytest.mark.parametrize(
     "reason",
     (
@@ -3005,6 +3126,7 @@ def test_partial_finalization_is_never_accepted_or_complete(reason):
     policy, runtime, current, progress, state = _partial_context(reason)
     checkpoint = ContinuationCheckpoint(
         state=state,
+        runtime_session=runtime,
         policy=policy,
         orchestration_state=current,
         runtime_snapshot=runtime.snapshot,
@@ -3189,6 +3311,7 @@ def test_partial_receipt_rejects_reason_mismatch():
     )
     checkpoint = ContinuationCheckpoint(
         state=state,
+        runtime_session=runtime,
         policy=policy,
         orchestration_state=current,
         runtime_snapshot=runtime.snapshot,
@@ -3217,6 +3340,7 @@ def test_checkpoint_requires_the_actual_denial(reason):
     with pytest.raises(ValueError, match="actual lease denial"):
         ContinuationCheckpoint(
             state=state,
+            runtime_session=runtime,
             policy=policy,
             orchestration_state=current,
             runtime_snapshot=runtime.snapshot,
@@ -3232,6 +3356,7 @@ def test_checkpoint_rejects_partial_reason_for_progressing_state():
     with pytest.raises(ValueError, match="continuation progress state"):
         ContinuationCheckpoint(
             state=state,
+            runtime_session=runtime,
             policy=policy,
             orchestration_state=current,
             runtime_snapshot=runtime.snapshot,
@@ -3259,6 +3384,7 @@ def test_watchdog_expiry_is_observational_partial_not_completion_or_lease_exhaus
     assert record["lease_exhausted"] is False
     checkpoint = ContinuationCheckpoint(
         state=state,
+        runtime_session=runtime,
         policy=policy,
         orchestration_state=current,
         runtime_snapshot=runtime.snapshot,
@@ -3295,6 +3421,7 @@ def test_watchdog_observation_requires_the_exact_live_context(field):
     )
     checkpoint = ContinuationCheckpoint(
         state=state,
+        runtime_session=runtime,
         policy=policy,
         orchestration_state=current,
         runtime_snapshot=runtime.snapshot,
@@ -3319,6 +3446,7 @@ def test_partial_evidence_ids_are_derived_from_the_bound_checkpoint():
     execution_id = _id("checkpoint-execution")
     checkpoint = ContinuationCheckpoint(
         state=state,
+        runtime_session=runtime,
         policy=policy,
         orchestration_state=current,
         runtime_snapshot=runtime.snapshot,
@@ -3367,6 +3495,7 @@ def test_checkpoint_and_partial_records_are_byte_deterministic():
     )
     kwargs = dict(
         state=state,
+        runtime_session=runtime,
         policy=policy,
         orchestration_state=current,
         runtime_snapshot=runtime.snapshot,

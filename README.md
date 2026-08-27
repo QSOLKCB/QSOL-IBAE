@@ -123,14 +123,17 @@ continuation without changing those frozen v0.2-v0.4 records:
   post-callback revalidation, one-shot native sealing of the complete initial
   state after Rust derives its decision/progress seeds, one live native lineage
   generation that retires every predecessor, exact live-session checks for
-  context observation/application commit, exact request seals, and an opt-in
+  context observation/application commit and checkpoint snapshots, benchmark
+  objects kept entirely outside governance evaluation, exact request seals,
+  and an opt-in
   Rust `apply_lease` transition
   that independently validates the authorized request and full governance
   grant against the live per-instance session before issuing its
   non-constructible grant seal; it changes only exact limits plus one runtime
   logical tick and rejects unissued/replayed/forged/stale or equal-ID
   cross-session authority without mutation;
-- in-process structural checkpoints, a separate fixed-shape continuation
+- in-process structural checkpoints validated against the complete live native
+  snapshot, a separate fixed-shape continuation
   evidence receipt whose count/aggregate must match the sealed full progress
   history, checkpoint-evidence-bound semantic continuation partial
   receipts whose reason is validated when the checkpoint is created, and

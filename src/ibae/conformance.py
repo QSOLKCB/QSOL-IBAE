@@ -1031,6 +1031,7 @@ def v0_5_reference_fixture() -> dict[str, object]:
     )
     checkpoint = ContinuationCheckpoint(
         state=continuation_state,
+        runtime_session=runtime,
         policy=continuation_policy,
         orchestration_state=later,
         runtime_snapshot=runtime.snapshot,

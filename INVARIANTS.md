@@ -362,8 +362,9 @@ Current enforcement: only exact obligation measures or task/governance-bound
 external counter is derived from an accepted native source-bound runtime
 observation and matched to its exact governed read-tool admission; a supplied
 fingerprint or structural receipt alone is insufficient. The continuation
-evaluator validates and deliberately ignores bounded benchmark observations;
-it has no confidence, percentage, token, or wall-clock input.
+authority never inspects or forwards benchmark objects into its evaluator, so
+caller-controlled benchmark callbacks cannot execute during governance. The
+evaluator has no confidence, percentage, token, or wall-clock input.
 
 ## IBAE-PROG-003 — Obligation state is canonical
 
@@ -395,7 +396,9 @@ precommitted request/schedule/cumulative ceilings. Period-1/2/3 evidence is
 recomputed from live native history, so omitting caller evidence cannot bypass
 a terminal-cycle denial; the compact projection reports both remaining
 schedule slots and request decisions and suppresses impossible recoveries when
-either is exhausted. Progress observation immediately refreshes the live
+either is exhausted. It also exposes remaining progress-observation capacity
+and suppresses objective-progress recovery when that evidence bound is full.
+Progress observation immediately refreshes the live
 stalled/progressing/complete control state. The built-in contract counts both
 unsatisfied and blocked obligations, so newly blocked work cannot authorize a
 lease. External evidence is paired with declared dimensions in canonical key
@@ -830,7 +833,9 @@ absent, and remaining leases use the effective request/schedule minimum;
 checkpoint construction requires a semantic partial reason to match the actual
 last denial and any required lease/recovery exhaustion; semantic partial
 evidence IDs are derived from the cited checkpoint and cannot
-be replaced by unrelated fingerprints. A later accepted attempt creates a new
+be replaced by unrelated fingerprints. Construction and resume require the
+matching live native session to validate the complete supplied runtime
+snapshot. A later accepted attempt creates a new
 final receipt rather than mutating earlier evidence.
 
 ---

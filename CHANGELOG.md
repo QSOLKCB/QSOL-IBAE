@@ -53,7 +53,9 @@ All notable changes to QSOL-IBAE will be documented here.
   seeds. Every reseal advances one live native generation and retires its
   predecessor.
   Context observation and application commit require the exact live native
-  session snapshot and reseal the resulting full continuation state.
+  session snapshot and reseal the resulting full continuation state. Benchmark
+  objects are never inspected or passed into the governance evaluator, so
+  caller-controlled mapping callbacks cannot run inside decision authority.
 - single-use measurable-progress endpoints: one exact progress identity may
   justify at most one progress-based grant, after which another such grant
   requires freshly observed progress. External evidence is paired with
@@ -74,7 +76,10 @@ All notable changes to QSOL-IBAE will be documented here.
   bindings, effective request/schedule capacity, and watchdog
   orchestration/runtime/lease-exhaustion identity fail closed. Semantic partial
   reasons are validated against the actual denial and exhausted counters when
-  the checkpoint itself is constructed.
+  the checkpoint itself is constructed. Checkpoint creation and resume also
+  require the matching live native session to validate the complete supplied
+  runtime snapshot. Compact AI state exposes remaining progress-observation
+  capacity and suppresses objective-progress recovery when that bound is full.
 - exact experimental `tiny`, `standard`, `extended`, and `repository`
   continuation profiles plus a model-free benchmark of fixed, front-loaded,
   geometric-candidate, and bounded-recovery schedules without a promoted

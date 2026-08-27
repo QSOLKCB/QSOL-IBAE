@@ -393,7 +393,9 @@ new lineage.
 The compact AI projection exposes remaining request decisions, remaining lease
 schedule slots, their effective minimum, total continuation capacity, the last
 progress/decision/denial state, pending-application state, and legal
-deterministic recovery actions. Once request decisions are exhausted it
+deterministic recovery actions. It also exposes the exact remaining bounded
+progress-observation capacity and suppresses `provide_objective_progress` once
+that capacity is exhausted. Once request decisions are exhausted it
 suppresses progress/strategy actions that cannot result in another request;
 the same suppression applies when schedule slots are exhausted, and material
 strategy recovery is omitted unless a live prior strategy identity exists. It
@@ -414,8 +416,11 @@ a semantic partial reason is supplied, checkpoint construction itself requires
 the matching last denial and any required lease/recovery exhaustion; a false
 reason can never become a structurally valid checkpoint.
 
-Resume reconstructs the expected checkpoint from the exact live in-process
-objects and requires byte-equivalent canonical content and checkpoint identity.
+Checkpoint construction and resume require the matching live native session;
+Rust compares the complete supplied runtime snapshot with that session before
+the snapshot can enter checkpoint identity. Resume then reconstructs the
+expected checkpoint from the exact live in-process objects and requires
+byte-equivalent canonical content and checkpoint identity.
 Stale orchestration, runtime, progress, strategy, policy, or continuation state
 fails closed.
 

@@ -2059,6 +2059,8 @@ class ContinuationState:
             raise ValueError("continuation state exceeds the policy lease count")
         if self.lease_requests > policy.max_lease_requests:
             raise ValueError("continuation state exceeds the request ceiling")
+        if self.progress_event_count > policy.max_lease_requests + 1:
+            raise ValueError("continuation state exceeds progress evidence capacity")
         if self.strategy_recoveries > policy.max_strategy_recoveries:
             raise ValueError("continuation state exceeds strategy recovery capacity")
 
@@ -2066,11 +2068,15 @@ class ContinuationState:
         self._require_policy(policy)
         request_decisions_remaining = policy.max_lease_requests - self.lease_requests
         schedule_slots_remaining = self.leases_remaining(policy)
+        progress_observations_remaining = (
+            policy.max_lease_requests + 1 - self.progress_event_count
+        )
         recovery_actions: list[str] = []
         if request_decisions_remaining == 0 or schedule_slots_remaining == 0:
             recovery_actions = []
         elif self.progress_state is ProgressState.STALLED:
-            recovery_actions.append("provide_objective_progress")
+            if progress_observations_remaining > 0:
+                recovery_actions.append("provide_objective_progress")
             if (
                 self.current_strategy_material_id is not None
                 and self.strategy_recoveries < policy.max_strategy_recoveries
@@ -2116,6 +2122,7 @@ class ContinuationState:
                 not in {ProgressState.COMPLETE, ProgressState.LEASE_EXHAUSTED}
             ),
             "pending_grant_receipt_id": self.pending_grant_receipt_id,
+            "progress_observations_remaining": progress_observations_remaining,
             "progress_state": self.progress_state.value,
             "remaining_total_continuation_ceiling": self.remaining_capacity(
                 policy
@@ -3004,9 +3011,9 @@ def _evaluate_continuation(
 ) -> _ContinuationEvaluationResult:
     """Return a deterministic finite GRANT or DENY decision.
 
-    ``benchmark_observation`` is copied through the bounded canonical-value
-    validator and then deliberately ignored.  It cannot affect correctness
-    identity or lease admission.
+    ``benchmark_observation`` is deliberately never inspected.  Benchmark
+    data is outside correctness authority and cannot execute caller callbacks
+    while governance evaluates a lease request.
     """
 
     if type(state) is not ContinuationState:
@@ -3029,8 +3036,6 @@ def _evaluate_continuation(
         raise TypeError("strategy_change must be exact receipt or None")
     if cycle_evidence is not None and type(cycle_evidence) is not CycleEvidence:
         raise TypeError("cycle_evidence must be exact evidence or None")
-    if benchmark_observation is not None:
-        CanonicalValue.from_value(benchmark_observation)
     if blocking_governance_violation_id is not None:
         require_fingerprint(
             "blocking governance violation id",
@@ -3376,7 +3381,8 @@ class ContinuationCheckpoint:
 
     A canonical hash proves internal correspondence only.  It is not producer
     authentication, durable remote attestation, or authority to reconstruct a
-    native runtime in another process.
+    native runtime in another process.  Construction requires the matching
+    live native session to validate the complete supplied runtime snapshot.
     """
 
     task_id: str
@@ -3411,6 +3417,7 @@ class ContinuationCheckpoint:
         self,
         *,
         state: ContinuationState,
+        runtime_session: RustRuntimeSession,
         policy: ContinuationPolicy,
         orchestration_state: OrchestrationState,
         runtime_snapshot: RuntimeSnapshot,
@@ -3423,11 +3430,18 @@ class ContinuationCheckpoint:
     ) -> None:
         if type(state) is not ContinuationState:
             raise TypeError("state must be an exact ContinuationState")
+        if type(runtime_session) is not RustRuntimeSession:
+            raise TypeError("runtime_session must be an exact RustRuntimeSession")
         state._require_policy(policy)
         if type(orchestration_state) is not OrchestrationState:
             raise TypeError("orchestration_state must be exact OrchestrationState")
-        if not isinstance(runtime_snapshot, RuntimeSnapshot):
-            raise TypeError("runtime_snapshot must be a RuntimeSnapshot")
+        if type(runtime_snapshot) is not RuntimeSnapshot:
+            raise TypeError("runtime_snapshot must be an exact RuntimeSnapshot")
+        runtime_session._validate_continuation_checkpoint_snapshot(
+            state._native_lineage_seal(),
+            state,
+            runtime_snapshot,
+        )
         if orchestration_state.state_id != state.orchestration_state_id:
             raise ValueError("checkpoint orchestration state is stale")
         if (
@@ -3595,6 +3609,7 @@ def resume_continuation_checkpoint(
     checkpoint: ContinuationCheckpoint,
     *,
     live_state: ContinuationState,
+    runtime_session: RustRuntimeSession,
     policy: ContinuationPolicy,
     orchestration_state: OrchestrationState,
     runtime_snapshot: RuntimeSnapshot,
@@ -3610,6 +3625,7 @@ def resume_continuation_checkpoint(
     live_state._require_policy(policy)
     expected = ContinuationCheckpoint(
         state=live_state,
+        runtime_session=runtime_session,
         policy=policy,
         orchestration_state=orchestration_state,
         runtime_snapshot=runtime_snapshot,

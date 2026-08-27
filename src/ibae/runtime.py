@@ -1417,6 +1417,24 @@ class RustRuntimeSession:
             strategy,
         )
 
+    def _validate_continuation_checkpoint_snapshot(
+        self,
+        lineage: Any,
+        state: Any,
+        runtime_snapshot: Any,
+    ) -> None:
+        """Bind a checkpoint snapshot to this exact live native session."""
+
+        from ._runtime import NativeContinuationStateSeal
+
+        if type(lineage) is not NativeContinuationStateSeal:
+            raise TypeError("continuation decision lineage is not trusted")
+        lineage.validate_checkpoint_snapshot(
+            self.__native,
+            state,
+            runtime_snapshot,
+        )
+
     def _commit_continuation_lease_application(
         self,
         lineage: Any,
