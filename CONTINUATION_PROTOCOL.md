@@ -35,15 +35,16 @@ A request is not a grant. A grant is not applied runtime capacity. An applied
 lease is not evidence of task progress. A strategy change may justify one
 bounded recovery attempt, but is not itself progress.
 
-Trusted module initialization captures the exact deterministic evaluator and
-context observer once in native storage and removes the one-shot bootstrap
-entrypoint. Session creation clones only those originals into a Rust-private,
-non-serialized per-instance authority binding; later reassignment of Python
+Trusted module initialization captures the exact deterministic evaluator,
+context observer, and application committer once in native storage and removes
+the one-shot bootstrap entrypoint. Session creation clones only those originals
+into a Rust-private, non-serialized per-instance authority binding; later reassignment of Python
 module attributes cannot replace them. Native integrity records also bind the
-captured functions' code, referenced globals and default/closure bindings, and
-reachable IBAE
-helper/class definitions; session creation and every evaluator/observer entry
-fail closed if any bound object has been mutated in place. The supervisor capability can seal an
+captured functions' code, every reachable mutable Python function dependency
+regardless of module, referenced globals and default/closure bindings, and
+reachable IBAE helper/class definitions; session creation and every
+evaluator/observer/committer entry fails closed if any bound object has been
+mutated in place. The supervisor capability can seal an
 exact canonical request but cannot select those functions. The request seal is
 likewise non-constructible and is the only entry to the pinned evaluator. Its
 native binding uses live object capability identity solely for in-process authorization; memory identity never
@@ -279,17 +280,18 @@ It does not itself change native runtime limits or consume runtime request,
 execution, retry, mutation, cache-hit, or history resources. No second request
 can be admitted while a grant remains pending.
 
-The native decision-lineage seal binds the exact task/governance/policy
-identity; request, grant, denial, and recovery accounting; cumulative grant and
-decision receipt aggregate; current strategy material; last decision and
-denial; last progress identity and classification; progress control state; and
-last consumed progress and external semantic endpoint identities. The initial
-zero-decision state is sealed once by its native session before it is returned;
-there is no unsealed initial-state exemption. Erasing or changing any of those public fields
-cannot mint another valid state. Legitimate context observation enters the
-observer pinned during trusted module initialization and receives a new native
-seal for the resulting exact lineage. The issuer is not held in a Python closure or exposed
-as a mutable module validator.
+The native lineage seal binds the complete canonical continuation state,
+including runtime state and pending-application identity in addition to exact
+task/governance/policy identity; request, grant, denial, recovery, cumulative,
+strategy, progress, and decision-aggregate accounting. Rust independently
+derives the exact decision-aggregate seed before the initial zero-decision state
+is sealed once by its native session; there is no unsealed initial-state
+exemption. Erasing or changing any public authority field cannot mint another
+valid state. Legitimate context observation and application commit both enter
+their callables pinned during trusted module initialization, require the exact
+snapshot of the matching live native session, and receive a new seal for the
+resulting state. The issuers are not held in a Python closure or exposed as
+mutable module validators.
 
 ## Rust lease application
 
@@ -338,10 +340,11 @@ application receipt itself deliberately has no v0.3 native source seal: the
 supported checkpoint scope is in-process structural lineage, not durable
 producer authentication or remote attestation.
 
-Python may commit an accepted application into continuation lineage only after
-matching every task/governance/policy/session/grant/index/cumulative/ceiling
-field, the exact native applied-grant ledger, the resulting runtime state, and
-the resulting exact limits.
+Python may commit an accepted application into continuation lineage only
+through the pinned native committer after the supplied snapshot exactly equals
+the matching live native session and every
+task/governance/policy/session/grant/index/cumulative/ceiling field, applied
+grant ledger, resulting runtime state, and exact limit matches.
 
 ## Runtime compatibility
 
@@ -370,11 +373,11 @@ Advancing orchestration state requires a progress record whose prior endpoint
 is the ledger's current state;
 lease requests must reuse the exact last committed progress identity.
 Every evaluator-produced decision state also carries non-constructible native
-lineage over its decision/recovery and decision/progress semantics, so replacing
-or erasing a public counter, decision, denial, classification, progress state,
-or consumed endpoint cannot authorize another grant or forge a semantic partial
-reason. Binding a new progress record through the pinned observer immediately
-derives `complete`, `progressing`, or `stalled` control state and reseals the
+lineage over the complete canonical state, so replacing or erasing a public
+counter, runtime identity, pending grant, decision, denial, classification,
+progress state, or consumed endpoint cannot authorize another grant, fake an
+application, or forge a semantic partial reason. Binding a new progress record
+through the pinned observer immediately derives `complete`, `progressing`, or `stalled` control state and reseals the
 new lineage.
 
 The compact AI projection exposes remaining request decisions, remaining lease
@@ -382,8 +385,9 @@ schedule slots, their effective minimum, total continuation capacity, the last
 progress/decision/denial state, pending-application state, and legal
 deterministic recovery actions. Once request decisions are exhausted it
 suppresses progress/strategy actions that cannot result in another request;
-the same suppression applies when schedule slots are exhausted. It is an
-observation of authority state, not authority to alter that state.
+the same suppression applies when schedule slots are exhausted, and material
+strategy recovery is omitted unless a live prior strategy identity exists. It
+is an observation of authority state, not authority to alter that state.
 
 ## Checkpoint and resume scope
 

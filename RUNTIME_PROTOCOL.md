@@ -124,16 +124,18 @@ and no duplicate/replayed grant ID.
 
 Rust does not decide whether progress justifies a lease and exposes no
 `request_lease` command. Trusted module initialization captures the exact
-deterministic evaluator and context observer once in native storage and removes
-the bootstrap entrypoint. Continuation-session creation clones only those
-originals into a Rust-private per-instance binding and returns a separate
+deterministic evaluator, context observer, and application committer once in
+native storage and removes the bootstrap entrypoint. Continuation-session
+creation clones only those originals into a Rust-private per-instance binding and returns a separate
 once-issued, session-scoped supervisor request capability.
-The binding records the captured functions' code, referenced globals and
+The binding records the captured functions' code, every reachable mutable
+Python function dependency regardless of module, referenced globals and
 default/closure bindings, and reachable IBAE helper/class definitions and
-rejects session creation,
-evaluation, or observation if any are mutated in place. It also seals the
-session's exact initial zero-decision continuation state once before that state
-is exposed; every later state must preserve native lineage.
+rejects session creation or evaluator/observer/committer entry if any are
+mutated in place. It seals the complete initial zero-decision continuation state
+only after independently deriving its decision-aggregate seed; every later
+state must preserve full native lineage. Observation and application commit
+require an exact snapshot of that same live native session.
 The dedicated continuation factory extracts it before returning the runtime;
 the generic constructor rejects continuation arguments, and the runtime facade
 does not expose its native handle. The requester label alone is not authority.

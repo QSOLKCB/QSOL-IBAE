@@ -917,6 +917,7 @@ def v0_5_reference_fixture() -> dict[str, object]:
     first_application = runtime.apply_lease(first_decision.receipt)
     continuation_state = commit_lease_application(
         first_decision.next_state,
+        runtime_session=runtime,
         policy=continuation_policy,
         grant=first_decision.receipt,
         application=first_application,
@@ -932,6 +933,7 @@ def v0_5_reference_fixture() -> dict[str, object]:
     )
     continuation_state = observe_continuation_context(
         continuation_state,
+        runtime_session=runtime,
         policy=continuation_policy,
         orchestration_state=current,
         runtime_snapshot=runtime.snapshot,
@@ -983,6 +985,7 @@ def v0_5_reference_fixture() -> dict[str, object]:
     recovery_application = runtime.apply_lease(recovery_decision.receipt)
     continuation_state = commit_lease_application(
         recovery_decision.next_state,
+        runtime_session=runtime,
         policy=continuation_policy,
         grant=recovery_decision.receipt,
         application=recovery_application,
@@ -998,6 +1001,7 @@ def v0_5_reference_fixture() -> dict[str, object]:
     )
     continuation_state = observe_continuation_context(
         continuation_state,
+        runtime_session=runtime,
         policy=continuation_policy,
         orchestration_state=later,
         runtime_snapshot=runtime.snapshot,

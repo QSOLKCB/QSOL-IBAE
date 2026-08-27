@@ -1222,6 +1222,11 @@ class RuntimeSnapshot:
             record["continuation"] = self.continuation.canonical_record()
         return record
 
+    def _canonical_text(self) -> str:
+        """Return the exact bounded record consumed by native live-state checks."""
+
+        return CanonicalRuntimeRecord.from_value(self.canonical_record()).text
+
 
 class RuntimeRejected(RuntimeError):
     """A stable, structured rejection returned by execution authority."""
@@ -1384,6 +1389,56 @@ class RustRuntimeSession:
             cycle_evidence,
             blocking_governance_violation_id,
             benchmark_observation,
+        )
+
+    def _observe_continuation_context(
+        self,
+        lineage: Any,
+        state: Any,
+        policy: Any,
+        orchestration_state: Any,
+        runtime_snapshot: Any,
+        progress: Any | None,
+        strategy: Any | None,
+    ) -> Any:
+        """Enter the pinned observer with the live native session."""
+
+        from ._runtime import NativeContinuationStateSeal
+
+        if type(lineage) is not NativeContinuationStateSeal:
+            raise TypeError("continuation decision lineage is not trusted")
+        return lineage.observe(
+            self.__native,
+            state,
+            policy,
+            orchestration_state,
+            runtime_snapshot,
+            progress,
+            strategy,
+        )
+
+    def _commit_continuation_lease_application(
+        self,
+        lineage: Any,
+        state: Any,
+        policy: Any,
+        grant: Any,
+        application: Any,
+        runtime_snapshot: Any,
+    ) -> Any:
+        """Enter the pinned committer with the live native session."""
+
+        from ._runtime import NativeContinuationStateSeal
+
+        if type(lineage) is not NativeContinuationStateSeal:
+            raise TypeError("continuation decision lineage is not trusted")
+        return lineage.commit_lease_application(
+            self.__native,
+            state,
+            policy,
+            grant,
+            application,
+            runtime_snapshot,
         )
 
     @property

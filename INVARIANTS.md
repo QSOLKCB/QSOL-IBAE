@@ -214,17 +214,21 @@ decision.
 No model, local worker, tool backend, runtime, GPU kernel, or scheduler may grant itself additional execution budget.
 
 Current enforcement: only the closed OpenAI-supervisor principal can request;
-trusted module initialization captures the exact evaluator/observer once in
-native storage and removes its bootstrap entrypoint. Continuation-session
-creation clones only those originals into a Rust-private per-instance authority
+trusted module initialization captures the exact evaluator, context observer,
+and application committer once in native storage and removes its bootstrap
+entrypoint. Continuation-session creation clones only those originals into a
+Rust-private per-instance authority
 and returns a separate once-issued, session-scoped,
 non-constructible supervisor request capability. The public principal label is
 insufficient. Native integrity records validate the captured functions' code,
+every reachable mutable Python function dependency regardless of module,
 referenced globals and default/closure bindings, and reachable IBAE helper/class
-definitions at
-session creation and every evaluator/observer entry. Every initial
-zero-decision state receives a one-shot native session seal. An exact native request seal invokes only the pinned evaluator, and Rust validates
-the authorized request plus full grant against the live session before issuing
+definitions at session creation and every evaluator/observer/committer entry.
+Every initial zero-decision state receives a one-shot native session seal over
+the complete canonical state after Rust derives the exact aggregate seed.
+Observation and application commit require an exact snapshot of the matching
+live native session. An exact native request seal invokes only the pinned
+evaluator, and Rust validates the authorized request plus full grant against the live session before issuing
 the grant seal. No raw grant issuer or mutable Python validator is exposed, and
 an equal-ID duplicate session carries distinct non-serialized authority. A
 reconstructed hash-consistent grant is insufficient. Tool, runtime,

@@ -2057,7 +2057,10 @@ class ContinuationState:
             recovery_actions = []
         elif self.progress_state is ProgressState.STALLED:
             recovery_actions.append("provide_objective_progress")
-            if self.strategy_recoveries < policy.max_strategy_recoveries:
+            if (
+                self.current_strategy_material_id is not None
+                and self.strategy_recoveries < policy.max_strategy_recoveries
+            ):
                 recovery_actions.append("propose_material_strategy_change")
         elif self.progress_state is ProgressState.CYCLE_BLOCKED:
             if self.strategy_recoveries < policy.max_strategy_recoveries:
@@ -2093,6 +2096,7 @@ class ContinuationState:
                 request_decisions_remaining > 0
                 and schedule_slots_remaining > 0
                 and not self.has_pending_grant
+                and self.current_strategy_material_id is not None
                 and self.strategy_recoveries < policy.max_strategy_recoveries
                 and self.progress_state
                 not in {ProgressState.COMPLETE, ProgressState.LEASE_EXHAUSTED}
@@ -2105,47 +2109,9 @@ class ContinuationState:
         }
 
     def _decision_lineage_record(self) -> dict[str, Any]:
-        """Return the evaluator-owned subset unchanged by observation/application."""
+        """Return the complete authority-bearing state protected by Rust."""
 
-        return {
-            "continuation_logical_tick": self.continuation_logical_tick,
-            "continuation_policy_id": self.continuation_policy_id,
-            "continuation_policy_receipt_id": self.continuation_policy_receipt_id,
-            "cumulative_granted": self.cumulative_granted.canonical_record(),
-            "current_strategy_material_id": self.current_strategy_material_id,
-            "decision_aggregate_id": self.decision_aggregate_id,
-            "decision_receipt_ids": list(self.decision_receipt_ids),
-            "governance_id": self.governance_id,
-            "governance_receipt_id": self.governance_receipt_id,
-            "last_consumed_progress_id": self.last_consumed_progress_id,
-            "last_consumed_external_progress_endpoint_id": (
-                self.last_consumed_external_progress_endpoint_id
-            ),
-            "last_decision": self.last_decision,
-            "last_denial_reason": (
-                None
-                if self.last_denial_reason is None
-                else self.last_denial_reason.value
-            ),
-            "last_progress_classification": (
-                None
-                if self.last_progress_classification is None
-                else self.last_progress_classification.value
-            ),
-            "last_progress_id": self.last_progress_id,
-            "last_external_progress_endpoint_id": (
-                self.last_external_progress_endpoint_id
-            ),
-            "lease_requests": self.lease_requests,
-            "leases_denied": self.leases_denied,
-            "leases_granted": self.leases_granted,
-            "orchestration_state_id": self.orchestration_state_id,
-            "progress_contract_id": self.progress_contract_id,
-            "runtime_session_id": self.runtime_session_id,
-            "strategy_recoveries": self.strategy_recoveries,
-            "task_id": self.task_id,
-            "progress_state": self.progress_state.value,
-        }
+        return self._canonical_record_unchecked()
 
     def _decision_lineage_text(self) -> str:
         return canonical_json(self._decision_lineage_record())
@@ -2344,6 +2310,7 @@ def _observe_continuation_context(
 def observe_continuation_context(
     state: ContinuationState,
     *,
+    runtime_session: RustRuntimeSession,
     policy: ContinuationPolicy,
     orchestration_state: OrchestrationState,
     runtime_snapshot: RuntimeSnapshot,
@@ -2354,17 +2321,11 @@ def observe_continuation_context(
 
     if type(state) is not ContinuationState:
         raise TypeError("state must be an exact ContinuationState")
+    if type(runtime_session) is not RustRuntimeSession:
+        raise TypeError("runtime_session must be an exact RustRuntimeSession")
     lineage = state._native_lineage_seal()
-    if lineage is None:
-        return _observe_continuation_context(
-            state,
-            policy=policy,
-            orchestration_state=orchestration_state,
-            runtime_snapshot=runtime_snapshot,
-            progress=progress,
-            strategy=strategy,
-        )
-    observed = lineage.observe(
+    observed = runtime_session._observe_continuation_context(
+        lineage,
         state,
         policy,
         orchestration_state,
@@ -2377,7 +2338,7 @@ def observe_continuation_context(
     return observed
 
 
-def commit_lease_application(
+def _commit_lease_application(
     state: ContinuationState,
     *,
     policy: ContinuationPolicy,
@@ -2459,10 +2420,40 @@ def commit_lease_application(
         raise ValueError("native resulting limits do not match applied lease")
     return replace(
         state,
+        _decision_lineage_capability=None,
         runtime_state_id=runtime_snapshot.state_id,
         pending_grant_id=None,
         pending_grant_receipt_id=None,
     )
+
+
+def commit_lease_application(
+    state: ContinuationState,
+    *,
+    runtime_session: RustRuntimeSession,
+    policy: ContinuationPolicy,
+    grant: LeaseGrantReceipt,
+    application: RuntimeLeaseApplicationReceipt,
+    runtime_snapshot: RuntimeSnapshot,
+) -> ContinuationState:
+    """Commit an application only through its exact live native session."""
+
+    if type(state) is not ContinuationState:
+        raise TypeError("state must be an exact ContinuationState")
+    if type(runtime_session) is not RustRuntimeSession:
+        raise TypeError("runtime_session must be an exact RustRuntimeSession")
+    lineage = state._native_lineage_seal()
+    committed = runtime_session._commit_continuation_lease_application(
+        lineage,
+        state,
+        policy,
+        grant,
+        application,
+        runtime_snapshot,
+    )
+    if type(committed) is not ContinuationState:
+        raise TypeError("native committer returned an invalid continuation state")
+    return committed
 
 
 @dataclass(frozen=True, slots=True)
@@ -3941,15 +3932,18 @@ class ContinuationPartialReceipt:
         }
 
 
-# Capture the authoritative evaluator/observer once in native storage during
-# trusted module initialization, then remove the one-shot bootstrap entrypoint.
+# Capture the authoritative evaluator/observer/application committer once in
+# native storage during trusted module initialization, then remove the one-shot
+# bootstrap entrypoint.
 # Later continuation-session creation never resolves mutable module globals.
 from . import _runtime as _native_runtime
 
 _native_runtime._register_continuation_engine(
     _evaluate_continuation,
     _observe_continuation_context,
+    _commit_lease_application,
     ContinuationState,
+    RuntimeSnapshot,
 )
 delattr(_native_runtime, "_register_continuation_engine")
 del _native_runtime

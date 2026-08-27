@@ -28,6 +28,7 @@ const LEASE_APPLICATION_RECEIPT_VERSION: &str = "IBAE-RUNTIME-LEASE-APPLICATION-
 const CONTINUATION_POLICY_ID_DOMAIN: &str = "ibae.continuation-policy-id.v1";
 const CONTINUATION_POLICY_RECEIPT_ID_DOMAIN: &str = "ibae.continuation-policy-receipt-id.v1";
 const CONTINUATION_REQUEST_ID_DOMAIN: &str = "ibae.continuation-request-id.v1";
+const CONTINUATION_DECISION_AGGREGATE_DOMAIN: &str = "ibae.continuation-decision-aggregate.v1";
 const LEASE_GRANT_ID_DOMAIN: &str = "ibae.continuation-lease-grant-id.v1";
 const LEASE_GRANT_RECEIPT_ID_DOMAIN: &str = "ibae.continuation-lease-grant-receipt-id.v1";
 const LEASE_APPLICATION_ID_DOMAIN: &str = "ibae.runtime-lease-application-id.v1";
@@ -1157,22 +1158,29 @@ struct ContinuationAuthorityBinding {
     progress_contract_id: String,
     runtime_session_id: String,
     continuation_state_type: Py<PyAny>,
+    runtime_snapshot_type: Py<PyAny>,
     evaluator: Py<PyAny>,
     observer: Py<PyAny>,
+    committer: Py<PyAny>,
     evaluator_integrity: Arc<PythonFunctionIntegrity>,
     observer_integrity: Arc<PythonFunctionIntegrity>,
+    committer_integrity: Arc<PythonFunctionIntegrity>,
 }
 
 /// Process-local trusted continuation engine captured exactly once while the
-/// Python continuation module is initialized.  Session factories clone these
-/// original callables from native storage; mutable Python module attributes
-/// are never consulted when a later session is created.
+/// Python continuation module is initialized.  Session factories clone the
+/// original evaluator, observer, and application committer from native
+/// storage; mutable Python module attributes are never consulted when a later
+/// session is created.
 struct ContinuationEngine {
     evaluator: Py<PyAny>,
     observer: Py<PyAny>,
+    committer: Py<PyAny>,
     continuation_state_type: Py<PyAny>,
+    runtime_snapshot_type: Py<PyAny>,
     evaluator_integrity: Arc<PythonFunctionIntegrity>,
     observer_integrity: Arc<PythonFunctionIntegrity>,
+    committer_integrity: Arc<PythonFunctionIntegrity>,
 }
 
 static CONTINUATION_ENGINE: GILOnceCell<ContinuationEngine> = GILOnceCell::new();
@@ -1245,15 +1253,18 @@ fn capture_integrity_node(
     value: &Bound<'_, PyAny>,
     visited: &mut BTreeSet<usize>,
 ) -> PyResult<Option<Box<PythonIntegrityNode>>> {
-    if !is_ibae_python_object(value) || !visited.insert(value.as_ptr() as usize) {
+    if !visited.insert(value.as_ptr() as usize) {
         return Ok(None);
     }
+    // Python function behavior is mutable through ``__code__`` regardless of
+    // which module owns the function.  Imported helpers therefore receive the
+    // same recursive validation as IBAE-local functions.
     if value.hasattr("__code__")? && value.hasattr("__globals__")? {
         return Ok(Some(Box::new(PythonIntegrityNode::Function(
             PythonFunctionIntegrity::capture(py, value, visited)?,
         ))));
     }
-    if value.downcast::<PyType>().is_ok() {
+    if is_ibae_python_object(value) && value.downcast::<PyType>().is_ok() {
         return Ok(Some(Box::new(PythonIntegrityNode::Class(
             PythonClassIntegrity::capture(py, value, visited)?,
         ))));
@@ -1518,6 +1529,7 @@ impl NativeContinuationSupervisorAuthority {
                 continuation_request_id,
                 evaluator: self.binding.evaluator.clone_ref(py),
                 observer: self.binding.observer.clone_ref(py),
+                committer: self.binding.committer.clone_ref(py),
             },
         )
     }
@@ -1537,6 +1549,7 @@ struct NativeContinuationRequestSeal {
     continuation_request_id: String,
     evaluator: Py<PyAny>,
     observer: Py<PyAny>,
+    committer: Py<PyAny>,
 }
 
 #[pymethods]
@@ -1653,6 +1666,7 @@ impl NativeContinuationRequestSeal {
                     binding: Arc::clone(&self.binding),
                     canonical_lineage: Arc::from(canonical_lineage),
                     observer: self.observer.clone_ref(py),
+                    committer: self.committer.clone_ref(py),
                 },
             )?;
             next_state.call_method1("_with_native_lineage", (lineage_seal,))?
@@ -1663,9 +1677,9 @@ impl NativeContinuationRequestSeal {
     }
 }
 
-/// Non-constructible evaluator lineage for the exact authoritative decision
-/// ledger.  Validation is native and its issuer is reachable only while Rust
-/// is finalizing one authorized evaluation.
+/// Non-constructible lineage for the complete authoritative continuation
+/// state. Validation and resealing are native and reachable only while Rust is
+/// finalizing one authorized evaluation, observation, or application commit.
 #[pyclass(
     name = "NativeContinuationStateSeal",
     module = "ibae._runtime",
@@ -1675,6 +1689,7 @@ struct NativeContinuationStateSeal {
     binding: Arc<ContinuationAuthorityBinding>,
     canonical_lineage: Arc<str>,
     observer: Py<PyAny>,
+    committer: Py<PyAny>,
 }
 
 #[pymethods]
@@ -1684,6 +1699,7 @@ impl NativeContinuationStateSeal {
     }
 
     #[pyo3(signature = (
+        native_session,
         state,
         policy,
         orchestration_state,
@@ -1695,6 +1711,7 @@ impl NativeContinuationStateSeal {
     fn observe(
         &self,
         py: Python<'_>,
+        native_session: &Bound<'_, PyAny>,
         state: &Bound<'_, PyAny>,
         policy: &Bound<'_, PyAny>,
         orchestration_state: &Bound<'_, PyAny>,
@@ -1703,11 +1720,10 @@ impl NativeContinuationStateSeal {
         strategy: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Py<PyAny>> {
         self.binding.observer_integrity.validate(py)?;
-        let current_lineage: String = state.call_method0("_decision_lineage_text")?.extract()?;
-        if current_lineage != self.canonical_lineage.as_ref() {
-            return Err(PyValueError::new_err(
-                "continuation observation state does not match native lineage",
-            ));
+        self.require_current_lineage(py, state)?;
+        {
+            let native: PyRef<'_, NativeRuntimeSession> = native_session.extract()?;
+            native.require_live_continuation_snapshot(py, runtime_snapshot, &self.binding)?;
         }
         let kwargs = PyDict::new_bound(py);
         kwargs.set_item("policy", policy)?;
@@ -1728,15 +1744,82 @@ impl NativeContinuationStateSeal {
                 binding: Arc::clone(&self.binding),
                 canonical_lineage: Arc::from(canonical_lineage),
                 observer: self.observer.clone_ref(py),
+                committer: self.committer.clone_ref(py),
             },
         )?;
         Ok(observed
             .call_method1("_with_native_lineage", (lineage_seal,))?
             .unbind())
     }
+
+    #[pyo3(signature = (
+        native_session,
+        state,
+        policy,
+        grant,
+        application,
+        runtime_snapshot
+    ))]
+    #[allow(clippy::too_many_arguments)]
+    fn commit_lease_application(
+        &self,
+        py: Python<'_>,
+        native_session: &Bound<'_, PyAny>,
+        state: &Bound<'_, PyAny>,
+        policy: &Bound<'_, PyAny>,
+        grant: &Bound<'_, PyAny>,
+        application: &Bound<'_, PyAny>,
+        runtime_snapshot: &Bound<'_, PyAny>,
+    ) -> PyResult<Py<PyAny>> {
+        self.binding.committer_integrity.validate(py)?;
+        self.require_current_lineage(py, state)?;
+        {
+            let native: PyRef<'_, NativeRuntimeSession> = native_session.extract()?;
+            native.require_live_continuation_snapshot(py, runtime_snapshot, &self.binding)?;
+        }
+        let kwargs = PyDict::new_bound(py);
+        kwargs.set_item("policy", policy)?;
+        kwargs.set_item("grant", grant)?;
+        kwargs.set_item("application", application)?;
+        kwargs.set_item("runtime_snapshot", runtime_snapshot)?;
+        let committed = self.committer.bind(py).call((state,), Some(&kwargs))?;
+        let canonical_lineage: String = committed
+            .call_method0("_decision_lineage_text")?
+            .extract()?;
+        let lineage_seal = Py::new(
+            py,
+            NativeContinuationStateSeal {
+                binding: Arc::clone(&self.binding),
+                canonical_lineage: Arc::from(canonical_lineage),
+                observer: self.observer.clone_ref(py),
+                committer: self.committer.clone_ref(py),
+            },
+        )?;
+        Ok(committed
+            .call_method1("_with_native_lineage", (lineage_seal,))?
+            .unbind())
+    }
 }
 
 impl NativeContinuationStateSeal {
+    fn require_current_lineage(&self, py: Python<'_>, state: &Bound<'_, PyAny>) -> PyResult<()> {
+        if !state
+            .get_type()
+            .is(self.binding.continuation_state_type.bind(py))
+        {
+            return Err(PyValueError::new_err(
+                "continuation state must have the exact trusted type",
+            ));
+        }
+        let current_lineage: String = state.call_method0("_decision_lineage_text")?.extract()?;
+        if current_lineage != self.canonical_lineage.as_ref() {
+            return Err(PyValueError::new_err(
+                "continuation state does not match native lineage",
+            ));
+        }
+        Ok(())
+    }
+
     fn matches_continuation_authority(&self, supplied: &Arc<ContinuationAuthorityBinding>) -> bool {
         Arc::ptr_eq(&self.binding, supplied)
     }
@@ -4569,6 +4652,7 @@ impl NativeRuntimeSession {
                 })?;
                 engine.evaluator_integrity.validate(py)?;
                 engine.observer_integrity.validate(py)?;
+                engine.committer_integrity.validate(py)?;
                 Some(Arc::new(ContinuationAuthorityBinding {
                     task_id: active.context.task_id.clone(),
                     governance_id: active.context.governance_id.clone(),
@@ -4578,10 +4662,13 @@ impl NativeRuntimeSession {
                     progress_contract_id: active.context.policy.progress_contract_id.clone(),
                     runtime_session_id: core.session_id.clone(),
                     continuation_state_type: engine.continuation_state_type.clone_ref(py),
+                    runtime_snapshot_type: engine.runtime_snapshot_type.clone_ref(py),
                     evaluator: engine.evaluator.clone_ref(py),
                     observer: engine.observer.clone_ref(py),
+                    committer: engine.committer.clone_ref(py),
                     evaluator_integrity: Arc::clone(&engine.evaluator_integrity),
                     observer_integrity: Arc::clone(&engine.observer_integrity),
+                    committer_integrity: Arc::clone(&engine.committer_integrity),
                 }))
             }
         };
@@ -4622,6 +4709,7 @@ impl NativeRuntimeSession {
         }
         binding.evaluator_integrity.validate(py)?;
         binding.observer_integrity.validate(py)?;
+        binding.committer_integrity.validate(py)?;
         let live_runtime_state_id = self.core.state_id().map_err(|_| {
             PyValueError::new_err("native runtime state cannot seal continuation lineage")
         })?;
@@ -4674,6 +4762,29 @@ impl NativeRuntimeSession {
                     "initial continuation decision ledger must be empty",
                 ));
             }
+        }
+        if state.getattr("decision_receipt_ids")?.len()? != 0 {
+            return Err(PyValueError::new_err(
+                "initial continuation decision ledger must be empty",
+            ));
+        }
+        let seed_payload = canonical_value(&json!({
+            "continuation_policy_id": binding.continuation_policy_id,
+            "governance_id": binding.governance_id,
+            "item_type": "seed",
+            "task_id": binding.task_id,
+        }))
+        .expect("the initial continuation decision aggregate is canonicalizable");
+        let expected_decision_aggregate =
+            domain_fingerprint(CONTINUATION_DECISION_AGGREGATE_DOMAIN, &seed_payload);
+        if state
+            .getattr("decision_aggregate_id")?
+            .extract::<String>()?
+            != expected_decision_aggregate
+        {
+            return Err(PyValueError::new_err(
+                "initial continuation decision aggregate is invalid",
+            ));
         }
         if state.getattr("last_decision")?.extract::<String>()? != "none"
             || !state.getattr("last_denial_reason")?.is_none()
@@ -4775,6 +4886,12 @@ impl NativeRuntimeSession {
                     .expect("validated continuation authority")
                     .observer
                     .clone_ref(py),
+                committer: self
+                    .continuation_authority
+                    .as_ref()
+                    .expect("validated continuation authority")
+                    .committer
+                    .clone_ref(py),
             },
         )?;
         let sealed = state.call_method1("_with_native_lineage", (lineage_seal,))?;
@@ -4859,6 +4976,41 @@ impl NativeRuntimeSession {
             .is_some_and(|active| Arc::ptr_eq(active, supplied))
     }
 
+    fn require_live_continuation_snapshot(
+        &self,
+        py: Python<'_>,
+        runtime_snapshot: &Bound<'_, PyAny>,
+        supplied_authority: &Arc<ContinuationAuthorityBinding>,
+    ) -> PyResult<()> {
+        if !self.matches_continuation_authority(supplied_authority) {
+            return Err(PyValueError::new_err(
+                "continuation state authority does not bind native session",
+            ));
+        }
+        if !runtime_snapshot
+            .get_type()
+            .is(supplied_authority.runtime_snapshot_type.bind(py))
+        {
+            return Err(PyValueError::new_err(
+                "runtime snapshot must have the exact trusted type",
+            ));
+        }
+        let supplied: String = runtime_snapshot
+            .call_method0("_canonical_text")?
+            .extract()?;
+        let live = self.core.snapshot_json().map_err(|_| {
+            PyValueError::new_err(
+                "native runtime snapshot exceeds the declared deterministic envelope",
+            )
+        })?;
+        if supplied != live {
+            return Err(PyValueError::new_err(
+                "runtime snapshot is not the live native session state",
+            ));
+        }
+        Ok(())
+    }
+
     fn matches_lease_grant_authority(&self, seal: &NativeLeaseGrantSeal) -> bool {
         match (
             self.continuation_authority.as_ref(),
@@ -4920,11 +5072,15 @@ fn _register_continuation_engine(
     py: Python<'_>,
     evaluator: Py<PyAny>,
     observer: Py<PyAny>,
+    committer: Py<PyAny>,
     continuation_state_type: Py<PyAny>,
+    runtime_snapshot_type: Py<PyAny>,
 ) -> PyResult<()> {
     if !evaluator.bind(py).is_callable()
         || !observer.bind(py).is_callable()
+        || !committer.bind(py).is_callable()
         || !continuation_state_type.bind(py).is_callable()
+        || !runtime_snapshot_type.bind(py).is_callable()
     {
         return Err(PyValueError::new_err(
             "continuation engine bindings must be callable",
@@ -4932,15 +5088,19 @@ fn _register_continuation_engine(
     }
     let evaluator_integrity = Arc::new(PythonFunctionIntegrity::root(py, evaluator.bind(py))?);
     let observer_integrity = Arc::new(PythonFunctionIntegrity::root(py, observer.bind(py))?);
+    let committer_integrity = Arc::new(PythonFunctionIntegrity::root(py, committer.bind(py))?);
     CONTINUATION_ENGINE
         .set(
             py,
             ContinuationEngine {
                 evaluator,
                 observer,
+                committer,
                 continuation_state_type,
+                runtime_snapshot_type,
                 evaluator_integrity,
                 observer_integrity,
+                committer_integrity,
             },
         )
         .map_err(|_| PyValueError::new_err("continuation engine is already initialized"))

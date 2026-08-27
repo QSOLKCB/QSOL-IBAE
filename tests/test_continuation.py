@@ -81,6 +81,7 @@ from ibae.runtime import (
     RuntimeLeaseApplicationReceipt,
     RuntimeLimits,
     RuntimeReceipt,
+    RuntimeSnapshot,
     RuntimeTransition,
     RustRuntimeSession,
 )
@@ -558,6 +559,7 @@ def test_activity_without_progress_is_no_progress_and_denied():
     assert progress.classification is ProgressClassification.NO_PROGRESS
     state = observe_continuation_context(
         state,
+        runtime_session=runtime,
         policy=policy,
         orchestration_state=_obligation_states(total=3, satisfied=0),
         runtime_snapshot=runtime.snapshot,
@@ -864,6 +866,7 @@ def test_external_counter_progress_must_continue_from_the_live_endpoint():
     application = runtime.apply_lease(first.receipt)
     state = commit_lease_application(
         first.next_state,
+        runtime_session=runtime,
         policy=policy,
         grant=first.receipt,
         application=application,
@@ -887,6 +890,7 @@ def test_external_counter_progress_must_continue_from_the_live_endpoint():
     with pytest.raises(ValueError, match="continue from the live endpoint"):
         observe_continuation_context(
             state,
+            runtime_session=runtime,
             policy=policy,
             orchestration_state=work,
             runtime_snapshot=runtime.snapshot,
@@ -904,6 +908,7 @@ def test_external_counter_progress_must_continue_from_the_live_endpoint():
     )
     state = observe_continuation_context(
         state,
+        runtime_session=runtime,
         policy=policy,
         orchestration_state=work,
         runtime_snapshot=runtime.snapshot,
@@ -1029,6 +1034,9 @@ def test_native_session_pins_continuation_engine_before_request(monkeypatch):
     monkeypatch.setattr(
         continuation_module, "_observe_continuation_context", substituted_engine
     )
+    monkeypatch.setattr(
+        continuation_module, "_commit_lease_application", substituted_engine
+    )
     policy, _, _, _, policy_receipt, runtime, _, current, progress, state = (
         _state_and_progress()
     )
@@ -1039,6 +1047,7 @@ def test_native_session_pins_continuation_engine_before_request(monkeypatch):
     application = runtime.apply_lease(decision.receipt)
     committed = commit_lease_application(
         decision.next_state,
+        runtime_session=runtime,
         policy=policy,
         grant=decision.receipt,
         application=application,
@@ -1046,6 +1055,7 @@ def test_native_session_pins_continuation_engine_before_request(monkeypatch):
     )
     observed = observe_continuation_context(
         committed,
+        runtime_session=runtime,
         policy=policy,
         orchestration_state=current,
         runtime_snapshot=runtime.snapshot,
@@ -1054,7 +1064,12 @@ def test_native_session_pins_continuation_engine_before_request(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "target_name", ("_evaluate_continuation", "_observe_continuation_context")
+    "target_name",
+    (
+        "_evaluate_continuation",
+        "_observe_continuation_context",
+        "_commit_lease_application",
+    ),
 )
 def test_native_engine_rejects_mutated_pinned_function_code(
     monkeypatch, target_name
@@ -1085,8 +1100,33 @@ def test_native_engine_rejects_mutated_evaluator_global(monkeypatch):
         _state_and_progress()
 
 
+def test_native_engine_rejects_mutated_imported_callable_dependency(monkeypatch):
+    import dataclasses
+
+    policy, _, _, _, _, runtime, _, current, _, state = _state_and_progress()
+
+    def substituted_replace(*_args, **_kwargs):
+        return None
+
+    with monkeypatch.context() as active:
+        active.setattr(dataclasses.replace, "__code__", substituted_replace.__code__)
+        with pytest.raises(ValueError, match="engine integrity"):
+            observe_continuation_context(
+                state,
+                runtime_session=runtime,
+                policy=policy,
+                orchestration_state=current,
+                runtime_snapshot=runtime.snapshot,
+            )
+
+
 @pytest.mark.parametrize(
-    "target_name", ("_evaluate_continuation", "_observe_continuation_context")
+    "target_name",
+    (
+        "_evaluate_continuation",
+        "_observe_continuation_context",
+        "_commit_lease_application",
+    ),
 )
 def test_native_engine_rechecks_integrity_at_each_authority_entry(
     monkeypatch, target_name
@@ -1096,6 +1136,13 @@ def test_native_engine_rechecks_integrity_at_each_authority_entry(
     policy, _, _, _, policy_receipt, runtime, _, current, progress, state = (
         _state_and_progress()
     )
+    pending = None
+    application = None
+    if target_name == "_commit_lease_application":
+        _, pending = _request_and_decide(
+            policy, policy_receipt, runtime, progress, state
+        )
+        application = runtime.apply_lease(pending.receipt)
 
     def substituted_engine(*_args, **_kwargs):
         return None
@@ -1107,11 +1154,23 @@ def test_native_engine_rechecks_integrity_at_each_authority_entry(
             _request_and_decide(
                 policy, policy_receipt, runtime, progress, state
             )
-        else:
+        elif target_name == "_observe_continuation_context":
             observe_continuation_context(
                 state,
+                runtime_session=runtime,
                 policy=policy,
                 orchestration_state=current,
+                runtime_snapshot=runtime.snapshot,
+            )
+        else:
+            assert pending is not None
+            assert application is not None
+            commit_lease_application(
+                pending.next_state,
+                runtime_session=runtime,
+                policy=policy,
+                grant=pending.receipt,
+                application=application,
                 runtime_snapshot=runtime.snapshot,
             )
 
@@ -1368,6 +1427,7 @@ def test_exact_lease_application_changes_limits_not_execution_counters():
     assert after.history == before.history
     committed = commit_lease_application(
         decision.next_state,
+        runtime_session=runtime,
         policy=policy,
         grant=grant,
         application=application,
@@ -1375,6 +1435,73 @@ def test_exact_lease_application_changes_limits_not_execution_counters():
     )
     assert not committed.has_pending_grant
     assert committed.runtime_state_id == after.state_id
+
+
+def test_application_commit_requires_the_exact_live_native_session():
+    left = _state_and_progress()
+    right = _state_and_progress()
+    (
+        left_policy,
+        _,
+        _,
+        _,
+        left_receipt,
+        left_runtime,
+        _,
+        _,
+        left_progress,
+        left_state,
+    ) = left
+    (
+        right_policy,
+        _,
+        _,
+        _,
+        right_receipt,
+        right_runtime,
+        _,
+        _,
+        right_progress,
+        right_state,
+    ) = right
+    _, left_decision = _request_and_decide(
+        left_policy,
+        left_receipt,
+        left_runtime,
+        left_progress,
+        left_state,
+    )
+    _, right_decision = _request_and_decide(
+        right_policy,
+        right_receipt,
+        right_runtime,
+        right_progress,
+        right_state,
+    )
+    right_application = right_runtime.apply_lease(right_decision.receipt)
+    structural_application = RuntimeLeaseApplicationReceipt(
+        right_application.canonical_record()
+    )
+    structural_snapshot = RuntimeSnapshot.from_record(
+        right_runtime.snapshot.canonical_record()
+    )
+    assert left_runtime.snapshot.session_id == structural_snapshot.session_id
+    assert left_runtime.snapshot.state_id != structural_snapshot.state_id
+
+    with pytest.raises(ValueError, match="not the live native session state"):
+        commit_lease_application(
+            left_decision.next_state,
+            runtime_session=left_runtime,
+            policy=left_policy,
+            grant=left_decision.receipt,
+            application=structural_application,
+            runtime_snapshot=structural_snapshot,
+        )
+    with pytest.raises(ValueError, match="decision lineage"):
+        replace(
+            left_decision.next_state,
+            runtime_state_id=structural_snapshot.state_id,
+        )
 
 
 def test_partial_lease_vectors_extend_resources_independently():
@@ -1626,6 +1753,62 @@ def test_native_initial_state_seal_rejects_strategy_lineage_injection():
         )
 
 
+def test_native_initial_state_seal_derives_the_exact_decision_seed():
+    policy, _, task, governance, policy_receipt, runtime = _governed_runtime(
+        "tiny", session="initial-decision-seed"
+    )
+    prior = _obligation_states(total=2, satisfied=0)
+    current = _obligation_states(total=2, satisfied=1)
+    progress = _progress(task, governance, prior, current)
+    snapshot = runtime.snapshot
+    forged = ContinuationState(
+        task_id=task.task_id,
+        governance_id=governance.governance_id,
+        governance_receipt_id=policy_receipt.governance_receipt_id,
+        continuation_policy_id=policy.continuation_policy_id,
+        continuation_policy_receipt_id=policy_receipt.receipt_id,
+        progress_contract_id=policy.progress_contract_id,
+        orchestration_state_id=current.state_id,
+        runtime_session_id=snapshot.session_id,
+        runtime_state_id=snapshot.state_id,
+        lease_requests=0,
+        leases_granted=0,
+        leases_denied=0,
+        cumulative_granted=BudgetVector.zero(),
+        continuation_logical_tick=0,
+        decision_aggregate_id=_id("caller-selected-decision-seed"),
+        decision_receipt_ids=(),
+        strategy_recoveries=0,
+        current_strategy_material_id=None,
+        last_progress_id=progress.progress_id,
+        last_consumed_progress_id=None,
+        last_external_progress_endpoint_id=progress.current_external_endpoint_id,
+        last_consumed_external_progress_endpoint_id=None,
+        last_progress_classification=progress.classification,
+        last_decision="none",
+        last_denial_reason=None,
+        progress_state=ProgressState.PROGRESSING,
+    )
+    native = object.__getattribute__(runtime, "_RustRuntimeSession__native")
+    with pytest.raises(ValueError, match="decision aggregate is invalid"):
+        native.seal_initial_continuation_state(
+            forged,
+            current,
+            progress,
+            None,
+        )
+
+    legitimate = ContinuationState.create(
+        policy=policy,
+        policy_receipt=policy_receipt,
+        runtime_session=runtime,
+        orchestration_state=current,
+        runtime_snapshot=snapshot,
+        progress=progress,
+    )
+    assert legitimate.decision_aggregate_id != forged.decision_aggregate_id
+
+
 @pytest.mark.parametrize(
     ("sequence", "period"),
     (("aa", 1), ("abab", 2), ("abcabc", 3)),
@@ -1796,6 +1979,7 @@ def test_strategy_recovery_count_is_finite():
     application = runtime.apply_lease(first.receipt)
     state = commit_lease_application(
         first.next_state,
+        runtime_session=runtime,
         policy=policy,
         grant=first.receipt,
         application=application,
@@ -1873,6 +2057,7 @@ def test_decision_lineage_binds_semantic_decision_state():
     application = runtime.apply_lease(granted.receipt)
     state = commit_lease_application(
         granted.next_state,
+        runtime_session=runtime,
         policy=policy,
         grant=granted.receipt,
         application=application,
@@ -2009,6 +2194,7 @@ def test_earlier_denial_cannot_install_an_unobserved_progress_endpoint():
     application = runtime.apply_lease(first.receipt)
     committed = commit_lease_application(
         denied.next_state,
+        runtime_session=runtime,
         policy=policy,
         grant=first.receipt,
         application=application,
@@ -2054,6 +2240,7 @@ def test_one_measurable_progress_endpoint_authorizes_at_most_one_grant():
     application = runtime.apply_lease(first.receipt)
     state = commit_lease_application(
         first.next_state,
+        runtime_session=runtime,
         policy=policy,
         grant=first.receipt,
         application=application,
@@ -2070,6 +2257,7 @@ def test_one_measurable_progress_endpoint_authorizes_at_most_one_grant():
     fresh_progress = _progress(task, governance, current, later)
     state = observe_continuation_context(
         reused.next_state,
+        runtime_session=runtime,
         policy=policy,
         orchestration_state=later,
         runtime_snapshot=runtime.snapshot,
@@ -2108,6 +2296,7 @@ def test_governance_ceiling_exhaustion_is_deterministic():
             )
             state = observe_continuation_context(
                 state,
+                runtime_session=runtime,
                 policy=policy,
                 orchestration_state=orchestration_states[index + 1],
                 runtime_snapshot=runtime.snapshot,
@@ -2120,6 +2309,7 @@ def test_governance_ceiling_exhaustion_is_deterministic():
         application = runtime.apply_lease(decision.receipt)
         state = commit_lease_application(
             decision.next_state,
+            runtime_session=runtime,
             policy=policy,
             grant=decision.receipt,
             application=application,
@@ -2146,6 +2336,7 @@ def test_governance_ceiling_exhaustion_is_deterministic():
     )
     state = observe_continuation_context(
         state,
+        runtime_session=runtime,
         policy=policy,
         orchestration_state=orchestration_states[3],
         runtime_snapshot=runtime.snapshot,
@@ -2409,6 +2600,7 @@ def test_context_rebind_requires_the_actual_prior_orchestration_state():
     with pytest.raises(ValueError, match="progress does not bind"):
         observe_continuation_context(
             state,
+            runtime_session=runtime,
             policy=policy,
             orchestration_state=next_state,
             runtime_snapshot=runtime.snapshot,
@@ -2416,7 +2608,34 @@ def test_context_rebind_requires_the_actual_prior_orchestration_state():
         )
 
 
-def test_context_rebind_refreshes_progress_control_state():
+def test_context_observation_requires_the_exact_live_native_snapshot():
+    policy, _, _, _, _, runtime, _, current, _, state = _state_and_progress()
+    live = runtime.snapshot
+    fabricated = replace(
+        live,
+        logical_tick=live.logical_tick + 1,
+        state_id=_id("fabricated-runtime-snapshot"),
+    )
+    with pytest.raises(ValueError, match="not the live native session state"):
+        observe_continuation_context(
+            state,
+            runtime_session=runtime,
+            policy=policy,
+            orchestration_state=current,
+            runtime_snapshot=fabricated,
+        )
+
+    observed = observe_continuation_context(
+        state,
+        runtime_session=runtime,
+        policy=policy,
+        orchestration_state=current,
+        runtime_snapshot=live,
+    )
+    assert observed.runtime_state_id == live.state_id
+
+
+def test_context_rebind_does_not_advertise_recovery_without_prior_strategy():
     policy, _, task, governance, policy_receipt, runtime, _, current, progress, state = (
         _state_and_progress("standard")
     )
@@ -2427,6 +2646,7 @@ def test_context_rebind_refreshes_progress_control_state():
     application = runtime.apply_lease(granted.receipt)
     state = commit_lease_application(
         granted.next_state,
+        runtime_session=runtime,
         policy=policy,
         grant=granted.receipt,
         application=application,
@@ -2436,20 +2656,22 @@ def test_context_rebind_refreshes_progress_control_state():
     stalled_progress = _progress(task, governance, current, current)
     state = observe_continuation_context(
         state,
+        runtime_session=runtime,
         policy=policy,
         orchestration_state=current,
         runtime_snapshot=runtime.snapshot,
         progress=stalled_progress,
     )
     assert state.progress_state is ProgressState.STALLED
-    assert "propose_material_strategy_change" in state.compact_projection(policy)[
-        "legal_recovery_actions"
-    ]
+    projection = state.compact_projection(policy)
+    assert projection["legal_recovery_actions"] == ["provide_objective_progress"]
+    assert projection["material_strategy_change_admissible"] is False
 
     complete = _obligation_states(total=3, satisfied=3)
     complete_progress = _progress(task, governance, current, complete)
     state = observe_continuation_context(
         state,
+        runtime_session=runtime,
         policy=policy,
         orchestration_state=complete,
         runtime_snapshot=runtime.snapshot,
@@ -2457,6 +2679,28 @@ def test_context_rebind_refreshes_progress_control_state():
     )
     assert state.progress_state is ProgressState.COMPLETE
     assert state.compact_projection(policy)["legal_recovery_actions"] == []
+
+
+def test_compact_state_advertises_recovery_when_prior_strategy_exists():
+    policy, _, task, governance, policy_receipt, runtime = _governed_runtime(
+        "standard", session="compact-strategy-recovery"
+    )
+    orchestration, prior_strategy, _ = _strategy_state()
+    stalled = _progress(task, governance, orchestration, orchestration)
+    state = ContinuationState.create(
+        policy=policy,
+        policy_receipt=policy_receipt,
+        runtime_session=runtime,
+        orchestration_state=orchestration,
+        runtime_snapshot=runtime.snapshot,
+        strategy=prior_strategy,
+        progress=stalled,
+    )
+    projection = state.compact_projection(policy)
+    assert "propose_material_strategy_change" in projection[
+        "legal_recovery_actions"
+    ]
+    assert projection["material_strategy_change_admissible"] is True
 
 
 def test_request_requires_the_live_progress_ledger_endpoint():
@@ -2523,6 +2767,7 @@ def test_compact_continuation_evidence_uses_aggregates_not_verbose_traces():
     application = runtime.apply_lease(decision.receipt)
     state = commit_lease_application(
         decision.next_state,
+        runtime_session=runtime,
         policy=policy,
         grant=decision.receipt,
         application=application,
@@ -2560,6 +2805,7 @@ def test_continuation_evidence_requires_a_contiguous_live_progress_trace():
     second = _progress(task, governance, current, later)
     state = observe_continuation_context(
         state,
+        runtime_session=runtime,
         policy=policy,
         orchestration_state=later,
         runtime_snapshot=runtime.snapshot,
@@ -2719,6 +2965,7 @@ def _partial_context(reason):
         application = runtime.apply_lease(first.receipt)
         state = commit_lease_application(
             first.next_state,
+            runtime_session=runtime,
             policy=policy,
             grant=first.receipt,
             application=application,
@@ -2759,6 +3006,7 @@ def _partial_context(reason):
             progress = _progress(task, governance, states[index], states[index + 1])
             state = observe_continuation_context(
                 state,
+                runtime_session=runtime,
                 policy=policy,
                 orchestration_state=states[index + 1],
                 runtime_snapshot=runtime.snapshot,
@@ -2770,6 +3018,7 @@ def _partial_context(reason):
         application = runtime.apply_lease(granted.receipt)
         state = commit_lease_application(
             granted.next_state,
+            runtime_session=runtime,
             policy=policy,
             grant=granted.receipt,
             application=application,
@@ -2778,6 +3027,7 @@ def _partial_context(reason):
     progress = _progress(task, governance, states[2], states[3])
     state = observe_continuation_context(
         state,
+        runtime_session=runtime,
         policy=policy,
         orchestration_state=states[3],
         runtime_snapshot=runtime.snapshot,

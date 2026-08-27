@@ -305,22 +305,25 @@ first progress-authorized grant; another such grant requires a fresh observed
 endpoint.
 Governance binds an exact initial budget, finite indexed resource schedule,
 request cap, strategy-recovery cap, and total ceiling. Trusted module
-initialization captures the exact evaluator and observer once in native storage
-and removes the bootstrap entrypoint. Continuation-session creation clones only
-those originals into a non-serialized per-instance native authority and returns
-a separate once-issued, session-scoped supervisor
-request capability. Native integrity records cover their bound code,
-referenced globals and default/closure bindings, and reachable IBAE helper/class
-definitions; every
-authority entry fails closed on in-place mutation. The initial zero-decision
-state is sealed once by the native session before exposure.
+initialization captures the exact evaluator, context observer, and application
+committer once in native storage and removes the bootstrap entrypoint.
+Continuation-session creation clones only those originals into a non-serialized
+per-instance native authority and returns a separate once-issued,
+session-scoped supervisor request capability. Native integrity records cover
+their bound code, every
+reachable mutable Python function dependency regardless of module, referenced
+globals and default/closure bindings, and reachable IBAE helper/class
+definitions; every authority entry fails closed on in-place mutation. The
+complete initial zero-decision state is sealed once by the native session after
+Rust independently derives its exact decision-aggregate seed.
 The public supervisor label cannot substitute for it. Exact request seals enter
 the pinned evaluator, and Rust independently validates the resulting full grant
 against the authorized request and live session before issuing a grant seal.
 An equal-ID duplicate session has distinct native authority and cannot issue for
-the original. Native decision lineage protects recovery accounting and the
-last decision/denial/progress semantics from reconstruction; legitimate context
-observation is resealed through the pinned observer. Every grant/deny decision
+the original. Native lineage covers the complete canonical continuation state;
+legitimate context observation and application commit require an exact snapshot
+of the matching live native session and are resealed through their pinned
+callables. Every grant/deny decision
 advances a separate continuation logical tick.
 Accepted native application advances the runtime logical tick once while
 consuming no tool resource counter or execution history; rejected application
@@ -331,8 +334,9 @@ than trusted as optional caller input. Policies retain the full six-transition
 two-period window and reserve at least one request decision beyond scheduled
 leases for the terminal ceiling denial. The compact projection exposes both
 remaining schedule slots and remaining request decisions, so exhausted request
-or schedule capacity cannot advertise an impossible recovery. Checkpoints use
-that same effective minimum and cannot bind a strategy absent from live state;
+or schedule capacity cannot advertise an impossible recovery; a missing prior
+strategy identity likewise suppresses material-strategy recovery. Checkpoints
+use that same effective minimum and cannot bind a strategy absent from live state;
 ordinary progress observation refreshes stalled/progressing/complete state.
 
 The `tiny`, `standard`, `extended`, and `repository` profiles are exact

@@ -115,11 +115,13 @@ continuation without changing those frozen v0.2-v0.4 records:
   progress-state refresh, and no self-extension by runtime, tools, or future
   workers;
 - a once-issued, session-scoped native supervisor request capability separate
-  from the public requester label, with the exact evaluator/observer captured
-  once in native storage during trusted module initialization and cloned by the
-  dedicated continuation-session factory, integrity checks over their bound
-  code/dependency graph, one-shot native sealing of the initial state, exact
-  request seals, and an opt-in
+  from the public requester label, with the exact evaluator, context observer,
+  and application committer captured once in native storage during trusted
+  module initialization and cloned by the dedicated continuation-session
+  factory, integrity checks over mutable Python function dependencies even
+  outside the package, one-shot native sealing of the complete initial state
+  after Rust derives its decision seed, exact live-session checks for context
+  observation/application commit, exact request seals, and an opt-in
   Rust `apply_lease` transition
   that independently validates the authorized request and full governance
   grant against the live per-instance session before issuing its

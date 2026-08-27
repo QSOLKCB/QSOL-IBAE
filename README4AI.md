@@ -58,12 +58,16 @@ initial budget, finite indexed schedule, cumulative ceiling, request cap, and
 strategy-recovery cap; initial history retains six transitions and the request
 cap reserves a terminal decision beyond the schedule. The supervisor requests, governance grants or denies,
 and an opt-in Rust session applies only a full validated governance-issued
-grant. Trusted module initialization captures the exact evaluator/observer once
-in native storage and removes the bootstrap entrypoint. Session creation clones
-only those originals into a non-serialized per-instance native authority and
+grant. Trusted module initialization captures the exact evaluator, context
+observer, and application committer once in native storage and removes the
+bootstrap entrypoint. Session creation clones only those originals into a
+non-serialized per-instance native authority and
 returns a separate once-issued, session-scoped supervisor request capability;
-a native integrity graph detects in-place mutation of their bound code and
-dependencies, and the initial zero-decision state is sealed before exposure;
+a native integrity graph detects in-place mutation of their bound code and all
+reachable mutable Python function dependencies regardless of module. The
+complete initial zero-decision state is sealed only after Rust derives its exact
+decision seed, and context observation/application commit require the matching
+live native session and snapshot;
 a public principal label,
 reconstructed record, mutable Python validator, or equal-ID duplicate session
 is insufficient. An exact
