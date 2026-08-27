@@ -1,8 +1,8 @@
 # QSOL-IBAE Architecture
 
 Status: frozen architecture contract with accepted v0.2 Python orchestration,
-accepted v0.3 Rust runtime, and v0.4 governance/compact-evidence implementation
-candidate.
+accepted v0.3 Rust runtime, accepted v0.4 governance/compact evidence, and a
+v0.5 objective-progress/bounded-continuation implementation candidate.
 
 QSOL-IBAE is a small OpenAI-exclusive governed execution substrate, not a general-purpose proprietary multi-provider agent framework.
 
@@ -116,7 +116,7 @@ Future local open-weight models are workers, not peers. They return candidate re
 
 ## 3. Python logic core and Rust runtime
 
-The v0.4 modular implementation split is:
+The v0.5 modular implementation split is:
 
 ### Python logic core
 
@@ -125,7 +125,8 @@ Python owns change-friendly semantic logic:
 - governance configuration and policy composition;
 - task/obligation construction;
 - deterministic orchestration reference semantics;
-- progress predicates and strategy representation;
+- exact progress predicates, strategy materiality, and continuation decisions;
+- structural in-process continuation checkpoints and semantic partial records;
 - AI-facing compact state projection;
 - governance receipt-chain validation and final-acceptance interpretation;
 - future OpenAI API/SDK integration;
@@ -143,6 +144,7 @@ Rust owns exact authority-bearing runtime mechanics:
 - observation cache and invalidation;
 - cycle detection;
 - deterministic bounded containers/streaming;
+- exact validation/application of pre-granted continuation leases;
 - execution and correctness receipts;
 - deterministic CPU reference execution;
 - future SIMD/CUDA-facing runtime adapters.
@@ -193,6 +195,9 @@ contracts are defined in `GOVERNANCE_PROTOCOL.md` and `EVIDENCE_PROTOCOL.md`.
 The evidence reducer is an execution-support mechanism, not governance
 authority.
 
+The v0.5 progress, strategy, continuation, lease-application, checkpoint, and
+semantic-partial contracts are defined in `CONTINUATION_PROTOCOL.md`.
+
 ---
 
 ## 4. Versioned narrow protocol
@@ -205,11 +210,12 @@ Implemented runtime command family:
 IBAE-RUNTIME-PROTOCOL-V1
     execute_read
     record_retry
+    apply_lease   # opt-in continuation sessions only
 ```
 
-`execute_read` is restricted to Python/orchestrator-classified cacheable reads. The callback crosses the bridge only as a controlled canonical observation envelope. Rust admits request/execution activity before invocation, validates the canonical observation before cache insertion, and emits a canonical receipt. `record_retry` performs exact bounded retry accounting. Unsupported command variants fail closed without mutating runtime state.
+`execute_read` is restricted to Python/orchestrator-classified cacheable reads. The callback crosses the bridge only as a controlled canonical observation envelope. Rust admits request/execution activity before invocation, validates the canonical observation before cache insertion, and emits a canonical receipt. `record_retry` performs exact bounded retry accounting. `apply_lease` is available only when the native session was constructed with an exact continuation policy/receipt pair; it independently validates and applies one canonical governance grant. Unsupported command variants fail closed without mutating runtime state.
 
-`REQUEST_LEASE`, finalization, governance admission, generic mutation/effect execution, RPC, and worker commands are deliberately absent; they belong to later phases.
+`request_lease`, finalization, governance admission, generic mutation/effect execution, RPC, and worker commands are deliberately absent. Rust applies authority but cannot request or grant it.
 
 Candidate agent-facing protocol:
 
@@ -286,7 +292,97 @@ AND (measurable progress OR admitted non-cyclic strategy change)
 
 Lease count and total possible extension are finite before execution begins.
 
-Geometrically decreasing lease sizes are a candidate policy to benchmark, not yet a frozen constant.
+The implemented v0.5 policy makes that rule exact: one versioned progress
+contract compares canonical prior/current measures and derives classification
+and completion from their bound sources. The built-in contract counts both
+unsatisfied and blocked obligations, so discovering a blocker cannot masquerade
+as satisfying work. Governed external counters require a source-bound native
+observation matched to its exact tool admission and are paired with dimensions
+in canonical key order. Their semantic value/basis endpoint excludes evidence
+receipt identity and must continue from the live endpoint, preventing receipt
+rotation from replaying an interval. A measurable progress endpoint is consumed by its
+first progress-authorized grant; another such grant requires a fresh observed
+endpoint.
+Governance binds an exact initial budget, finite indexed resource schedule,
+request cap, strategy-recovery cap, and total ceiling. Trusted module
+initialization captures the exact evaluator, context observer, and application
+committer once in native storage and removes the bootstrap entrypoint.
+Continuation-session creation clones only those originals into a non-serialized
+per-instance native authority and returns a separate once-issued,
+session-scoped supervisor request capability. Native integrity records cover
+their bound code, every reachable mutable Python function dependency regardless
+of module, descriptor functions behind class/static methods and properties,
+referenced globals and default/closure bindings, and reachable IBAE helper/class
+definitions; every authority entry fails closed on in-place mutation. Exact
+request typing precedes request callbacks, and evaluator integrity is rechecked
+again immediately after evaluation and before any output is read or sealed.
+Exact callback-free request/progress/strategy scalars, enums, containers, and
+records are validated before governance comparisons. After evaluation, Rust
+canonicalizes the exact progress and optional strategy authorities, rederives
+their identities, and independently rejects a grant without measurable progress
+or the cited admitted strategy before creating the grant seal.
+The complete initial zero-decision state is sealed once by the native session
+after Rust independently derives its exact decision and progress aggregate
+seeds. Initial orchestration, progress, and strategy inputs require their exact
+registered trusted types; progress must rederive its claims and bind the native
+task, governance, contract, and orchestration endpoint before the one-shot seal
+is consumed.
+The public supervisor label cannot substitute for it. Exact request seals enter
+the pinned evaluator, and Rust independently validates the resulting full grant
+against the authorized request and live session before issuing a grant seal.
+An equal-ID duplicate session has distinct native authority and cannot issue for
+the original. Native lineage covers the complete canonical continuation state
+plus a non-serialized live generation; every decision, observation, or commit
+atomically retires its predecessor. Legitimate context observation and
+application commit require an exact snapshot of the matching live native
+session and are resealed through their pinned callables. Observer progress is
+validated as exact and callback-free before comparison; Rust then compares the
+prior/result authority projection and permits only orchestration, runtime, and
+progress-observation endpoints to change. Every grant/deny decision
+advances a separate continuation logical tick.
+Accepted native application advances the runtime logical tick once while
+consuming no tool resource counter or execution history; rejected application
+is state-neutral.
+
+Period-1/2/3 cycle evidence is recomputed from the live native history rather
+than trusted as optional caller input. Policies retain the full six-transition
+two-period window and reserve at least one request decision beyond scheduled
+leases for ordinary denial handling. If ordinary decisions are consumed first,
+the first subsequent exact request installs one exact terminal request-limit
+receipt marker in native lineage; if both ledgers are exhausted, the marker
+cites the lease-ceiling denial instead. Neither path increases request counts,
+ticks, aggregates, or retained decision history; repeats are state-neutral. The compact
+projection exposes both
+remaining schedule slots and remaining request decisions, so exhausted request
+or schedule capacity cannot advertise an impossible recovery; a missing prior
+strategy identity likewise suppresses material-strategy recovery. It exposes
+remaining bounded progress-observation capacity and suppresses objective
+progress recovery when that capacity is full. Checkpoints
+use that same effective minimum and cannot bind a strategy absent from live state;
+context observation cannot change the live strategy identity, which advances
+only through an admitted strategy-change grant; ordinary progress observation
+refreshes stalled/progressing/complete state.
+The sealed state also advances an ordered progress-event count and aggregate,
+so compact evidence must supply the complete trace rather than a matching suffix.
+
+The `tiny`, `standard`, `extended`, and `repository` profiles are exact
+version-1 experimental fixtures, not universal constants. Equal, front-loaded,
+geometric-candidate, and small-base/recovery schedules are compared only in a
+model-free benchmark. Any base-budget deficit is retained and reported as
+exhaustion instead of being clipped away. Geometric continuation remains a
+candidate, not an architectural law.
+
+Checkpoint/resume support is intentionally structural and in-process. It
+revalidates exact live task, governance, orchestration, native runtime,
+progress, strategy, policy, status, checkpoint-bound evidence IDs, and lease
+lineage. Both construction and resume compare the complete supplied snapshot
+with the matching live native session. Checkpoint creation itself validates
+any semantic partial reason
+against the actual last denial and required exhaustion. Semantic partials
+derive their evidence IDs from that checkpoint, and
+watchdog identity includes its independently checked lease-exhaustion flag. A
+checkpoint does not authenticate a producer or reconstruct an opaque native
+runtime from serialized bytes in another process.
 
 ---
 
@@ -581,7 +677,7 @@ observation/snapshot copies. The Rust crate has no network or model-provider
 dependency. The retained Python executor is conformance evidence, not an
 alternate production authority.
 
-The v0.4 candidate implements the deterministic governance policy/receipt
+The accepted v0.4 implementation provides the deterministic governance policy/receipt
 surface, separate task/governance/orchestration/execution/plan/benchmark/final
 identities, immutable rejection/partial receipts, and the bounded Compact
 Evidence Plane. Governed tool admissions are bound to v0.2 action identities;
@@ -590,11 +686,46 @@ the finalizable v1 execution path additionally requires live sealed v0.3
 `record_retry` receipts may appear only as exact known-admission accounting
 transitions and cannot cover a manifest action on their own. The
 wrapper may classify effect permissions, but v0.4 does not execute a mutation
-or volatile read. It does not authenticate a producer, call a model, or grant a
-continuation lease. The exact v0.2 and v0.3 fixtures remain
-frozen compatibility evidence.
+or volatile read. It does not authenticate a producer or call a model. The
+exact v0.2 and v0.3 fixtures remain frozen compatibility evidence.
 
-The logical lease system, live OpenAI adapter, GPU path, distributed execution,
-and local workers remain **later architecture targets, not current
-implementation claims**. They remain blocked until the exact v0.4 head passes
-CI, determinism, compact-evidence stress, and fresh review.
+The v0.5 candidate implements an exact objective-progress contract, structured
+material strategy changes, period-1-to-3 cycle-bound recovery, finite
+precommitted continuation policies, a single task/session continuation ledger,
+governance grant/deny receipts, and opt-in exact Rust lease application. The
+policy, state, and native context bind one exact progress contract; progress
+rebinds preserve both prior and current orchestration endpoints, derive their
+claims from bound sources, and require source-bound governed provenance for
+external counters. Strategy receipts revalidate their exact material and live
+cycle evidence is recomputed internally; external counter observations must
+continue from a receipt-independent semantic endpoint. A separate native supervisor
+capability seals an exact request for the evaluator captured at trusted module
+initialization; Rust then validates the authorized request and exact governance grant against
+the live per-instance session before issuing its non-constructible grant seal.
+The captured evaluator graph is integrity-checked at every authority entry and
+again after evaluation before its output is read or sealed. Initial context
+uses exact registered types and bound progress semantics before the initial
+continuation state is sealed and exposed.
+A self-consistent reconstructed grant or equal-ID duplicate session cannot
+extend limits. Native decision lineage protects the strategy-recovery counter,
+decision/progress semantics, the one-shot terminal-ceiling denial marker, and
+the live strategy identity, while each measurable progress identity is
+single-use for progress-based admission. The same one-shot terminal marker and
+normal partial path apply when the request cap is exhausted before every
+scheduled lease is granted. The candidate implements
+endpoint-checked fixed-shape continuation evidence,
+request-and-schedule-aware compact AI recovery state, exact structural
+in-process checkpoint/resume,
+checkpoint-evidence-bound semantic continuation partials, and an exact-context
+watchdog record whose lease-exhaustion flag is identity-bearing, checked against
+effective checkpoint capacity. Terminal-ceiling checkpoint consumers revalidate
+the cited receipt against the live lineage marker, even after frozen-object
+mutation. A watchdog observation cannot
+become completion authority. The existing v0.4 governance/evidence schema
+remains unchanged.
+
+Live OpenAI integration, mutation/effect execution, durable cross-process
+runtime reconstruction, authority authentication, GPU paths, distributed
+execution, and local workers remain **later architecture targets, not current
+implementation claims**. They remain blocked until the exact v0.5 head passes
+CI, determinism, fresh package verification, and fresh review.

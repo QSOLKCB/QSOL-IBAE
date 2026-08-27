@@ -1,10 +1,13 @@
 # Governance Protocol
 
-Status: v0.4 implementation contract.
+Status: accepted v0.4 implementation contract; unchanged by the v0.5
+continuation extension.
 
 This document defines the deterministic governance surface implemented above
 the accepted v0.2 orchestration and v0.3 Rust runtime. It does not define a
-model-provider adapter, continuation lease, worker protocol, or remote service.
+model-provider adapter, worker protocol, or remote service. v0.5 binds this
+unchanged policy/receipt chain into a separately versioned continuation policy
+receipt; see `CONTINUATION_PROTOCOL.md`.
 
 ## Authority boundary
 
@@ -173,8 +176,17 @@ matches the sealed manifest, aggregates, counts, and session/state boundary to
 the typed receipt chain. Those in-process seals still are not signatures,
 remote attestation, durable provenance, or proof of external truth.
 
+## v0.5 continuation binding
+
+`IBAE-CONTINUATION-POLICY-RECEIPT-V1` binds an unchanged v0.4
+`GovernancePolicy` and accepted `GovernanceReceipt` to an exact finite
+continuation policy. It does not add fields to either v0.4 record. The
+supervisor may request continuation, governance emits a distinct grant or
+denial, and Rust applies only the exact grant. A continuation partial remains
+separate from the v0.4 structural gate/receipt partial.
+
 ## Deferred
 
-v0.4 does not implement continuation leases, Responses/Agents SDK calls, local
-workers, distributed execution, GPU/SIMD execution, or performance authority.
-Those remain subject to their later roadmap gates.
+Responses/Agents SDK calls, local workers, mutation/effect execution,
+distributed execution, GPU/SIMD execution, durable authentication, and
+performance authority remain subject to later roadmap gates.

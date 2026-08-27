@@ -1,6 +1,7 @@
 # Compact Evidence Protocol
 
-Status: v0.4 implementation contract.
+Status: accepted v0.4 implementation contract; its schema and identities are
+unchanged by v0.5.
 
 `IBAE-COMPACT-EVIDENCE-V1` separates potentially large deterministic execution
 state from routine evidence transport. It is independently implemented from
@@ -200,3 +201,11 @@ correctness identity.
 Arbitrary chunk-plan-neutral hierarchical roots, range inclusion proofs, and
 durable shard replay locators require a later versioned composition profile.
 No distributed, worker, GPU, or execution-plan semantics are implemented here.
+
+## Separate v0.5 continuation evidence
+
+`IBAE-CONTINUATION-EVIDENCE-V1` is a separate fixed-shape receipt over progress
+and lease-decision aggregates. It may bind this v0.4 compact receipt by ID, but
+does not add fields to it, replace its native source requirements, or promote
+continuation state into execution evidence. Its own 4,096-byte ceiling and
+trust scope are defined in `CONTINUATION_PROTOCOL.md`.

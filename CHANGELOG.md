@@ -6,6 +6,115 @@ All notable changes to QSOL-IBAE will be documented here.
 
 ### Added
 
+- `IBAE-OBJECTIVE-PROGRESS-V1`, with exact versioned progress dimensions over
+  canonical obligation state or task/governance-bound observed/derived
+  counters. Classification and completion are derived from exact bound
+  prior/current sources, and external counters require matching governed tool
+  admission plus a source-bound native observation; activity, confidence, wall
+  time, and strategy rephrasing remain non-authoritative. The built-in
+  obligation contract counts both unsatisfied and blocked work, preventing a
+  newly blocked obligation from being misclassified as progress, and context
+  observation refreshes stalled/progressing/complete control state immediately.
+  Governed external values also form receipt-independent semantic endpoints;
+  each new prior endpoint must equal the live endpoint, preventing replay with
+  freshly rotated evidence receipts.
+- structured strategy-material and strategy-change receipts that bind admitted
+  strategy identity, capability frontier, target obligations, dependency path,
+  recovery mode, and period-1/2/3 cycle-breaking evidence. Receipts revalidate
+  their exact material, while continuation admission derives live cycles from
+  native history even when optional caller evidence is omitted. Context
+  observation can validate but cannot replace the live strategy identity;
+  strategy lineage advances only through an admitted change grant, preventing
+  rewind and historical-receipt replay.
+- `IBAE-CONTINUATION-LEASE-V1`, with governance-precommitted initial budgets,
+  finite indexed lease schedules, exact cumulative ceilings, request caps,
+  strategy-recovery caps, one task/session continuation ledger, and closed
+  grant/deny receipts. Initial history retains the complete six-transition
+  period-1/2/3 window, and every request cap reserves ordinary decision capacity
+  beyond the lease schedule. If ordinary denials consume the full request
+  ledger before all schedule slots are granted, or if both ledgers are
+  exhausted, one canonical terminal-ceiling receipt marker is added to native lineage
+  without enlarging request counts, ticks, aggregates, or retained history;
+  repeated terminal requests are state-neutral, and a lease-ceiling checkpoint
+  must cite the exact marker receipt.
+- opt-in Rust `apply_lease` authority that independently validates complete
+  governance grant/receipt identities, policy/session/state lineage, schedule,
+  replay index, and checked ceiling before changing exact limits. Accepted
+  application consumes one runtime logical tick and no tool counters/history;
+  rejection is state-neutral. Continuation-session creation pins the evaluator,
+  context observer, and application committer in a Rust-private per-instance
+  authority and returns a separate once-issued, session-scoped supervisor
+  request capability. The principal
+  label alone cannot authorize a request; the resulting exact request seal is
+  the only path to native evaluation and grant-seal issuance. Rust independently validates the
+  authorized request and complete grant, and a duplicate session with equal
+  canonical IDs cannot use its distinct native authority against the original
+  session. There is no raw exported grant issuer or mutable Python capability
+  validator. Native integrity checks cover the captured callable code, every
+  reachable mutable Python function dependency regardless of module, functions
+  behind class/static method and property descriptors, referenced globals and
+  default/closure bindings, and reachable IBAE helpers/classes at session
+  creation and every evaluator/observer/committer entry. Native request entry
+  requires the exact trusted type before callbacks and rechecks integrity
+  immediately after evaluation, before reading or sealing evaluator output.
+  Authority-bearing request, progress, and strategy canonical fields—including
+  the progress contract and measures—require exact callback-free scalar, enum,
+  tuple, and registered-record types before governance comparisons. Rust
+  independently canonicalizes and rederives the
+  exact post-evaluator progress and optional admitted-strategy identities and
+  refuses to issue a grant seal unless one admission predicate holds.
+  The complete initial zero-decision state receives a one-shot native session
+  seal only after Rust derives its exact decision/progress aggregate seeds and
+  validates exact registered orchestration/progress/strategy types plus the
+  progress record's bound task, governance, contract, and orchestration claims.
+  Failed validation does not consume the one-shot seal. Every reseal advances
+  one live native generation and retires its predecessor.
+  Context observation and application commit require the exact live native
+  session snapshot and reseal the resulting full continuation state. Observer
+  progress is validated as exact and callback-free before comparison; Rust
+  additionally compares the prior/result authority projection and rejects any
+  change outside the closed observation endpoints, including consumed-progress
+  identity. Benchmark
+  objects are never inspected or passed into the governance evaluator, so
+  caller-controlled mapping callbacks cannot run inside decision authority.
+- authority-bearing continuation policy-receipt fingerprints/profile fields
+  must remain exact built-in strings/integers before comparison, excluding
+  callback-bearing scalar subclasses from governance evaluation.
+- single-use measurable-progress endpoints: one exact progress identity may
+  justify at most one progress-based grant, after which another such grant
+  requires freshly observed progress. External evidence is paired with
+  dimensions in canonical key order. Native decision lineage now binds the
+  last decision/denial, progress identity/classification/state, consumed
+  endpoint, full ordered progress count/aggregate, grant ledger, and recovery
+  accounting; legitimate context changes are resealed only through pinned
+  native observer/committer paths. Compact evidence rejects a suffix even when
+  it reaches the live endpoint. Compact
+  recovery state no longer advertises material strategy change without a live
+  prior strategy identity.
+- structural in-process `IBAE-CONTINUATION-CHECKPOINT-V1`, fixed-shape
+  continuation evidence capped at 4,096 bytes, semantic continuation partial
+  receipts, and non-authoritative watchdog observations that cannot establish
+  completion or lease exhaustion. Exact progress-contract and prior/current
+  endpoints, live evidence/checkpoint endpoints, actual partial-denial causes,
+  evaluator-bound recovery counters, exact live strategy/status/evidence
+  bindings, effective request/schedule capacity, and watchdog
+  orchestration/runtime/lease-exhaustion identity fail closed. Semantic partial
+  reasons are validated against the actual denial and exhausted counters when
+  the checkpoint itself is constructed. Terminal-ceiling checkpoint consumers
+  revalidate the cited receipt against the live state's lineage marker, so
+  frozen-object mutation plus a recomputed checkpoint hash cannot redirect the
+  partial. Checkpoint creation and resume also
+  require the matching live native session to validate the complete supplied
+  runtime snapshot. Compact AI state exposes remaining progress-observation
+  capacity and suppresses objective-progress recovery when that bound is full.
+- exact experimental `tiny`, `standard`, `extended`, and `repository`
+  continuation profiles plus a model-free benchmark of fixed, front-loaded,
+  geometric-candidate, and bounded-recovery schedules without a promoted
+  winner or correctness claim. Exact unmet base demand is reported as a
+  `base_budget_deficit` and cannot be clipped into a false completion.
+- byte-stable v0.5 Python/Rust progress/continuation and budget-profile fixtures
+  under multiple `PYTHONHASHSEED` values while preserving all frozen v0.2-v0.4
+  fixture bytes.
 - v0.4 deterministic governance wrapper with a closed OpenAI-only provider
   authority, explicit supervisor/orchestrator/runtime/future-worker principals,
   and five fail-closed tool authority classes.
@@ -42,7 +151,10 @@ All notable changes to QSOL-IBAE will be documented here.
   QEC/VE-24 pattern-level provenance with no donor implementation code or domain
   semantics imported.
 - v0.3 Rust deterministic execution runtime with an opaque PyO3 session and maturin build path.
-- `IBAE-RUNTIME-PROTOCOL-V1` with only `execute_read` and `record_retry` commands; future lease/finalization commands remain unimplemented.
+- accepted v0.3 `IBAE-RUNTIME-PROTOCOL-V1` read/retry semantics with
+  `execute_read` and `record_retry`; v0.5 adds only the opt-in exact
+  `apply_lease` extension, while request/finalization/effect commands remain
+  unimplemented.
 - Rust-owned checked integer budgets, transition-derived logical ticks, bounded history/cache, dependency-sensitive reuse, cycle detection, and canonical runtime receipts.
 - domain-separated runtime session, command, state, and receipt identities while preserving the v0.1 canonical tool/observation/transition identities.
 - structured runtime rejection taxonomy with execution authority, relevant invariant IDs, and blocking state.

@@ -1,5 +1,5 @@
 //! Exact, bounded deterministic execution authority and compact evidence
-//! reduction for QSOL-IBAE v0.3/v0.4.
+//! reduction for QSOL-IBAE v0.3-v0.5.
 //!
 //! The crate deliberately exposes one runtime command dispatcher plus one
 //! opaque evidence accumulator and non-constructible source seals rather than
@@ -8,17 +8,38 @@
 
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
-use pyo3::types::{PyAny, PyBool, PyModule};
+use pyo3::sync::GILOnceCell;
+use pyo3::types::{PyAny, PyBool, PyDict, PyModule, PyTuple, PyType};
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 const PROTOCOL_VERSION: &str = "IBAE-RUNTIME-PROTOCOL-V1";
 const COMMAND_DOMAIN: &str = "ibae.runtime-command-id.v1";
 const RECEIPT_DOMAIN: &str = "ibae.runtime-receipt-id.v1";
 const SESSION_DOMAIN: &str = "ibae.runtime-session-id.v1";
 const STATE_DOMAIN: &str = "ibae.runtime-state-id.v1";
+
+const CONTINUATION_PROTOCOL_VERSION: &str = "IBAE-CONTINUATION-LEASE-V1";
+const CONTINUATION_POLICY_RECEIPT_VERSION: &str = "IBAE-CONTINUATION-POLICY-RECEIPT-V1";
+const PROGRESS_PROTOCOL_VERSION: &str = "IBAE-OBJECTIVE-PROGRESS-V1";
+const STRATEGY_CHANGE_PROTOCOL_VERSION: &str = "IBAE-STRATEGY-CHANGE-V1";
+const LEASE_GRANT_RECEIPT_VERSION: &str = "IBAE-CONTINUATION-LEASE-GRANT-V1";
+const LEASE_APPLICATION_RECEIPT_VERSION: &str = "IBAE-RUNTIME-LEASE-APPLICATION-RECEIPT-V1";
+const CONTINUATION_POLICY_ID_DOMAIN: &str = "ibae.continuation-policy-id.v1";
+const CONTINUATION_POLICY_RECEIPT_ID_DOMAIN: &str = "ibae.continuation-policy-receipt-id.v1";
+const CONTINUATION_REQUEST_ID_DOMAIN: &str = "ibae.continuation-request-id.v1";
+const PROGRESS_RECORD_ID_DOMAIN: &str = "ibae.progress-record-id.v1";
+const STRATEGY_CHANGE_ID_DOMAIN: &str = "ibae.strategy-change-id.v1";
+const CONTINUATION_DECISION_AGGREGATE_DOMAIN: &str = "ibae.continuation-decision-aggregate.v1";
+const CONTINUATION_EVIDENCE_VERSION: &str = "IBAE-CONTINUATION-EVIDENCE-V1";
+const CONTINUATION_EVIDENCE_PROGRESS_AGGREGATE_DOMAIN: &str =
+    "ibae.continuation-progress-aggregate.v1";
+const LEASE_GRANT_ID_DOMAIN: &str = "ibae.continuation-lease-grant-id.v1";
+const LEASE_GRANT_RECEIPT_ID_DOMAIN: &str = "ibae.continuation-lease-grant-receipt-id.v1";
+const LEASE_APPLICATION_ID_DOMAIN: &str = "ibae.runtime-lease-application-id.v1";
+const LEASE_APPLICATION_RECEIPT_ID_DOMAIN: &str = "ibae.runtime-lease-application-receipt-id.v1";
 
 const EVIDENCE_PROTOCOL_VERSION: &str = "IBAE-COMPACT-EVIDENCE-V1";
 const EVIDENCE_PROFILE: &str = "IBAE-COMPACT-EVIDENCE-COUNTS-AND-IDENTITIES-V1";
@@ -49,6 +70,9 @@ const MAX_REQUESTS: u64 = 1_000_000;
 const MAX_EXECUTIONS: u64 = 4_096;
 const MAX_RETRIES: u64 = 1_000_000;
 const MAX_HISTORY: u64 = 4_096;
+const MAX_CONTINUATION_LEASES: usize = 64;
+const MAX_CONTINUATION_REQUESTS: u64 = 128;
+const MIN_CONTINUATION_CYCLE_HISTORY: u64 = 6;
 
 const MAX_EVIDENCE_CASES: u64 = 1_000_000;
 const MAX_EVIDENCE_FAILURE_DETAILS: u64 = 32;
@@ -102,6 +126,55 @@ impl Reason {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LeaseApplyReason {
+    ContinuationDisabled,
+    StaleRuntimeState,
+    StaleGovernance,
+    PolicyMismatch,
+    GrantIdentityMismatch,
+    LeaseIndexMismatch,
+    LeaseScheduleExceeded,
+    LeaseCeilingExceeded,
+    UnsupportedResource,
+    UnissuedGrant,
+    ArithmeticOverflow,
+}
+
+impl LeaseApplyReason {
+    fn code(self) -> &'static str {
+        match self {
+            Self::ContinuationDisabled => "IBAE-RT-LEASE-REJECT-CONTINUATION-DISABLED",
+            Self::StaleRuntimeState => "IBAE-RT-LEASE-REJECT-STALE-RUNTIME-STATE",
+            Self::StaleGovernance => "IBAE-RT-LEASE-REJECT-STALE-GOVERNANCE",
+            Self::PolicyMismatch => "IBAE-RT-LEASE-REJECT-POLICY-MISMATCH",
+            Self::GrantIdentityMismatch => "IBAE-RT-LEASE-REJECT-GRANT-IDENTITY",
+            Self::LeaseIndexMismatch => "IBAE-RT-LEASE-REJECT-LEASE-INDEX",
+            Self::LeaseScheduleExceeded => "IBAE-RT-LEASE-REJECT-SCHEDULE",
+            Self::LeaseCeilingExceeded => "IBAE-RT-LEASE-REJECT-CEILING",
+            Self::UnsupportedResource => "IBAE-RT-LEASE-REJECT-UNSUPPORTED-RESOURCE",
+            Self::UnissuedGrant => "IBAE-RT-LEASE-REJECT-UNISSUED-GRANT",
+            Self::ArithmeticOverflow => "IBAE-RT-LEASE-REJECT-ARITHMETIC-OVERFLOW",
+        }
+    }
+
+    fn invariant_ids(self) -> &'static [&'static str] {
+        match self {
+            Self::ContinuationDisabled
+            | Self::StaleGovernance
+            | Self::PolicyMismatch
+            | Self::GrantIdentityMismatch => &["IBAE-BND-005", "IBAE-BND-006", "IBAE-PROG-004"],
+            Self::StaleRuntimeState | Self::LeaseIndexMismatch => &["IBAE-BND-005", "IBAE-BND-006"],
+            Self::LeaseScheduleExceeded | Self::LeaseCeilingExceeded => {
+                &["IBAE-BND-005", "IBAE-BND-007"]
+            }
+            Self::UnsupportedResource => &["IBAE-BND-005", "IBAE-BND-006"],
+            Self::UnissuedGrant => &["IBAE-BND-005", "IBAE-BND-006", "IBAE-PROG-004"],
+            Self::ArithmeticOverflow => &["IBAE-BND-007", "IBAE-CLK-001"],
+        }
+    }
+}
+
 #[derive(Debug)]
 struct CanonicalError;
 
@@ -134,11 +207,43 @@ fn domain_fingerprint(domain: &str, canonical_payload: &str) -> String {
     output
 }
 
+fn initial_continuation_progress_aggregate() -> String {
+    let payload = canonical_value(&json!({
+        "item_type": "seed",
+        "protocol_version": CONTINUATION_EVIDENCE_VERSION,
+    }))
+    .expect("the continuation progress aggregate seed is canonicalizable");
+    domain_fingerprint(CONTINUATION_EVIDENCE_PROGRESS_AGGREGATE_DOMAIN, &payload)
+}
+
+fn advance_continuation_progress_aggregate(prior: &str, progress_id: &str, ordinal: u64) -> String {
+    let payload = canonical_value(&json!({
+        "item_type": "progress",
+        "ordinal": ordinal,
+        "prior": prior,
+        "progress_id": progress_id,
+    }))
+    .expect("the continuation progress aggregate item is canonicalizable");
+    domain_fingerprint(CONTINUATION_EVIDENCE_PROGRESS_AGGREGATE_DOMAIN, &payload)
+}
+
 fn is_fingerprint(value: &str) -> bool {
     value.len() == 64
         && value
             .bytes()
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+fn is_symbol(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    !bytes.is_empty()
+        && bytes.len() <= 128
+        && bytes[0].is_ascii_lowercase()
+        && bytes.iter().all(|byte| {
+            byte.is_ascii_lowercase()
+                || byte.is_ascii_digit()
+                || matches!(*byte, b'.' | b'_' | b':' | b'/' | b'-')
+        })
 }
 
 fn python_float_repr(value: f64) -> Result<String, CanonicalError> {
@@ -451,6 +556,398 @@ impl Limits {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct LeaseResources {
+    requests: u64,
+    executions: u64,
+    retries: u64,
+    mutations: u64,
+    history: u64,
+}
+
+impl LeaseResources {
+    fn parse(value: &Value) -> Result<Self, &'static str> {
+        let mapping = value
+            .as_object()
+            .ok_or("continuation resource vector must be an object")?;
+        if !object_has_exact_keys(
+            mapping,
+            &[
+                "execution_delta",
+                "history_delta",
+                "mutation_delta",
+                "request_delta",
+                "retry_delta",
+            ],
+        ) {
+            return Err("continuation resource vector does not match the v1 schema");
+        }
+        let item = |name: &str| {
+            mapping
+                .get(name)
+                .and_then(Value::as_u64)
+                .ok_or("continuation resources must be exact unsigned integers")
+        };
+        Ok(Self {
+            requests: item("request_delta")?,
+            executions: item("execution_delta")?,
+            retries: item("retry_delta")?,
+            mutations: item("mutation_delta")?,
+            history: item("history_delta")?,
+        })
+    }
+
+    fn value(self) -> Value {
+        json!({
+            "execution_delta": self.executions,
+            "history_delta": self.history,
+            "mutation_delta": self.mutations,
+            "request_delta": self.requests,
+            "retry_delta": self.retries,
+        })
+    }
+
+    fn is_zero(self) -> bool {
+        self == Self::default()
+    }
+
+    fn is_within(self, ceiling: Self) -> bool {
+        self.requests <= ceiling.requests
+            && self.executions <= ceiling.executions
+            && self.retries <= ceiling.retries
+            && self.mutations <= ceiling.mutations
+            && self.history <= ceiling.history
+    }
+
+    fn checked_add(self, other: Self) -> Result<Self, LeaseApplyReason> {
+        Ok(Self {
+            requests: self
+                .requests
+                .checked_add(other.requests)
+                .ok_or(LeaseApplyReason::ArithmeticOverflow)?,
+            executions: self
+                .executions
+                .checked_add(other.executions)
+                .ok_or(LeaseApplyReason::ArithmeticOverflow)?,
+            retries: self
+                .retries
+                .checked_add(other.retries)
+                .ok_or(LeaseApplyReason::ArithmeticOverflow)?,
+            mutations: self
+                .mutations
+                .checked_add(other.mutations)
+                .ok_or(LeaseApplyReason::ArithmeticOverflow)?,
+            history: self
+                .history
+                .checked_add(other.history)
+                .ok_or(LeaseApplyReason::ArithmeticOverflow)?,
+        })
+    }
+}
+
+#[derive(Clone)]
+struct ContinuationPolicySpec {
+    policy_id: String,
+    progress_contract_id: String,
+    initial: LeaseResources,
+    schedule: Vec<LeaseResources>,
+    total_ceiling: LeaseResources,
+    task_profile: String,
+    task_profile_version: u64,
+}
+
+impl ContinuationPolicySpec {
+    fn parse(value: &Value) -> Result<Self, &'static str> {
+        let mapping = value
+            .as_object()
+            .ok_or("continuation policy must be an object")?;
+        if !object_has_exact_keys(
+            mapping,
+            &[
+                "admitted_progress",
+                "authority_layer",
+                "initial_budget",
+                "lease_schedule",
+                "max_lease_requests",
+                "max_leases",
+                "max_strategy_recoveries",
+                "policy_key",
+                "policy_version",
+                "progress_contract_id",
+                "protocol_version",
+                "task_profile",
+                "task_profile_version",
+                "total_ceiling",
+            ],
+        ) {
+            return Err("continuation policy does not match the v1 schema");
+        }
+        if mapping.get("authority_layer").and_then(Value::as_str) != Some("governance")
+            || mapping.get("protocol_version").and_then(Value::as_str)
+                != Some(CONTINUATION_PROTOCOL_VERSION)
+        {
+            return Err("continuation policy authority or protocol is invalid");
+        }
+        for name in ["policy_key", "task_profile"] {
+            if !mapping
+                .get(name)
+                .and_then(Value::as_str)
+                .is_some_and(is_symbol)
+            {
+                return Err("continuation policy contains an invalid symbol");
+            }
+        }
+        for name in ["policy_version", "task_profile_version"] {
+            if !mapping
+                .get(name)
+                .and_then(Value::as_u64)
+                .is_some_and(|item| item > 0)
+            {
+                return Err("continuation policy versions must be positive integers");
+            }
+        }
+        let admitted = mapping
+            .get("admitted_progress")
+            .and_then(Value::as_array)
+            .ok_or("continuation admitted progress must be an array")?;
+        if admitted.is_empty() || admitted.len() > 5 {
+            return Err("continuation admitted progress is outside its hard bound");
+        }
+        let mut admitted_set = BTreeSet::new();
+        for item in admitted {
+            let classification = item
+                .as_str()
+                .ok_or("continuation progress classifications must be strings")?;
+            if classification != "measurable_progress" || !admitted_set.insert(classification) {
+                return Err("continuation policy admits an unsafe progress class");
+            }
+        }
+        if admitted_set.len() != 1 {
+            return Err("continuation policy admits an unsafe progress class");
+        }
+        let progress_contract_id = mapping
+            .get("progress_contract_id")
+            .and_then(Value::as_str)
+            .filter(|item| is_fingerprint(item))
+            .ok_or("continuation policy progress contract identity is invalid")?
+            .to_owned();
+
+        let initial = LeaseResources::parse(
+            mapping
+                .get("initial_budget")
+                .ok_or("continuation policy omits initial budget")?,
+        )?;
+        if initial.requests == 0
+            || initial.executions == 0
+            || initial.retries == 0
+            || initial.history < MIN_CONTINUATION_CYCLE_HISTORY
+            || initial.mutations != 0
+        {
+            return Err("continuation initial budget is invalid");
+        }
+        let schedule_values = mapping
+            .get("lease_schedule")
+            .and_then(Value::as_array)
+            .ok_or("continuation lease schedule must be an array")?;
+        if schedule_values.len() > MAX_CONTINUATION_LEASES {
+            return Err("continuation lease schedule exceeds its hard bound");
+        }
+        let mut schedule = Vec::with_capacity(schedule_values.len());
+        for item in schedule_values {
+            let resource = LeaseResources::parse(item)?;
+            if resource.is_zero() || resource.mutations != 0 {
+                return Err("continuation schedule contains an invalid resource vector");
+            }
+            schedule.push(resource);
+        }
+        let max_leases = mapping
+            .get("max_leases")
+            .and_then(Value::as_u64)
+            .ok_or("continuation max_leases must be an exact integer")?;
+        if usize::try_from(max_leases).ok() != Some(schedule.len()) {
+            return Err("continuation max_leases does not match its schedule");
+        }
+        let max_requests = mapping
+            .get("max_lease_requests")
+            .and_then(Value::as_u64)
+            .ok_or("continuation max_lease_requests must be an exact integer")?;
+        if max_requests == 0
+            || max_requests > MAX_CONTINUATION_REQUESTS
+            || max_requests <= max_leases
+        {
+            return Err("continuation max_lease_requests is outside its hard bound");
+        }
+        let max_recoveries = mapping
+            .get("max_strategy_recoveries")
+            .and_then(Value::as_u64)
+            .ok_or("continuation max_strategy_recoveries must be an exact integer")?;
+        if max_recoveries > max_leases {
+            return Err("continuation strategy recovery bound exceeds lease count");
+        }
+
+        let total_ceiling = LeaseResources::parse(
+            mapping
+                .get("total_ceiling")
+                .ok_or("continuation policy omits total ceiling")?,
+        )?;
+        let mut computed = initial;
+        for item in &schedule {
+            computed = computed
+                .checked_add(*item)
+                .map_err(|_| "continuation policy resource arithmetic overflow")?;
+        }
+        if computed != total_ceiling {
+            return Err("continuation total ceiling does not equal base plus schedule");
+        }
+        if total_ceiling.requests > MAX_REQUESTS
+            || total_ceiling.executions > MAX_EXECUTIONS
+            || total_ceiling.retries > MAX_RETRIES
+            || total_ceiling.history > MAX_HISTORY
+            || total_ceiling.mutations != 0
+        {
+            return Err("continuation total ceiling exceeds runtime hard limits");
+        }
+        let canonical = canonical_value(value)
+            .map_err(|_| "continuation policy is outside the canonical profile")?;
+        Ok(Self {
+            policy_id: domain_fingerprint(CONTINUATION_POLICY_ID_DOMAIN, &canonical),
+            progress_contract_id,
+            initial,
+            schedule,
+            total_ceiling,
+            task_profile: mapping["task_profile"]
+                .as_str()
+                .expect("validated task profile")
+                .to_owned(),
+            task_profile_version: mapping["task_profile_version"]
+                .as_u64()
+                .expect("validated task profile version"),
+        })
+    }
+}
+
+#[derive(Clone)]
+struct ContinuationContext {
+    policy: ContinuationPolicySpec,
+    policy_receipt_id: String,
+    task_id: String,
+    governance_id: String,
+    governance_receipt_id: String,
+}
+
+impl ContinuationContext {
+    fn parse(canonical_context: &str, limits: Limits) -> Result<Self, &'static str> {
+        let value = parse_canonical(canonical_context)
+            .map_err(|_| "continuation context must be canonical JSON")?;
+        let mapping = value
+            .as_object()
+            .ok_or("continuation context must be an object")?;
+        if !object_has_exact_keys(
+            mapping,
+            &["continuation_policy", "continuation_policy_receipt"],
+        ) {
+            return Err("continuation context does not match the v1 schema");
+        }
+        let policy = ContinuationPolicySpec::parse(&mapping["continuation_policy"])?;
+        if policy.initial.requests != limits.requests
+            || policy.initial.executions != limits.executions
+            || policy.initial.retries != limits.retries
+            || policy.initial.history != limits.history
+        {
+            return Err("native runtime limits do not match continuation base budget");
+        }
+        let receipt = mapping["continuation_policy_receipt"]
+            .as_object()
+            .ok_or("continuation policy receipt must be an object")?;
+        if !object_has_exact_keys(
+            receipt,
+            &[
+                "authority_layer",
+                "continuation_policy_id",
+                "governance_id",
+                "governance_receipt_id",
+                "progress_contract_id",
+                "protocol_version",
+                "receipt_id",
+                "status",
+                "task_id",
+                "task_profile",
+                "task_profile_version",
+            ],
+        ) {
+            return Err("continuation policy receipt does not match the v1 schema");
+        }
+        if receipt.get("authority_layer").and_then(Value::as_str) != Some("governance")
+            || receipt.get("protocol_version").and_then(Value::as_str)
+                != Some(CONTINUATION_POLICY_RECEIPT_VERSION)
+            || receipt.get("status").and_then(Value::as_str) != Some("admitted")
+            || receipt
+                .get("continuation_policy_id")
+                .and_then(Value::as_str)
+                != Some(policy.policy_id.as_str())
+            || receipt.get("task_profile").and_then(Value::as_str)
+                != Some(policy.task_profile.as_str())
+            || receipt.get("task_profile_version").and_then(Value::as_u64)
+                != Some(policy.task_profile_version)
+            || receipt.get("progress_contract_id").and_then(Value::as_str)
+                != Some(policy.progress_contract_id.as_str())
+        {
+            return Err("continuation policy receipt binding is invalid");
+        }
+        let identity = |name: &str| -> Result<String, &'static str> {
+            receipt
+                .get(name)
+                .and_then(Value::as_str)
+                .filter(|item| is_fingerprint(item))
+                .map(str::to_owned)
+                .ok_or("continuation policy receipt identity is invalid")
+        };
+        let supplied_receipt_id = identity("receipt_id")?;
+        let mut receipt_body = receipt.clone();
+        receipt_body.remove("receipt_id");
+        let receipt_canonical = canonical_value(&Value::Object(receipt_body))
+            .map_err(|_| "continuation policy receipt is not canonical")?;
+        if domain_fingerprint(CONTINUATION_POLICY_RECEIPT_ID_DOMAIN, &receipt_canonical)
+            != supplied_receipt_id
+        {
+            return Err("continuation policy receipt identity is invalid");
+        }
+        Ok(Self {
+            policy,
+            policy_receipt_id: supplied_receipt_id,
+            task_id: identity("task_id")?,
+            governance_id: identity("governance_id")?,
+            governance_receipt_id: identity("governance_receipt_id")?,
+        })
+    }
+}
+
+#[derive(Clone)]
+struct ContinuationRuntimeState {
+    context: ContinuationContext,
+    cumulative_granted: LeaseResources,
+    applied_grant_ids: Vec<String>,
+}
+
+impl ContinuationRuntimeState {
+    fn value(&self) -> Value {
+        json!({
+            "applied_grant_ids": self.applied_grant_ids,
+            "continuation_policy_id": self.context.policy.policy_id,
+            "continuation_policy_receipt_id": self.context.policy_receipt_id,
+            "cumulative_granted": self.cumulative_granted.value(),
+            "governance_id": self.context.governance_id,
+            "governance_receipt_id": self.context.governance_receipt_id,
+            "leases_applied": self.applied_grant_ids.len(),
+            "next_lease_index": self.applied_grant_ids.len() + 1,
+            "progress_contract_id": self.context.policy.progress_contract_id,
+            "protocol_version": CONTINUATION_PROTOCOL_VERSION,
+            "task_id": self.context.task_id,
+            "total_ceiling": self.context.policy.total_ceiling.value(),
+        })
+    }
+}
+
 #[derive(Clone)]
 struct CachedObservation {
     canonical: Arc<str>,
@@ -498,9 +995,1452 @@ struct RecordRetry {
     admission_id: String,
 }
 
+#[derive(Clone)]
+struct LeaseGrant {
+    task_id: String,
+    governance_id: String,
+    governance_receipt_id: String,
+    continuation_policy_id: String,
+    continuation_policy_receipt_id: String,
+    continuation_request_id: String,
+    receipt_id: String,
+    lease_grant_id: String,
+    progress_id: String,
+    strategy_change_id: Option<String>,
+    prior_runtime_state_id: String,
+    runtime_session_id: String,
+    lease_index: u64,
+    granted_resources: LeaseResources,
+    cumulative_granted: LeaseResources,
+    total_ceiling: LeaseResources,
+    identity_valid: bool,
+    canonical_receipt: Arc<str>,
+}
+
+impl LeaseGrant {
+    fn parse(value: &Value) -> Result<Self, Reason> {
+        let mapping = value.as_object().ok_or(Reason::InvalidCommand)?;
+        if !object_has_exact_keys(
+            mapping,
+            &[
+                "authority_layer",
+                "continuation_policy_id",
+                "continuation_policy_receipt_id",
+                "continuation_request_id",
+                "cumulative_granted",
+                "decision_logical_tick",
+                "governance_id",
+                "governance_receipt_id",
+                "granted_resources",
+                "lease_grant_id",
+                "lease_index",
+                "orchestration_state_id",
+                "prior_continuation_state_id",
+                "prior_runtime_state_id",
+                "progress_id",
+                "protocol_version",
+                "receipt_id",
+                "runtime_session_id",
+                "status",
+                "strategy_change_id",
+                "task_id",
+                "total_ceiling",
+            ],
+        ) {
+            return Err(Reason::InvalidCommand);
+        }
+        if mapping.get("authority_layer").and_then(Value::as_str) != Some("governance")
+            || mapping.get("protocol_version").and_then(Value::as_str)
+                != Some(LEASE_GRANT_RECEIPT_VERSION)
+            || mapping.get("status").and_then(Value::as_str) != Some("granted")
+        {
+            return Err(Reason::InvalidCommand);
+        }
+        let identity = |name: &str| -> Result<String, Reason> {
+            mapping
+                .get(name)
+                .and_then(Value::as_str)
+                .filter(|item| is_fingerprint(item))
+                .map(str::to_owned)
+                .ok_or(Reason::InvalidCommand)
+        };
+        for name in [
+            "continuation_request_id",
+            "orchestration_state_id",
+            "prior_continuation_state_id",
+            "progress_id",
+        ] {
+            identity(name)?;
+        }
+        let strategy_change_id = match mapping.get("strategy_change_id") {
+            Some(Value::Null) => None,
+            Some(Value::String(item)) if is_fingerprint(item) => Some(item.clone()),
+            _ => return Err(Reason::InvalidCommand),
+        };
+        if mapping
+            .get("decision_logical_tick")
+            .and_then(Value::as_u64)
+            .is_none()
+        {
+            return Err(Reason::InvalidCommand);
+        }
+        let lease_index = mapping
+            .get("lease_index")
+            .and_then(Value::as_u64)
+            .filter(|item| *item > 0)
+            .ok_or(Reason::InvalidCommand)?;
+        let granted_resources = LeaseResources::parse(&mapping["granted_resources"])
+            .map_err(|_| Reason::InvalidCommand)?;
+        let cumulative_granted = LeaseResources::parse(&mapping["cumulative_granted"])
+            .map_err(|_| Reason::InvalidCommand)?;
+        let total_ceiling =
+            LeaseResources::parse(&mapping["total_ceiling"]).map_err(|_| Reason::InvalidCommand)?;
+        let receipt_id = identity("receipt_id")?;
+        let lease_grant_id = identity("lease_grant_id")?;
+
+        let mut grant_body = mapping.clone();
+        grant_body.remove("receipt_id");
+        grant_body.remove("lease_grant_id");
+        let grant_canonical =
+            canonical_value(&Value::Object(grant_body)).map_err(|_| Reason::InvalidCommand)?;
+        let expected_grant_id = domain_fingerprint(LEASE_GRANT_ID_DOMAIN, &grant_canonical);
+        let mut receipt_body = mapping.clone();
+        receipt_body.remove("receipt_id");
+        let receipt_canonical =
+            canonical_value(&Value::Object(receipt_body)).map_err(|_| Reason::InvalidCommand)?;
+        let expected_receipt_id =
+            domain_fingerprint(LEASE_GRANT_RECEIPT_ID_DOMAIN, &receipt_canonical);
+        let canonical_receipt = canonical_value(value).map_err(|_| Reason::InvalidCommand)?;
+
+        Ok(Self {
+            task_id: identity("task_id")?,
+            governance_id: identity("governance_id")?,
+            governance_receipt_id: identity("governance_receipt_id")?,
+            continuation_policy_id: identity("continuation_policy_id")?,
+            continuation_policy_receipt_id: identity("continuation_policy_receipt_id")?,
+            continuation_request_id: identity("continuation_request_id")?,
+            receipt_id,
+            lease_grant_id: lease_grant_id.clone(),
+            progress_id: identity("progress_id")?,
+            strategy_change_id,
+            prior_runtime_state_id: identity("prior_runtime_state_id")?,
+            runtime_session_id: identity("runtime_session_id")?,
+            lease_index,
+            granted_resources,
+            cumulative_granted,
+            total_ceiling,
+            identity_valid: lease_grant_id == expected_grant_id
+                && identity("receipt_id")? == expected_receipt_id,
+            canonical_receipt: Arc::from(canonical_receipt),
+        })
+    }
+}
+
+fn validate_evaluated_progress_authority(
+    canonical_progress: &str,
+    grant: &LeaseGrant,
+    task_id: &str,
+    governance_id: &str,
+    progress_contract_id: &str,
+) -> Result<bool, ()> {
+    let value = parse_runtime_canonical(canonical_progress).map_err(|_| ())?;
+    let mapping = value.as_object().ok_or(())?;
+    if !object_has_exact_keys(
+        mapping,
+        &[
+            "classification",
+            "current_measures",
+            "current_orchestration_state_id",
+            "evidence_ids",
+            "governance_id",
+            "measure_contract",
+            "measure_contract_id",
+            "prior_measures",
+            "prior_orchestration_state_id",
+            "protocol_version",
+            "task_complete",
+            "task_id",
+        ],
+    ) || mapping.get("protocol_version").and_then(Value::as_str)
+        != Some(PROGRESS_PROTOCOL_VERSION)
+        || mapping.get("task_id").and_then(Value::as_str) != Some(task_id)
+        || mapping.get("governance_id").and_then(Value::as_str) != Some(governance_id)
+        || mapping.get("measure_contract_id").and_then(Value::as_str) != Some(progress_contract_id)
+        || mapping.get("task_complete").and_then(Value::as_bool) != Some(false)
+    {
+        return Err(());
+    }
+    let canonical = canonical_value(&value).map_err(|_| ())?;
+    if domain_fingerprint(PROGRESS_RECORD_ID_DOMAIN, &canonical) != grant.progress_id {
+        return Err(());
+    }
+    match mapping.get("classification").and_then(Value::as_str) {
+        Some("measurable_progress") => Ok(true),
+        Some("no_progress")
+        | Some("regression")
+        | Some("new_information")
+        | Some("incomparable") => Ok(false),
+        _ => Err(()),
+    }
+}
+
+fn validate_evaluated_strategy_authority(
+    canonical_strategy_change: &str,
+    expected_strategy_change_id: &str,
+    task_id: &str,
+    governance_id: &str,
+) -> Result<(), ()> {
+    let value = parse_runtime_canonical(canonical_strategy_change).map_err(|_| ())?;
+    let mapping = value.as_object().ok_or(())?;
+    if !object_has_exact_keys(
+        mapping,
+        &[
+            "authority_layer",
+            "cycle_evidence_id",
+            "governance_id",
+            "orchestration_state_id",
+            "prior_strategy_material_id",
+            "proposed_strategy_id",
+            "proposed_strategy_material_id",
+            "protocol_version",
+            "reason",
+            "status",
+            "task_id",
+        ],
+    ) || mapping.get("authority_layer").and_then(Value::as_str) != Some("orchestration")
+        || mapping.get("protocol_version").and_then(Value::as_str)
+            != Some(STRATEGY_CHANGE_PROTOCOL_VERSION)
+        || mapping.get("task_id").and_then(Value::as_str) != Some(task_id)
+        || mapping.get("governance_id").and_then(Value::as_str) != Some(governance_id)
+        || mapping.get("status").and_then(Value::as_str) != Some("admitted")
+        || mapping.get("reason").and_then(Value::as_str)
+            != Some("IBAE-STRATEGY-ADMIT-MATERIAL-CHANGE")
+    {
+        return Err(());
+    }
+    let canonical = canonical_value(&value).map_err(|_| ())?;
+    if domain_fingerprint(STRATEGY_CHANGE_ID_DOMAIN, &canonical) != expected_strategy_change_id {
+        return Err(());
+    }
+    Ok(())
+}
+
+fn validate_context_observation_authority(
+    prior_lineage: &str,
+    observed_lineage: &str,
+) -> Result<(), ()> {
+    let prior = parse_runtime_canonical(prior_lineage).map_err(|_| ())?;
+    let observed = parse_runtime_canonical(observed_lineage).map_err(|_| ())?;
+    let mut prior = prior.as_object().ok_or(())?.clone();
+    let mut observed = observed.as_object().ok_or(())?.clone();
+    // Context observation may advance only these exact observation endpoints.
+    // Decision, grant, recovery, consumed-progress, terminal, and policy
+    // authority must remain byte-for-byte equivalent.
+    for name in [
+        "last_external_progress_endpoint_id",
+        "last_progress_classification",
+        "last_progress_id",
+        "orchestration_state_id",
+        "progress_aggregate_id",
+        "progress_event_count",
+        "progress_state",
+        "runtime_state_id",
+    ] {
+        if prior.remove(name).is_none() || observed.remove(name).is_none() {
+            return Err(());
+        }
+    }
+    if prior != observed {
+        return Err(());
+    }
+    Ok(())
+}
+
+/// Non-constructible in-process proof that the exact live native session
+/// admitted one exact governance grant for application. It is not producer
+/// authentication, a signature, or durable remote attestation.
+#[pyclass(name = "NativeLeaseGrantSeal", module = "ibae._runtime", unsendable)]
+struct NativeLeaseGrantSeal {
+    canonical_grant: Arc<str>,
+    lease_grant_id: String,
+    prior_runtime_state_id: String,
+    runtime_session_id: String,
+    continuation_authority: Option<Arc<ContinuationAuthorityBinding>>,
+}
+
+impl NativeLeaseGrantSeal {
+    fn from_grant(
+        grant: &LeaseGrant,
+        continuation_authority: Option<Arc<ContinuationAuthorityBinding>>,
+    ) -> Self {
+        Self {
+            canonical_grant: Arc::clone(&grant.canonical_receipt),
+            lease_grant_id: grant.lease_grant_id.clone(),
+            prior_runtime_state_id: grant.prior_runtime_state_id.clone(),
+            runtime_session_id: grant.runtime_session_id.clone(),
+            continuation_authority,
+        }
+    }
+
+    fn matches(&self, grant: &LeaseGrant, prior_state_id: &str, session_id: &str) -> bool {
+        self.canonical_grant.as_ref() == grant.canonical_receipt.as_ref()
+            && self.lease_grant_id == grant.lease_grant_id
+            && self.prior_runtime_state_id == prior_state_id
+            && self.runtime_session_id == session_id
+    }
+}
+
+#[pymethods]
+impl NativeLeaseGrantSeal {
+    fn validates(&self, canonical_grant: &str) -> bool {
+        self.canonical_grant.as_ref() == canonical_grant
+    }
+}
+
+/// Rust-private binding shared only by one live continuation session and the
+/// supervisor authority handed out once when that session is created.  The
+/// pointer identity is deliberately excluded from every canonical record.
+struct ContinuationAuthorityBinding {
+    task_id: String,
+    governance_id: String,
+    governance_receipt_id: String,
+    continuation_policy_id: String,
+    continuation_policy_receipt_id: String,
+    progress_contract_id: String,
+    runtime_session_id: String,
+    continuation_state_type: Py<PyAny>,
+    continuation_request_type: Py<PyAny>,
+    runtime_snapshot_type: Py<PyAny>,
+    orchestration_state_type: Py<PyAny>,
+    progress_record_type: Py<PyAny>,
+    strategy_materialization_type: Py<PyAny>,
+    evaluator: Py<PyAny>,
+    observer: Py<PyAny>,
+    committer: Py<PyAny>,
+    evaluator_integrity: Arc<PythonFunctionIntegrity>,
+    observer_integrity: Arc<PythonFunctionIntegrity>,
+    committer_integrity: Arc<PythonFunctionIntegrity>,
+    live_lineage: Mutex<LiveContinuationLineageState>,
+}
+
+#[derive(Clone)]
+struct LiveContinuationLineage {
+    generation: u64,
+    canonical: Arc<str>,
+}
+
+enum LiveContinuationLineageState {
+    Uninitialized,
+    Ready(LiveContinuationLineage),
+    Transitioning {
+        prior: Option<LiveContinuationLineage>,
+        next_generation: u64,
+    },
+}
+
+struct ContinuationLineageTransition<'a> {
+    binding: &'a ContinuationAuthorityBinding,
+    prior: Option<LiveContinuationLineage>,
+    next_generation: u64,
+    finished: bool,
+}
+
+/// Process-local trusted continuation engine captured exactly once while the
+/// Python continuation module is initialized.  Session factories clone the
+/// original evaluator, observer, and application committer from native
+/// storage; mutable Python module attributes are never consulted when a later
+/// session is created.
+struct ContinuationEngine {
+    evaluator: Py<PyAny>,
+    observer: Py<PyAny>,
+    committer: Py<PyAny>,
+    continuation_state_type: Py<PyAny>,
+    continuation_request_type: Py<PyAny>,
+    runtime_snapshot_type: Py<PyAny>,
+    orchestration_state_type: Py<PyAny>,
+    progress_record_type: Py<PyAny>,
+    strategy_materialization_type: Py<PyAny>,
+    evaluator_integrity: Arc<PythonFunctionIntegrity>,
+    observer_integrity: Arc<PythonFunctionIntegrity>,
+    committer_integrity: Arc<PythonFunctionIntegrity>,
+}
+
+static CONTINUATION_ENGINE: GILOnceCell<ContinuationEngine> = GILOnceCell::new();
+
+impl ContinuationAuthorityBinding {
+    fn begin_initial_lineage(&self) -> PyResult<ContinuationLineageTransition<'_>> {
+        let mut live = self
+            .live_lineage
+            .lock()
+            .map_err(|_| PyValueError::new_err("native continuation lineage lock failed"))?;
+        if !matches!(*live, LiveContinuationLineageState::Uninitialized) {
+            return Err(PyValueError::new_err(
+                "initial continuation lineage was already established",
+            ));
+        }
+        *live = LiveContinuationLineageState::Transitioning {
+            prior: None,
+            next_generation: 0,
+        };
+        Ok(ContinuationLineageTransition {
+            binding: self,
+            prior: None,
+            next_generation: 0,
+            finished: false,
+        })
+    }
+
+    fn begin_lineage_transition(
+        &self,
+        generation: u64,
+        canonical: &str,
+    ) -> PyResult<ContinuationLineageTransition<'_>> {
+        let mut live = self
+            .live_lineage
+            .lock()
+            .map_err(|_| PyValueError::new_err("native continuation lineage lock failed"))?;
+        let prior = match &*live {
+            LiveContinuationLineageState::Ready(item)
+                if item.generation == generation && item.canonical.as_ref() == canonical =>
+            {
+                item.clone()
+            }
+            LiveContinuationLineageState::Transitioning { .. } => {
+                return Err(PyValueError::new_err(
+                    "native continuation lineage transition is already in progress",
+                ));
+            }
+            _ => {
+                return Err(PyValueError::new_err(
+                    "continuation state seal is superseded by the live native state",
+                ));
+            }
+        };
+        let next_generation = generation.checked_add(1).ok_or_else(|| {
+            PyValueError::new_err("native continuation lineage generation is exhausted")
+        })?;
+        *live = LiveContinuationLineageState::Transitioning {
+            prior: Some(prior.clone()),
+            next_generation,
+        };
+        Ok(ContinuationLineageTransition {
+            binding: self,
+            prior: Some(prior),
+            next_generation,
+            finished: false,
+        })
+    }
+
+    fn validates_live_lineage(&self, generation: u64, canonical: &str) -> bool {
+        let Ok(live) = self.live_lineage.lock() else {
+            return false;
+        };
+        match &*live {
+            LiveContinuationLineageState::Ready(item) => {
+                item.generation == generation && item.canonical.as_ref() == canonical
+            }
+            LiveContinuationLineageState::Transitioning {
+                prior,
+                next_generation,
+            } => {
+                prior.as_ref().is_some_and(|item| {
+                    item.generation == generation && item.canonical.as_ref() == canonical
+                }) || *next_generation == generation
+            }
+            LiveContinuationLineageState::Uninitialized => false,
+        }
+    }
+}
+
+impl ContinuationLineageTransition<'_> {
+    fn next_generation(&self) -> u64 {
+        self.next_generation
+    }
+
+    fn commit(mut self, canonical: Arc<str>) -> PyResult<()> {
+        let mut live = self
+            .binding
+            .live_lineage
+            .lock()
+            .map_err(|_| PyValueError::new_err("native continuation lineage lock failed"))?;
+        match &*live {
+            LiveContinuationLineageState::Transitioning {
+                next_generation, ..
+            } if *next_generation == self.next_generation => {}
+            _ => {
+                return Err(PyValueError::new_err(
+                    "native continuation lineage transition was lost",
+                ));
+            }
+        }
+        *live = LiveContinuationLineageState::Ready(LiveContinuationLineage {
+            generation: self.next_generation,
+            canonical,
+        });
+        self.finished = true;
+        Ok(())
+    }
+
+    fn restore(mut self) -> PyResult<()> {
+        self.restore_inner()?;
+        self.finished = true;
+        Ok(())
+    }
+
+    fn restore_inner(&self) -> PyResult<()> {
+        let mut live = self
+            .binding
+            .live_lineage
+            .lock()
+            .map_err(|_| PyValueError::new_err("native continuation lineage lock failed"))?;
+        match &*live {
+            LiveContinuationLineageState::Transitioning {
+                next_generation, ..
+            } if *next_generation == self.next_generation => {}
+            _ => {
+                return Err(PyValueError::new_err(
+                    "native continuation lineage transition was lost",
+                ));
+            }
+        }
+        *live = match &self.prior {
+            Some(prior) => LiveContinuationLineageState::Ready(prior.clone()),
+            None => LiveContinuationLineageState::Uninitialized,
+        };
+        Ok(())
+    }
+}
+
+impl Drop for ContinuationLineageTransition<'_> {
+    fn drop(&mut self) {
+        if !self.finished {
+            let _ = self.restore_inner();
+        }
+    }
+}
+
+struct PythonIdentityBinding {
+    name: String,
+    value: Py<PyAny>,
+    nested: Option<Box<PythonIntegrityNode>>,
+}
+
+struct PythonDictIntegrity {
+    object: Py<PyAny>,
+    entries: Vec<(String, Py<PyAny>)>,
+}
+
+struct PythonClosureCellIntegrity {
+    cell: Py<PyAny>,
+    contents: Py<PyAny>,
+    nested: Option<Box<PythonIntegrityNode>>,
+}
+
+struct PythonFunctionIntegrity {
+    function: Py<PyAny>,
+    code: Py<PyAny>,
+    globals: Py<PyDict>,
+    defaults: Py<PyAny>,
+    keyword_defaults: PythonDictIntegrity,
+    closure: Py<PyAny>,
+    closure_cells: Vec<PythonClosureCellIntegrity>,
+    dependencies: Vec<PythonIdentityBinding>,
+}
+
+struct PythonClassIntegrity {
+    class: Py<PyAny>,
+    entries: Vec<PythonIdentityBinding>,
+}
+
+struct PythonDescriptorIntegrity {
+    descriptor: Py<PyAny>,
+    functions: Vec<PythonIdentityBinding>,
+}
+
+enum PythonIntegrityNode {
+    Function(PythonFunctionIntegrity),
+    Class(PythonClassIntegrity),
+    Descriptor(PythonDescriptorIntegrity),
+}
+
+fn continuation_integrity_error() -> PyErr {
+    PyValueError::new_err("trusted continuation engine integrity check failed")
+}
+
+fn is_ibae_python_object(value: &Bound<'_, PyAny>) -> bool {
+    value
+        .getattr("__module__")
+        .and_then(|item| item.extract::<String>())
+        .is_ok_and(|module| module.starts_with("ibae."))
+}
+
+fn capture_dict_integrity(value: &Bound<'_, PyAny>) -> PyResult<PythonDictIntegrity> {
+    if value.is_none() {
+        return Ok(PythonDictIntegrity {
+            object: value.clone().unbind(),
+            entries: Vec::new(),
+        });
+    }
+    let mapping = value.downcast::<PyDict>().map_err(|_| {
+        PyValueError::new_err("continuation function keyword defaults must be a dictionary")
+    })?;
+    let mut entries = Vec::with_capacity(mapping.len());
+    for (key, item) in mapping.iter() {
+        entries.push((key.extract::<String>()?, item.unbind()));
+    }
+    entries.sort_by(|left, right| left.0.cmp(&right.0));
+    Ok(PythonDictIntegrity {
+        object: value.clone().unbind(),
+        entries,
+    })
+}
+
+fn capture_integrity_node(
+    py: Python<'_>,
+    value: &Bound<'_, PyAny>,
+    visited: &mut BTreeSet<usize>,
+) -> PyResult<Option<Box<PythonIntegrityNode>>> {
+    if !visited.insert(value.as_ptr() as usize) {
+        return Ok(None);
+    }
+    // Python function behavior is mutable through ``__code__`` regardless of
+    // which module owns the function.  Imported helpers therefore receive the
+    // same recursive validation as IBAE-local functions.
+    if value.hasattr("__code__")? && value.hasattr("__globals__")? {
+        return Ok(Some(Box::new(PythonIntegrityNode::Function(
+            PythonFunctionIntegrity::capture(py, value, visited)?,
+        ))));
+    }
+    let mut descriptor_functions = Vec::new();
+    for name in ["__func__", "fget", "fset", "fdel"] {
+        if !value.hasattr(name)? {
+            continue;
+        }
+        let function = value.getattr(name)?;
+        if function.is_none() {
+            continue;
+        }
+        let nested = capture_integrity_node(py, &function, visited)?;
+        descriptor_functions.push(PythonIdentityBinding {
+            name: name.to_owned(),
+            value: function.unbind(),
+            nested,
+        });
+    }
+    if !descriptor_functions.is_empty() {
+        return Ok(Some(Box::new(PythonIntegrityNode::Descriptor(
+            PythonDescriptorIntegrity {
+                descriptor: value.clone().unbind(),
+                functions: descriptor_functions,
+            },
+        ))));
+    }
+    if is_ibae_python_object(value) && value.downcast::<PyType>().is_ok() {
+        return Ok(Some(Box::new(PythonIntegrityNode::Class(
+            PythonClassIntegrity::capture(py, value, visited)?,
+        ))));
+    }
+    Ok(None)
+}
+
+impl PythonFunctionIntegrity {
+    fn root(py: Python<'_>, function: &Bound<'_, PyAny>) -> PyResult<Self> {
+        let mut visited = BTreeSet::new();
+        visited.insert(function.as_ptr() as usize);
+        Self::capture(py, function, &mut visited)
+    }
+
+    fn capture(
+        py: Python<'_>,
+        function: &Bound<'_, PyAny>,
+        visited: &mut BTreeSet<usize>,
+    ) -> PyResult<Self> {
+        let code = function.getattr("__code__")?;
+        let globals_value = function.getattr("__globals__")?;
+        let globals = globals_value.downcast::<PyDict>().map_err(|_| {
+            PyValueError::new_err("continuation function globals must be a dictionary")
+        })?;
+        let mut names: Vec<String> = code.getattr("co_names")?.extract()?;
+        names.sort();
+        names.dedup();
+        let mut dependencies = Vec::new();
+        for name in names {
+            let Some(value) = globals.get_item(name.as_str())? else {
+                continue;
+            };
+            let nested = capture_integrity_node(py, &value, visited)?;
+            dependencies.push(PythonIdentityBinding {
+                name,
+                value: value.unbind(),
+                nested,
+            });
+        }
+        let closure = function.getattr("__closure__")?;
+        let mut closure_cells = Vec::new();
+        if !closure.is_none() {
+            let cells = closure
+                .downcast::<PyTuple>()
+                .map_err(|_| continuation_integrity_error())?;
+            closure_cells.reserve(cells.len());
+            for cell in cells.iter() {
+                let contents = cell
+                    .getattr("cell_contents")
+                    .map_err(|_| continuation_integrity_error())?;
+                let nested = capture_integrity_node(py, &contents, visited)?;
+                closure_cells.push(PythonClosureCellIntegrity {
+                    cell: cell.unbind(),
+                    contents: contents.unbind(),
+                    nested,
+                });
+            }
+        }
+        Ok(Self {
+            function: function.clone().unbind(),
+            code: code.unbind(),
+            globals: globals.clone().unbind(),
+            defaults: function.getattr("__defaults__")?.unbind(),
+            keyword_defaults: capture_dict_integrity(&function.getattr("__kwdefaults__")?)?,
+            closure: closure.unbind(),
+            closure_cells,
+            dependencies,
+        })
+    }
+
+    fn validate(&self, py: Python<'_>) -> PyResult<()> {
+        let function = self.function.bind(py);
+        if !function.getattr("__code__")?.is(self.code.bind(py))
+            || !function.getattr("__globals__")?.is(self.globals.bind(py))
+            || !function.getattr("__defaults__")?.is(self.defaults.bind(py))
+            || !function.getattr("__closure__")?.is(self.closure.bind(py))
+        {
+            return Err(continuation_integrity_error());
+        }
+        self.keyword_defaults
+            .validate(py, &function.getattr("__kwdefaults__")?)?;
+        let closure = function.getattr("__closure__")?;
+        if closure.is_none() {
+            if !self.closure_cells.is_empty() {
+                return Err(continuation_integrity_error());
+            }
+        } else {
+            let cells = closure
+                .downcast::<PyTuple>()
+                .map_err(|_| continuation_integrity_error())?;
+            if cells.len() != self.closure_cells.len() {
+                return Err(continuation_integrity_error());
+            }
+            for (cell, expected) in cells.iter().zip(self.closure_cells.iter()) {
+                if !cell.is(expected.cell.bind(py)) {
+                    return Err(continuation_integrity_error());
+                }
+                let contents = cell
+                    .getattr("cell_contents")
+                    .map_err(|_| continuation_integrity_error())?;
+                if !contents.is(expected.contents.bind(py)) {
+                    return Err(continuation_integrity_error());
+                }
+                if let Some(nested) = &expected.nested {
+                    nested.validate(py)?;
+                }
+            }
+        }
+        let globals = self.globals.bind(py);
+        for dependency in &self.dependencies {
+            let current = globals
+                .get_item(dependency.name.as_str())?
+                .ok_or_else(continuation_integrity_error)?;
+            if !current.is(dependency.value.bind(py)) {
+                return Err(continuation_integrity_error());
+            }
+            if let Some(nested) = &dependency.nested {
+                nested.validate(py)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+impl PythonDictIntegrity {
+    fn validate(&self, py: Python<'_>, current: &Bound<'_, PyAny>) -> PyResult<()> {
+        if !current.is(self.object.bind(py)) {
+            return Err(continuation_integrity_error());
+        }
+        if current.is_none() {
+            return Ok(());
+        }
+        let mapping = current
+            .downcast::<PyDict>()
+            .map_err(|_| continuation_integrity_error())?;
+        if mapping.len() != self.entries.len() {
+            return Err(continuation_integrity_error());
+        }
+        for (name, value) in &self.entries {
+            let supplied = mapping
+                .get_item(name.as_str())?
+                .ok_or_else(continuation_integrity_error)?;
+            if !supplied.is(value.bind(py)) {
+                return Err(continuation_integrity_error());
+            }
+        }
+        Ok(())
+    }
+}
+
+impl PythonClassIntegrity {
+    fn capture(
+        py: Python<'_>,
+        class: &Bound<'_, PyAny>,
+        visited: &mut BTreeSet<usize>,
+    ) -> PyResult<Self> {
+        let class_dict = class.getattr("__dict__")?;
+        let items = class_dict.call_method0("items")?;
+        let mut entries = Vec::new();
+        for item in items.iter()? {
+            let item = item?;
+            let pair = item.downcast::<PyTuple>().map_err(|_| {
+                PyValueError::new_err("continuation class dictionary item is invalid")
+            })?;
+            let name: String = pair.get_item(0)?.extract()?;
+            let value = pair.get_item(1)?;
+            let nested = capture_integrity_node(py, &value, visited)?;
+            entries.push(PythonIdentityBinding {
+                name,
+                value: value.unbind(),
+                nested,
+            });
+        }
+        entries.sort_by(|left, right| left.name.cmp(&right.name));
+        Ok(Self {
+            class: class.clone().unbind(),
+            entries,
+        })
+    }
+
+    fn validate(&self, py: Python<'_>) -> PyResult<()> {
+        let class = self.class.bind(py);
+        let class_dict = class.getattr("__dict__")?;
+        if class_dict.len()? != self.entries.len() {
+            return Err(continuation_integrity_error());
+        }
+        for entry in &self.entries {
+            let current = class_dict
+                .call_method1("__getitem__", (entry.name.as_str(),))
+                .map_err(|_| continuation_integrity_error())?;
+            if !current.is(entry.value.bind(py)) {
+                return Err(continuation_integrity_error());
+            }
+            if let Some(nested) = &entry.nested {
+                nested.validate(py)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+impl PythonDescriptorIntegrity {
+    fn validate(&self, py: Python<'_>) -> PyResult<()> {
+        let descriptor = self.descriptor.bind(py);
+        for function in &self.functions {
+            let current = descriptor
+                .getattr(function.name.as_str())
+                .map_err(|_| continuation_integrity_error())?;
+            if !current.is(function.value.bind(py)) {
+                return Err(continuation_integrity_error());
+            }
+            if let Some(nested) = &function.nested {
+                nested.validate(py)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+impl PythonIntegrityNode {
+    fn validate(&self, py: Python<'_>) -> PyResult<()> {
+        match self {
+            Self::Function(value) => value.validate(py),
+            Self::Class(value) => value.validate(py),
+            Self::Descriptor(value) => value.validate(py),
+        }
+    }
+}
+
+impl ContinuationAuthorityBinding {
+    fn authorize_request(&self, canonical_request: &str) -> Result<String, &'static str> {
+        let value = parse_runtime_canonical(canonical_request)
+            .map_err(|_| "continuation request must be canonical JSON")?;
+        let mapping = value
+            .as_object()
+            .ok_or("continuation request must be an object")?;
+        if !object_has_exact_keys(
+            mapping,
+            &[
+                "continuation_policy_id",
+                "continuation_state_id",
+                "governance_id",
+                "lease_index",
+                "orchestration_state_id",
+                "progress_id",
+                "protocol_version",
+                "requested_resources",
+                "requester",
+                "runtime_session_id",
+                "runtime_state_id",
+                "strategy_change_id",
+                "task_id",
+            ],
+        ) {
+            return Err("continuation request does not match the v1 schema");
+        }
+        if mapping.get("protocol_version").and_then(Value::as_str)
+            != Some(CONTINUATION_PROTOCOL_VERSION)
+            || mapping.get("requester").and_then(Value::as_str) != Some("openai_supervisor")
+            || mapping.get("task_id").and_then(Value::as_str) != Some(self.task_id.as_str())
+            || mapping.get("governance_id").and_then(Value::as_str)
+                != Some(self.governance_id.as_str())
+            || mapping
+                .get("continuation_policy_id")
+                .and_then(Value::as_str)
+                != Some(self.continuation_policy_id.as_str())
+            || mapping.get("runtime_session_id").and_then(Value::as_str)
+                != Some(self.runtime_session_id.as_str())
+        {
+            return Err("continuation request is not bound to supervisor authority");
+        }
+        for name in [
+            "continuation_state_id",
+            "orchestration_state_id",
+            "progress_id",
+            "runtime_state_id",
+        ] {
+            if !mapping
+                .get(name)
+                .and_then(Value::as_str)
+                .is_some_and(is_fingerprint)
+            {
+                return Err("continuation request identity is invalid");
+            }
+        }
+        if !mapping
+            .get("lease_index")
+            .and_then(Value::as_u64)
+            .is_some_and(|item| item > 0)
+        {
+            return Err("continuation request lease index is invalid");
+        }
+        Ok(domain_fingerprint(
+            CONTINUATION_REQUEST_ID_DOMAIN,
+            canonical_request,
+        ))
+    }
+}
+
+/// Non-constructible supervisor capability returned separately from one new
+/// continuation runtime.  Possessing a runtime object or public principal
+/// label does not provide this capability.
+#[pyclass(
+    name = "NativeContinuationSupervisorAuthority",
+    module = "ibae._runtime",
+    unsendable
+)]
+struct NativeContinuationSupervisorAuthority {
+    binding: Arc<ContinuationAuthorityBinding>,
+}
+
+#[pymethods]
+impl NativeContinuationSupervisorAuthority {
+    fn authorize_request(
+        &self,
+        py: Python<'_>,
+        canonical_request: &str,
+    ) -> PyResult<Py<NativeContinuationRequestSeal>> {
+        let continuation_request_id = self
+            .binding
+            .authorize_request(canonical_request)
+            .map_err(PyValueError::new_err)?;
+        Py::new(
+            py,
+            NativeContinuationRequestSeal {
+                binding: Arc::clone(&self.binding),
+                canonical_request: Arc::from(canonical_request),
+                continuation_request_id,
+                evaluator: self.binding.evaluator.clone_ref(py),
+                observer: self.binding.observer.clone_ref(py),
+                committer: self.binding.committer.clone_ref(py),
+            },
+        )
+    }
+}
+
+/// Exact one-request supervisor authorization.  The captured evaluator and
+/// native authority remain in Rust-private fields and are not available via a
+/// Python closure or mutable module validator.
+#[pyclass(
+    name = "NativeContinuationRequestSeal",
+    module = "ibae._runtime",
+    unsendable
+)]
+struct NativeContinuationRequestSeal {
+    binding: Arc<ContinuationAuthorityBinding>,
+    canonical_request: Arc<str>,
+    continuation_request_id: String,
+    evaluator: Py<PyAny>,
+    observer: Py<PyAny>,
+    committer: Py<PyAny>,
+}
+
+#[pymethods]
+impl NativeContinuationRequestSeal {
+    fn validates(&self, canonical_request: &str) -> bool {
+        self.canonical_request.as_ref() == canonical_request
+    }
+
+    #[pyo3(signature = (
+        native_session,
+        state,
+        request,
+        runtime_session,
+        policy,
+        policy_receipt,
+        progress,
+        strategy_change=None,
+        cycle_evidence=None,
+        blocking_governance_violation_id=None,
+        benchmark_observation=None
+    ))]
+    #[allow(clippy::too_many_arguments)]
+    fn evaluate(
+        &self,
+        py: Python<'_>,
+        native_session: &Bound<'_, PyAny>,
+        state: &Bound<'_, PyAny>,
+        request: &Bound<'_, PyAny>,
+        runtime_session: &Bound<'_, PyAny>,
+        policy: &Bound<'_, PyAny>,
+        policy_receipt: &Bound<'_, PyAny>,
+        progress: &Bound<'_, PyAny>,
+        strategy_change: Option<&Bound<'_, PyAny>>,
+        cycle_evidence: Option<&Bound<'_, PyAny>>,
+        blocking_governance_violation_id: Option<&str>,
+        benchmark_observation: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<Py<PyAny>> {
+        // Benchmark data is deliberately outside correctness authority.  Do
+        // not call into it or expose it to the pinned governance evaluator.
+        let _ = benchmark_observation;
+        if !request
+            .get_type()
+            .is(self.binding.continuation_request_type.bind(py))
+        {
+            return Err(PyValueError::new_err(
+                "continuation request must have the exact trusted type",
+            ));
+        }
+        if !state
+            .get_type()
+            .is(self.binding.continuation_state_type.bind(py))
+        {
+            return Err(PyValueError::new_err(
+                "continuation state must have the exact trusted type",
+            ));
+        }
+        if !progress
+            .get_type()
+            .is(self.binding.progress_record_type.bind(py))
+        {
+            return Err(PyValueError::new_err(
+                "continuation progress must have the exact trusted type",
+            ));
+        }
+        self.binding.evaluator_integrity.validate(py)?;
+        request.call_method0("_validate_authority_fields")?;
+        progress.call_method0("_validate_authority_fields")?;
+        self.binding.evaluator_integrity.validate(py)?;
+        let canonical_request: String = request.call_method0("_canonical_text")?.extract()?;
+        self.binding.evaluator_integrity.validate(py)?;
+        if canonical_request != self.canonical_request.as_ref() {
+            return Err(PyValueError::new_err(
+                "continuation request seal does not match request",
+            ));
+        }
+        {
+            let native: PyRef<'_, NativeRuntimeSession> = native_session.extract()?;
+            if !native.matches_continuation_authority(&self.binding) {
+                return Err(PyValueError::new_err(
+                    "continuation request authority does not bind native session",
+                ));
+            }
+        }
+        let lineage = state.call_method0("_native_lineage_seal")?;
+        self.binding.evaluator_integrity.validate(py)?;
+        if lineage.is_none() {
+            return Err(PyValueError::new_err(
+                "continuation state lacks native lineage",
+            ));
+        }
+        let lineage: PyRef<'_, NativeContinuationStateSeal> = lineage.extract()?;
+        if !lineage.matches_continuation_authority(&self.binding) {
+            return Err(PyValueError::new_err(
+                "continuation state lineage does not bind native session",
+            ));
+        }
+        lineage.require_current_lineage(py, state)?;
+        self.binding.evaluator_integrity.validate(py)?;
+        let transition = self
+            .binding
+            .begin_lineage_transition(lineage.generation, lineage.canonical_lineage.as_ref())?;
+
+        let kwargs = PyDict::new_bound(py);
+        kwargs.set_item("runtime_session", runtime_session)?;
+        kwargs.set_item("policy", policy)?;
+        kwargs.set_item("policy_receipt", policy_receipt)?;
+        kwargs.set_item("progress", progress)?;
+        kwargs.set_item("_request_authorized", true)?;
+        if let Some(value) = strategy_change {
+            kwargs.set_item("strategy_change", value)?;
+        }
+        if let Some(value) = cycle_evidence {
+            kwargs.set_item("cycle_evidence", value)?;
+        }
+        if let Some(value) = blocking_governance_violation_id {
+            kwargs.set_item("blocking_governance_violation_id", value)?;
+        }
+        let raw = self
+            .evaluator
+            .bind(py)
+            .call((state, request), Some(&kwargs))?;
+        // Caller-controlled exact objects can still be mutated through
+        // object.__setattr__, and their field operations can execute Python.
+        // Validate the entire pinned graph before inspecting the evaluator's
+        // output or issuing a native grant seal.
+        self.binding.evaluator_integrity.validate(py)?;
+        let next_state = raw.getattr("next_state")?;
+        let receipt = raw.getattr("receipt")?;
+        let granted: bool = raw.getattr("granted")?.extract()?;
+
+        let sealed_receipt = if granted {
+            // Reconstruct the exact progress and optional strategy authorities
+            // after governance returns. Rust independently verifies the
+            // predicate that could authorize a grant before creating its
+            // process-local source seal.
+            let canonical_progress: String = progress.call_method0("_canonical_text")?.extract()?;
+            let canonical_strategy_change: Option<String> = match strategy_change {
+                Some(value) => Some(value.call_method0("_canonical_text")?.extract()?),
+                None => None,
+            };
+            self.binding.evaluator_integrity.validate(py)?;
+            let canonical_grant: String = receipt.call_method0("_canonical_text")?.extract()?;
+            self.binding.evaluator_integrity.validate(py)?;
+            let native_seal = {
+                let native: PyRef<'_, NativeRuntimeSession> = native_session.extract()?;
+                native.issue_evaluated_lease_grant(
+                    &canonical_grant,
+                    &canonical_progress,
+                    canonical_strategy_change.as_deref(),
+                    &self.binding,
+                    &self.continuation_request_id,
+                )?
+            };
+            let native_seal = Py::new(py, native_seal)?;
+            receipt.call_method1("_with_native_seal", (native_seal,))?
+        } else {
+            receipt
+        };
+
+        if !next_state
+            .get_type()
+            .is(self.binding.continuation_state_type.bind(py))
+        {
+            return Err(PyValueError::new_err(
+                "continuation evaluator returned an invalid state type",
+            ));
+        }
+        if next_state.is(state) {
+            let finalized = raw.call_method1("_finalize", (next_state, sealed_receipt))?;
+            transition.restore()?;
+            Ok(finalized.unbind())
+        } else {
+            let canonical_lineage: String = next_state
+                .call_method0("_decision_lineage_text")?
+                .extract()?;
+            self.binding.evaluator_integrity.validate(py)?;
+            let canonical_lineage: Arc<str> = Arc::from(canonical_lineage);
+            let lineage_seal = Py::new(
+                py,
+                NativeContinuationStateSeal {
+                    binding: Arc::clone(&self.binding),
+                    generation: transition.next_generation(),
+                    canonical_lineage: Arc::clone(&canonical_lineage),
+                    observer: self.observer.clone_ref(py),
+                    committer: self.committer.clone_ref(py),
+                },
+            )?;
+            let sealed_state = next_state.call_method1("_with_native_lineage", (lineage_seal,))?;
+            let finalized = raw.call_method1("_finalize", (sealed_state, sealed_receipt))?;
+            transition.commit(canonical_lineage)?;
+            Ok(finalized.unbind())
+        }
+    }
+}
+
+/// Non-constructible lineage for the complete authoritative continuation
+/// state. Validation and resealing are native and reachable only while Rust is
+/// finalizing one authorized evaluation, observation, or application commit.
+#[pyclass(
+    name = "NativeContinuationStateSeal",
+    module = "ibae._runtime",
+    unsendable
+)]
+struct NativeContinuationStateSeal {
+    binding: Arc<ContinuationAuthorityBinding>,
+    generation: u64,
+    canonical_lineage: Arc<str>,
+    observer: Py<PyAny>,
+    committer: Py<PyAny>,
+}
+
+#[pymethods]
+impl NativeContinuationStateSeal {
+    fn validates(&self, canonical_lineage: &str) -> bool {
+        self.canonical_lineage.as_ref() == canonical_lineage
+            && self
+                .binding
+                .validates_live_lineage(self.generation, canonical_lineage)
+    }
+
+    fn validate_checkpoint_snapshot(
+        &self,
+        py: Python<'_>,
+        native_session: &Bound<'_, PyAny>,
+        state: &Bound<'_, PyAny>,
+        runtime_snapshot: &Bound<'_, PyAny>,
+    ) -> PyResult<()> {
+        self.binding.observer_integrity.validate(py)?;
+        self.require_current_lineage(py, state)?;
+        self.binding.observer_integrity.validate(py)?;
+        {
+            let native: PyRef<'_, NativeRuntimeSession> = native_session.extract()?;
+            native.require_live_continuation_snapshot(py, runtime_snapshot, &self.binding)?;
+        }
+        self.binding.observer_integrity.validate(py)?;
+        Ok(())
+    }
+
+    #[pyo3(signature = (
+        native_session,
+        state,
+        policy,
+        orchestration_state,
+        runtime_snapshot,
+        progress=None,
+        strategy=None
+    ))]
+    #[allow(clippy::too_many_arguments)]
+    fn observe(
+        &self,
+        py: Python<'_>,
+        native_session: &Bound<'_, PyAny>,
+        state: &Bound<'_, PyAny>,
+        policy: &Bound<'_, PyAny>,
+        orchestration_state: &Bound<'_, PyAny>,
+        runtime_snapshot: &Bound<'_, PyAny>,
+        progress: Option<&Bound<'_, PyAny>>,
+        strategy: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<Py<PyAny>> {
+        self.binding.observer_integrity.validate(py)?;
+        self.require_current_lineage(py, state)?;
+        self.binding.observer_integrity.validate(py)?;
+        if !orchestration_state
+            .get_type()
+            .is(self.binding.orchestration_state_type.bind(py))
+        {
+            return Err(PyValueError::new_err(
+                "continuation orchestration state must have the exact trusted type",
+            ));
+        }
+        if let Some(value) = progress {
+            if !value
+                .get_type()
+                .is(self.binding.progress_record_type.bind(py))
+            {
+                return Err(PyValueError::new_err(
+                    "continuation progress must have the exact trusted type",
+                ));
+            }
+            value.call_method0("_validate_authority_fields")?;
+            value.call_method0("_validate_bound_claims")?;
+            self.binding.observer_integrity.validate(py)?;
+        }
+        if let Some(value) = strategy {
+            if !value
+                .get_type()
+                .is(self.binding.strategy_materialization_type.bind(py))
+            {
+                return Err(PyValueError::new_err(
+                    "continuation strategy must have the exact trusted type",
+                ));
+            }
+        }
+        {
+            let native: PyRef<'_, NativeRuntimeSession> = native_session.extract()?;
+            native.require_live_continuation_snapshot(py, runtime_snapshot, &self.binding)?;
+        }
+        self.binding.observer_integrity.validate(py)?;
+        let transition = self
+            .binding
+            .begin_lineage_transition(self.generation, self.canonical_lineage.as_ref())?;
+        let kwargs = PyDict::new_bound(py);
+        kwargs.set_item("policy", policy)?;
+        kwargs.set_item("orchestration_state", orchestration_state)?;
+        kwargs.set_item("runtime_snapshot", runtime_snapshot)?;
+        if let Some(value) = progress {
+            kwargs.set_item("progress", value)?;
+        }
+        if let Some(value) = strategy {
+            kwargs.set_item("strategy", value)?;
+        }
+        let observed = self.observer.bind(py).call((state,), Some(&kwargs))?;
+        self.binding.observer_integrity.validate(py)?;
+        if !observed
+            .get_type()
+            .is(self.binding.continuation_state_type.bind(py))
+        {
+            return Err(PyValueError::new_err(
+                "continuation observer returned an invalid state type",
+            ));
+        }
+        let canonical_lineage: String =
+            observed.call_method0("_decision_lineage_text")?.extract()?;
+        self.binding.observer_integrity.validate(py)?;
+        validate_context_observation_authority(self.canonical_lineage.as_ref(), &canonical_lineage)
+            .map_err(|_| {
+                PyValueError::new_err("continuation observer changed non-observation authority")
+            })?;
+        let canonical_lineage: Arc<str> = Arc::from(canonical_lineage);
+        let lineage_seal = Py::new(
+            py,
+            NativeContinuationStateSeal {
+                binding: Arc::clone(&self.binding),
+                generation: transition.next_generation(),
+                canonical_lineage: Arc::clone(&canonical_lineage),
+                observer: self.observer.clone_ref(py),
+                committer: self.committer.clone_ref(py),
+            },
+        )?;
+        let sealed = observed
+            .call_method1("_with_native_lineage", (lineage_seal,))?
+            .unbind();
+        self.binding.observer_integrity.validate(py)?;
+        transition.commit(canonical_lineage)?;
+        Ok(sealed)
+    }
+
+    #[pyo3(signature = (
+        native_session,
+        state,
+        policy,
+        grant,
+        application,
+        runtime_snapshot
+    ))]
+    #[allow(clippy::too_many_arguments)]
+    fn commit_lease_application(
+        &self,
+        py: Python<'_>,
+        native_session: &Bound<'_, PyAny>,
+        state: &Bound<'_, PyAny>,
+        policy: &Bound<'_, PyAny>,
+        grant: &Bound<'_, PyAny>,
+        application: &Bound<'_, PyAny>,
+        runtime_snapshot: &Bound<'_, PyAny>,
+    ) -> PyResult<Py<PyAny>> {
+        self.binding.committer_integrity.validate(py)?;
+        self.require_current_lineage(py, state)?;
+        self.binding.committer_integrity.validate(py)?;
+        {
+            let native: PyRef<'_, NativeRuntimeSession> = native_session.extract()?;
+            native.require_live_continuation_snapshot(py, runtime_snapshot, &self.binding)?;
+        }
+        self.binding.committer_integrity.validate(py)?;
+        let transition = self
+            .binding
+            .begin_lineage_transition(self.generation, self.canonical_lineage.as_ref())?;
+        let kwargs = PyDict::new_bound(py);
+        kwargs.set_item("policy", policy)?;
+        kwargs.set_item("grant", grant)?;
+        kwargs.set_item("application", application)?;
+        kwargs.set_item("runtime_snapshot", runtime_snapshot)?;
+        let committed = self.committer.bind(py).call((state,), Some(&kwargs))?;
+        if !committed
+            .get_type()
+            .is(self.binding.continuation_state_type.bind(py))
+        {
+            return Err(PyValueError::new_err(
+                "continuation committer returned an invalid state type",
+            ));
+        }
+        let canonical_lineage: String = committed
+            .call_method0("_decision_lineage_text")?
+            .extract()?;
+        self.binding.committer_integrity.validate(py)?;
+        let canonical_lineage: Arc<str> = Arc::from(canonical_lineage);
+        let lineage_seal = Py::new(
+            py,
+            NativeContinuationStateSeal {
+                binding: Arc::clone(&self.binding),
+                generation: transition.next_generation(),
+                canonical_lineage: Arc::clone(&canonical_lineage),
+                observer: self.observer.clone_ref(py),
+                committer: self.committer.clone_ref(py),
+            },
+        )?;
+        let sealed = committed
+            .call_method1("_with_native_lineage", (lineage_seal,))?
+            .unbind();
+        transition.commit(canonical_lineage)?;
+        Ok(sealed)
+    }
+}
+
+impl NativeContinuationStateSeal {
+    fn require_current_lineage(&self, py: Python<'_>, state: &Bound<'_, PyAny>) -> PyResult<()> {
+        if !state
+            .get_type()
+            .is(self.binding.continuation_state_type.bind(py))
+        {
+            return Err(PyValueError::new_err(
+                "continuation state must have the exact trusted type",
+            ));
+        }
+        let current_lineage: String = state.call_method0("_decision_lineage_text")?.extract()?;
+        if current_lineage != self.canonical_lineage.as_ref() {
+            return Err(PyValueError::new_err(
+                "continuation state does not match native lineage",
+            ));
+        }
+        if !self
+            .binding
+            .validates_live_lineage(self.generation, current_lineage.as_str())
+        {
+            return Err(PyValueError::new_err(
+                "continuation state seal is superseded by the live native state",
+            ));
+        }
+        Ok(())
+    }
+
+    fn matches_continuation_authority(&self, supplied: &Arc<ContinuationAuthorityBinding>) -> bool {
+        Arc::ptr_eq(&self.binding, supplied)
+    }
+}
+
+struct ApplyLease {
+    grant: LeaseGrant,
+}
+
 enum Command {
     ExecuteRead(ExecuteRead),
     RecordRetry(RecordRetry),
+    ApplyLease(Box<ApplyLease>),
 }
 
 fn parse_command_value(value: &Value) -> Result<Command, Reason> {
@@ -578,6 +2518,17 @@ fn parse_command_value(value: &Value) -> Result<Command, Reason> {
                 .to_owned();
             Ok(Command::RecordRetry(RecordRetry { admission_id }))
         }
+        "apply_lease" => {
+            if !object_has_exact_keys(
+                mapping,
+                &["command_type", "grant_receipt", "protocol_version"],
+            ) {
+                return Err(Reason::InvalidCommand);
+            }
+            let grant =
+                LeaseGrant::parse(mapping.get("grant_receipt").ok_or(Reason::InvalidCommand)?)?;
+            Ok(Command::ApplyLease(Box::new(ApplyLease { grant })))
+        }
         _ => Err(Reason::UnsupportedCommand),
     }
 }
@@ -632,18 +2583,53 @@ struct RuntimeCore {
     counters: Counters,
     cache: BTreeMap<String, CachedObservation>,
     history: VecDeque<String>,
+    continuation: Option<ContinuationRuntimeState>,
 }
 
 impl RuntimeCore {
     fn new(session_key: &str, limits: Limits) -> Result<Self, &'static str> {
+        Self::new_internal(session_key, limits, None)
+    }
+
+    fn new_with_continuation(
+        session_key: &str,
+        limits: Limits,
+        context: ContinuationContext,
+    ) -> Result<Self, &'static str> {
+        Self::new_internal(session_key, limits, Some(context))
+    }
+
+    fn new_internal(
+        session_key: &str,
+        limits: Limits,
+        context: Option<ContinuationContext>,
+    ) -> Result<Self, &'static str> {
         if session_key.is_empty() || session_key.len() > MAX_RECORD_TEXT_BYTES {
             return Err("session_key must be non-empty and bounded");
         }
-        let session_record = json!({
+        let mut session_record = json!({
             "limits": limits.value(),
             "protocol_version": PROTOCOL_VERSION,
             "session_key": session_key,
         });
+        if let Some(active) = &context {
+            let record = session_record
+                .as_object_mut()
+                .expect("session record is an object");
+            record.insert(
+                "continuation_policy_id".to_owned(),
+                Value::String(active.policy.policy_id.clone()),
+            );
+            record.insert(
+                "continuation_policy_receipt_id".to_owned(),
+                Value::String(active.policy_receipt_id.clone()),
+            );
+            record.insert(
+                "governance_id".to_owned(),
+                Value::String(active.governance_id.clone()),
+            );
+            record.insert("task_id".to_owned(), Value::String(active.task_id.clone()));
+        }
         let canonical = canonical_value(&session_record)
             .expect("the internally constructed session record is canonicalizable");
         Ok(Self {
@@ -652,6 +2638,11 @@ impl RuntimeCore {
             counters: Counters::zero(),
             cache: BTreeMap::new(),
             history: VecDeque::new(),
+            continuation: context.map(|active| ContinuationRuntimeState {
+                context: active,
+                cumulative_granted: LeaseResources::default(),
+                applied_grant_ids: Vec::new(),
+            }),
         })
     }
 
@@ -666,7 +2657,7 @@ impl RuntimeCore {
                 })
             })
             .collect();
-        json!({
+        let mut record = json!({
             "cache": cache_entries,
             "counters": self.counters.value(),
             "history": self.history.iter().cloned().collect::<Vec<_>>(),
@@ -674,7 +2665,14 @@ impl RuntimeCore {
             "logical_tick": self.counters.logical_tick,
             "protocol_version": PROTOCOL_VERSION,
             "session_id": self.session_id,
-        })
+        });
+        if let Some(continuation) = &self.continuation {
+            record
+                .as_object_mut()
+                .expect("state record is an object")
+                .insert("continuation".to_owned(), continuation.value());
+        }
+        record
     }
 
     fn state_id(&self) -> Result<String, CanonicalError> {
@@ -982,12 +2980,232 @@ impl RuntimeCore {
         )
     }
 
-    fn dispatch<F>(&mut self, command_json: &str, invoke: F) -> Result<String, CanonicalError>
+    fn validate_lease_application(
+        &self,
+        grant: &LeaseGrant,
+        prior_state_id: &str,
+    ) -> Result<(LeaseResources, Limits, u64), LeaseApplyReason> {
+        let continuation = self
+            .continuation
+            .as_ref()
+            .ok_or(LeaseApplyReason::ContinuationDisabled)?;
+        let context = &continuation.context;
+        if !grant.identity_valid {
+            return Err(LeaseApplyReason::GrantIdentityMismatch);
+        }
+        if grant.task_id != context.task_id
+            || grant.governance_id != context.governance_id
+            || grant.governance_receipt_id != context.governance_receipt_id
+        {
+            return Err(LeaseApplyReason::StaleGovernance);
+        }
+        if grant.continuation_policy_id != context.policy.policy_id
+            || grant.continuation_policy_receipt_id != context.policy_receipt_id
+            || grant.total_ceiling != context.policy.total_ceiling
+        {
+            return Err(LeaseApplyReason::PolicyMismatch);
+        }
+        if grant.runtime_session_id != self.session_id
+            || grant.prior_runtime_state_id != prior_state_id
+        {
+            return Err(LeaseApplyReason::StaleRuntimeState);
+        }
+        let expected_index = u64::try_from(continuation.applied_grant_ids.len())
+            .map_err(|_| LeaseApplyReason::ArithmeticOverflow)?
+            .checked_add(1)
+            .ok_or(LeaseApplyReason::ArithmeticOverflow)?;
+        if grant.lease_index != expected_index
+            || continuation
+                .applied_grant_ids
+                .contains(&grant.lease_grant_id)
+        {
+            return Err(LeaseApplyReason::LeaseIndexMismatch);
+        }
+        if grant.granted_resources.is_zero() {
+            return Err(LeaseApplyReason::LeaseScheduleExceeded);
+        }
+        if grant.granted_resources.mutations != 0 {
+            return Err(LeaseApplyReason::UnsupportedResource);
+        }
+        let schedule_index = usize::try_from(grant.lease_index - 1)
+            .map_err(|_| LeaseApplyReason::LeaseIndexMismatch)?;
+        let scheduled = context
+            .policy
+            .schedule
+            .get(schedule_index)
+            .ok_or(LeaseApplyReason::LeaseIndexMismatch)?;
+        if !grant.granted_resources.is_within(*scheduled) {
+            return Err(LeaseApplyReason::LeaseScheduleExceeded);
+        }
+        let expected_prior_limits = context
+            .policy
+            .initial
+            .checked_add(continuation.cumulative_granted)?;
+        if self.limits.requests != expected_prior_limits.requests
+            || self.limits.executions != expected_prior_limits.executions
+            || self.limits.retries != expected_prior_limits.retries
+            || self.limits.history != expected_prior_limits.history
+        {
+            return Err(LeaseApplyReason::PolicyMismatch);
+        }
+        let cumulative = continuation
+            .cumulative_granted
+            .checked_add(grant.granted_resources)?;
+        if cumulative != grant.cumulative_granted {
+            return Err(LeaseApplyReason::LeaseCeilingExceeded);
+        }
+        let resulting_resources = context.policy.initial.checked_add(cumulative)?;
+        if !resulting_resources.is_within(context.policy.total_ceiling) {
+            return Err(LeaseApplyReason::LeaseCeilingExceeded);
+        }
+        let resulting_limits = Limits {
+            requests: resulting_resources.requests,
+            executions: resulting_resources.executions,
+            retries: resulting_resources.retries,
+            history: resulting_resources.history,
+        }
+        .validate()
+        .map_err(|_| LeaseApplyReason::LeaseCeilingExceeded)?;
+        let logical_tick = self
+            .counters
+            .logical_tick
+            .checked_add(1)
+            .ok_or(LeaseApplyReason::ArithmeticOverflow)?;
+        Ok((cumulative, resulting_limits, logical_tick))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn lease_application_outcome(
+        &self,
+        command_id: &str,
+        grant: &LeaseGrant,
+        prior_state_id: &str,
+        before_tick: u64,
+        accepted_delta: LeaseResources,
+        rejection: Option<LeaseApplyReason>,
+    ) -> Result<String, CanonicalError> {
+        let resulting_state_id = self.state_id()?;
+        let (cumulative, total_ceiling) = self
+            .continuation
+            .as_ref()
+            .map(|active| {
+                (
+                    active.cumulative_granted,
+                    active.context.policy.total_ceiling,
+                )
+            })
+            .unwrap_or((LeaseResources::default(), grant.total_ceiling));
+        let receipt_without_application_id = json!({
+            "authority_layer": "execution",
+            "command_id": command_id,
+            "command_type": "apply_lease",
+            "continuation_policy_id": grant.continuation_policy_id,
+            "continuation_policy_receipt_id": grant.continuation_policy_receipt_id,
+            "cumulative_granted": cumulative.value(),
+            "governance_id": grant.governance_id,
+            "grant_receipt_id": grant.receipt_id,
+            "invariant_ids": rejection.map_or(&[][..], LeaseApplyReason::invariant_ids),
+            "lease_grant_id": grant.lease_grant_id,
+            "lease_index": grant.lease_index,
+            "limit_delta": accepted_delta.value(),
+            "logical_tick": self.counters.logical_tick,
+            "logical_tick_delta": self.counters.logical_tick - before_tick,
+            "prior_state_id": prior_state_id,
+            "protocol_version": LEASE_APPLICATION_RECEIPT_VERSION,
+            "reason_code": rejection.map(LeaseApplyReason::code),
+            "resulting_limits": self.limits.value(),
+            "resulting_state_id": resulting_state_id,
+            "runtime_budget_delta": LeaseResources::default().value(),
+            "session_id": self.session_id,
+            "status": if rejection.is_none() { "accepted" } else { "rejected" },
+            "task_id": grant.task_id,
+            "total_ceiling": total_ceiling.value(),
+        });
+        let application_canonical = canonical_runtime_value(&receipt_without_application_id)?;
+        let application_id =
+            domain_fingerprint(LEASE_APPLICATION_ID_DOMAIN, &application_canonical);
+        let mut receipt_without_id = receipt_without_application_id;
+        receipt_without_id
+            .as_object_mut()
+            .expect("lease receipt is an object")
+            .insert(
+                "lease_application_id".to_owned(),
+                Value::String(application_id),
+            );
+        let receipt_canonical = canonical_runtime_value(&receipt_without_id)?;
+        let receipt_id =
+            domain_fingerprint(LEASE_APPLICATION_RECEIPT_ID_DOMAIN, &receipt_canonical);
+        let mut receipt = receipt_without_id;
+        receipt
+            .as_object_mut()
+            .expect("lease receipt is an object")
+            .insert("receipt_id".to_owned(), Value::String(receipt_id));
+        canonical_runtime_value(&json!({"observation": null, "receipt": receipt}))
+    }
+
+    fn apply_lease(
+        &mut self,
+        command_id: &str,
+        grant: &LeaseGrant,
+        prior_state_id: &str,
+        grant_seal: Option<&NativeLeaseGrantSeal>,
+    ) -> Result<String, CanonicalError> {
+        let before_tick = self.counters.logical_tick;
+        match self.validate_lease_application(grant, prior_state_id) {
+            Ok((cumulative, resulting_limits, logical_tick)) => {
+                if !grant_seal.is_some_and(|seal| {
+                    seal.matches(grant, prior_state_id, self.session_id.as_str())
+                }) {
+                    return self.lease_application_outcome(
+                        command_id,
+                        grant,
+                        prior_state_id,
+                        before_tick,
+                        LeaseResources::default(),
+                        Some(LeaseApplyReason::UnissuedGrant),
+                    );
+                }
+                self.limits = resulting_limits;
+                self.counters.logical_tick = logical_tick;
+                let continuation = self
+                    .continuation
+                    .as_mut()
+                    .expect("validated continuation context exists");
+                continuation.cumulative_granted = cumulative;
+                continuation
+                    .applied_grant_ids
+                    .push(grant.lease_grant_id.clone());
+                self.lease_application_outcome(
+                    command_id,
+                    grant,
+                    prior_state_id,
+                    before_tick,
+                    grant.granted_resources,
+                    None,
+                )
+            }
+            Err(reason) => self.lease_application_outcome(
+                command_id,
+                grant,
+                prior_state_id,
+                before_tick,
+                LeaseResources::default(),
+                Some(reason),
+            ),
+        }
+    }
+
+    fn dispatch<F>(
+        &mut self,
+        command_json: &str,
+        grant_seal: Option<&NativeLeaseGrantSeal>,
+        invoke: F,
+    ) -> Result<String, CanonicalError>
     where
         F: FnOnce() -> Invocation,
     {
         let mut candidate = self.clone();
-        let outcome = candidate.dispatch_in_place(command_json, invoke)?;
+        let outcome = candidate.dispatch_in_place(command_json, grant_seal, invoke)?;
         *self = candidate;
         Ok(outcome)
     }
@@ -995,6 +3213,7 @@ impl RuntimeCore {
     fn dispatch_in_place<F>(
         &mut self,
         command_json: &str,
+        grant_seal: Option<&NativeLeaseGrantSeal>,
         invoke: F,
     ) -> Result<String, CanonicalError>
     where
@@ -1012,6 +3231,9 @@ impl RuntimeCore {
         let command_id = self.command_id(&command_value, &prior_state_id)?;
 
         match command {
+            Command::ApplyLease(command) => {
+                self.apply_lease(&command_id, &command.grant, &prior_state_id, grant_seal)
+            }
             Command::RecordRetry(command) => {
                 let rejection = self.increment_retry().err();
                 self.outcome(
@@ -2988,6 +5210,9 @@ impl NativeEvidenceAccumulator {
 #[pyclass(name = "NativeRuntimeSession", module = "ibae._runtime", unsendable)]
 struct NativeRuntimeSession {
     core: RuntimeCore,
+    continuation_authority: Option<Arc<ContinuationAuthorityBinding>>,
+    supervisor_authority_issued: bool,
+    initial_state_authority_issued: bool,
 }
 
 #[pymethods]
@@ -2998,14 +5223,17 @@ impl NativeRuntimeSession {
         max_requests=None,
         max_executions=None,
         max_retries=None,
-        max_history=None
+        max_history=None,
+        continuation_context=None
     ))]
     fn new(
+        py: Python<'_>,
         session_key: &str,
         max_requests: Option<&Bound<'_, PyAny>>,
         max_executions: Option<&Bound<'_, PyAny>>,
         max_retries: Option<&Bound<'_, PyAny>>,
         max_history: Option<&Bound<'_, PyAny>>,
+        continuation_context: Option<&str>,
     ) -> PyResult<Self> {
         let limits = Limits {
             requests: exact_u64(max_requests, 32, "max_requests")?,
@@ -3015,20 +5243,381 @@ impl NativeRuntimeSession {
         }
         .validate()
         .map_err(PyValueError::new_err)?;
-        let core = RuntimeCore::new(session_key, limits).map_err(PyValueError::new_err)?;
-        Ok(Self { core })
+        let core = match continuation_context {
+            None => RuntimeCore::new(session_key, limits),
+            Some(canonical) => {
+                let context =
+                    ContinuationContext::parse(canonical, limits).map_err(PyValueError::new_err)?;
+                RuntimeCore::new_with_continuation(session_key, limits, context)
+            }
+        }
+        .map_err(PyValueError::new_err)?;
+        let continuation_authority = match core.continuation.as_ref() {
+            None => None,
+            Some(active) => {
+                let engine = CONTINUATION_ENGINE.get(py).ok_or_else(|| {
+                    PyValueError::new_err("trusted continuation engine is not initialized")
+                })?;
+                engine.evaluator_integrity.validate(py)?;
+                engine.observer_integrity.validate(py)?;
+                engine.committer_integrity.validate(py)?;
+                Some(Arc::new(ContinuationAuthorityBinding {
+                    task_id: active.context.task_id.clone(),
+                    governance_id: active.context.governance_id.clone(),
+                    governance_receipt_id: active.context.governance_receipt_id.clone(),
+                    continuation_policy_id: active.context.policy.policy_id.clone(),
+                    continuation_policy_receipt_id: active.context.policy_receipt_id.clone(),
+                    progress_contract_id: active.context.policy.progress_contract_id.clone(),
+                    runtime_session_id: core.session_id.clone(),
+                    continuation_state_type: engine.continuation_state_type.clone_ref(py),
+                    continuation_request_type: engine.continuation_request_type.clone_ref(py),
+                    runtime_snapshot_type: engine.runtime_snapshot_type.clone_ref(py),
+                    orchestration_state_type: engine.orchestration_state_type.clone_ref(py),
+                    progress_record_type: engine.progress_record_type.clone_ref(py),
+                    strategy_materialization_type: engine
+                        .strategy_materialization_type
+                        .clone_ref(py),
+                    evaluator: engine.evaluator.clone_ref(py),
+                    observer: engine.observer.clone_ref(py),
+                    committer: engine.committer.clone_ref(py),
+                    evaluator_integrity: Arc::clone(&engine.evaluator_integrity),
+                    observer_integrity: Arc::clone(&engine.observer_integrity),
+                    committer_integrity: Arc::clone(&engine.committer_integrity),
+                    live_lineage: Mutex::new(LiveContinuationLineageState::Uninitialized),
+                }))
+            }
+        };
+        Ok(Self {
+            core,
+            continuation_authority,
+            supervisor_authority_issued: false,
+            initial_state_authority_issued: false,
+        })
     }
 
-    #[pyo3(signature = (command_json, operation=None))]
+    #[pyo3(signature = (state, orchestration_state, progress=None, strategy=None))]
+    fn seal_initial_continuation_state(
+        &mut self,
+        py: Python<'_>,
+        state: &Bound<'_, PyAny>,
+        orchestration_state: &Bound<'_, PyAny>,
+        progress: Option<&Bound<'_, PyAny>>,
+        strategy: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<Py<PyAny>> {
+        let binding = self
+            .continuation_authority
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| PyValueError::new_err("native runtime has no continuation authority"))?;
+        if self.initial_state_authority_issued {
+            return Err(PyValueError::new_err(
+                "initial continuation state authority was already issued",
+            ));
+        }
+        if !state
+            .get_type()
+            .is(binding.continuation_state_type.bind(py))
+        {
+            return Err(PyValueError::new_err(
+                "initial continuation state must have the exact trusted type",
+            ));
+        }
+        if !orchestration_state
+            .get_type()
+            .is(binding.orchestration_state_type.bind(py))
+        {
+            return Err(PyValueError::new_err(
+                "initial orchestration state must have the exact trusted type",
+            ));
+        }
+        if let Some(value) = progress {
+            if !value.get_type().is(binding.progress_record_type.bind(py)) {
+                return Err(PyValueError::new_err(
+                    "initial progress must have the exact trusted type",
+                ));
+            }
+        }
+        if let Some(value) = strategy {
+            if !value
+                .get_type()
+                .is(binding.strategy_materialization_type.bind(py))
+            {
+                return Err(PyValueError::new_err(
+                    "initial strategy must have the exact trusted type",
+                ));
+            }
+        }
+        binding.evaluator_integrity.validate(py)?;
+        binding.observer_integrity.validate(py)?;
+        binding.committer_integrity.validate(py)?;
+        if let Some(value) = progress {
+            value.call_method0("_validate_bound_claims")?;
+            binding.evaluator_integrity.validate(py)?;
+            binding.observer_integrity.validate(py)?;
+            binding.committer_integrity.validate(py)?;
+        }
+        let live_runtime_state_id = self.core.state_id().map_err(|_| {
+            PyValueError::new_err("native runtime state cannot seal continuation lineage")
+        })?;
+        for (name, expected) in [
+            ("task_id", binding.task_id.as_str()),
+            ("governance_id", binding.governance_id.as_str()),
+            (
+                "governance_receipt_id",
+                binding.governance_receipt_id.as_str(),
+            ),
+            (
+                "continuation_policy_id",
+                binding.continuation_policy_id.as_str(),
+            ),
+            (
+                "continuation_policy_receipt_id",
+                binding.continuation_policy_receipt_id.as_str(),
+            ),
+            (
+                "progress_contract_id",
+                binding.progress_contract_id.as_str(),
+            ),
+            ("runtime_session_id", binding.runtime_session_id.as_str()),
+            ("runtime_state_id", live_runtime_state_id.as_str()),
+        ] {
+            let supplied: String = state.getattr(name)?.extract()?;
+            if supplied != expected {
+                return Err(PyValueError::new_err(
+                    "initial continuation state does not bind native authority",
+                ));
+            }
+        }
+        let orchestration_state_id: String = orchestration_state.getattr("state_id")?.extract()?;
+        let bound_orchestration_state_id: String =
+            state.getattr("orchestration_state_id")?.extract()?;
+        if orchestration_state_id != bound_orchestration_state_id {
+            return Err(PyValueError::new_err(
+                "initial continuation state does not bind orchestration state",
+            ));
+        }
+        for name in [
+            "lease_requests",
+            "leases_granted",
+            "leases_denied",
+            "continuation_logical_tick",
+            "strategy_recoveries",
+        ] {
+            if state.getattr(name)?.extract::<u64>()? != 0 {
+                return Err(PyValueError::new_err(
+                    "initial continuation decision ledger must be empty",
+                ));
+            }
+        }
+        if state.getattr("decision_receipt_ids")?.len()? != 0 {
+            return Err(PyValueError::new_err(
+                "initial continuation decision ledger must be empty",
+            ));
+        }
+        let seed_payload = canonical_value(&json!({
+            "continuation_policy_id": binding.continuation_policy_id,
+            "governance_id": binding.governance_id,
+            "item_type": "seed",
+            "task_id": binding.task_id,
+        }))
+        .expect("the initial continuation decision aggregate is canonicalizable");
+        let expected_decision_aggregate =
+            domain_fingerprint(CONTINUATION_DECISION_AGGREGATE_DOMAIN, &seed_payload);
+        if state
+            .getattr("decision_aggregate_id")?
+            .extract::<String>()?
+            != expected_decision_aggregate
+        {
+            return Err(PyValueError::new_err(
+                "initial continuation decision aggregate is invalid",
+            ));
+        }
+        if state.getattr("last_decision")?.extract::<String>()? != "none"
+            || !state.getattr("last_denial_reason")?.is_none()
+            || !state.getattr("last_consumed_progress_id")?.is_none()
+            || !state
+                .getattr("last_consumed_external_progress_endpoint_id")?
+                .is_none()
+            || !state.getattr("pending_grant_id")?.is_none()
+            || !state.getattr("pending_grant_receipt_id")?.is_none()
+            || !state
+                .getattr("cumulative_granted")?
+                .getattr("is_zero")?
+                .extract::<bool>()?
+        {
+            return Err(PyValueError::new_err(
+                "initial continuation decision semantics are not empty",
+            ));
+        }
+        let state_strategy = state.getattr("current_strategy_material_id")?;
+        match strategy {
+            None if !state_strategy.is_none() => {
+                return Err(PyValueError::new_err(
+                    "initial continuation strategy lineage is invalid",
+                ));
+            }
+            Some(value) => {
+                let expected: String = value.getattr("strategy_material_id")?.extract()?;
+                if state_strategy.extract::<String>()? != expected {
+                    return Err(PyValueError::new_err(
+                        "initial continuation strategy lineage is invalid",
+                    ));
+                }
+            }
+            None => {}
+        }
+        let state_progress = state.getattr("last_progress_id")?;
+        let progress_seed = initial_continuation_progress_aggregate();
+        let supplied_progress_count: u64 = state.getattr("progress_event_count")?.extract()?;
+        let supplied_progress_aggregate: String =
+            state.getattr("progress_aggregate_id")?.extract()?;
+        match progress {
+            None => {
+                if !state_progress.is_none()
+                    || supplied_progress_count != 0
+                    || supplied_progress_aggregate != progress_seed
+                    || !state.getattr("last_progress_classification")?.is_none()
+                    || !state
+                        .getattr("last_external_progress_endpoint_id")?
+                        .is_none()
+                    || state
+                        .getattr("progress_state")?
+                        .getattr("value")?
+                        .extract::<String>()?
+                        != "stalled"
+                {
+                    return Err(PyValueError::new_err(
+                        "initial continuation progress lineage is invalid",
+                    ));
+                }
+            }
+            Some(value) => {
+                let expected_task_id: String = value.getattr("task_id")?.extract()?;
+                let expected_governance_id: String = value.getattr("governance_id")?.extract()?;
+                let expected_contract_id: String = value
+                    .getattr("contract")?
+                    .getattr("contract_id")?
+                    .extract()?;
+                let expected_orchestration_state_id: String =
+                    value.getattr("current_orchestration_state_id")?.extract()?;
+                if expected_task_id != binding.task_id
+                    || expected_governance_id != binding.governance_id
+                    || expected_contract_id != binding.progress_contract_id
+                    || expected_orchestration_state_id != orchestration_state_id
+                {
+                    return Err(PyValueError::new_err(
+                        "initial progress does not bind native authority",
+                    ));
+                }
+                let expected_progress_id: String = value.getattr("progress_id")?.extract()?;
+                let expected_progress_aggregate = advance_continuation_progress_aggregate(
+                    &progress_seed,
+                    &expected_progress_id,
+                    0,
+                );
+                let expected_classification: String = value
+                    .getattr("classification")?
+                    .getattr("value")?
+                    .extract()?;
+                let expected_external = value.getattr("current_external_endpoint_id")?;
+                let supplied_external = state.getattr("last_external_progress_endpoint_id")?;
+                let task_complete: bool = value.getattr("task_complete")?.extract()?;
+                let expected_progress_state = if task_complete {
+                    "complete"
+                } else if expected_classification == "measurable_progress" {
+                    "progressing"
+                } else {
+                    "stalled"
+                };
+                if state_progress.extract::<String>()? != expected_progress_id
+                    || supplied_progress_count != 1
+                    || supplied_progress_aggregate != expected_progress_aggregate
+                    || state
+                        .getattr("last_progress_classification")?
+                        .getattr("value")?
+                        .extract::<String>()?
+                        != expected_classification
+                    || !supplied_external.eq(&expected_external)?
+                    || state
+                        .getattr("progress_state")?
+                        .getattr("value")?
+                        .extract::<String>()?
+                        != expected_progress_state
+                {
+                    return Err(PyValueError::new_err(
+                        "initial continuation progress lineage is invalid",
+                    ));
+                }
+            }
+        }
+        let canonical_lineage: String = state.call_method0("_decision_lineage_text")?.extract()?;
+        binding.evaluator_integrity.validate(py)?;
+        binding.observer_integrity.validate(py)?;
+        binding.committer_integrity.validate(py)?;
+        let canonical_lineage: Arc<str> = Arc::from(canonical_lineage);
+        let transition = binding.begin_initial_lineage()?;
+        let lineage_seal = Py::new(
+            py,
+            NativeContinuationStateSeal {
+                binding: Arc::clone(&binding),
+                generation: transition.next_generation(),
+                canonical_lineage: Arc::clone(&canonical_lineage),
+                observer: self
+                    .continuation_authority
+                    .as_ref()
+                    .expect("validated continuation authority")
+                    .observer
+                    .clone_ref(py),
+                committer: self
+                    .continuation_authority
+                    .as_ref()
+                    .expect("validated continuation authority")
+                    .committer
+                    .clone_ref(py),
+            },
+        )?;
+        let sealed = state.call_method1("_with_native_lineage", (lineage_seal,))?;
+        transition.commit(canonical_lineage)?;
+        self.initial_state_authority_issued = true;
+        Ok(sealed.unbind())
+    }
+
+    fn take_continuation_request_authority(
+        &mut self,
+        py: Python<'_>,
+    ) -> PyResult<Py<NativeContinuationSupervisorAuthority>> {
+        let binding = self
+            .continuation_authority
+            .as_ref()
+            .ok_or_else(|| PyValueError::new_err("native runtime has no continuation authority"))?;
+        if self.supervisor_authority_issued {
+            return Err(PyValueError::new_err(
+                "continuation supervisor authority was already issued",
+            ));
+        }
+        self.supervisor_authority_issued = true;
+        Py::new(
+            py,
+            NativeContinuationSupervisorAuthority {
+                binding: Arc::clone(binding),
+            },
+        )
+    }
+
+    #[pyo3(signature = (command_json, operation=None, lease_grant_seal=None))]
     fn dispatch(
         &mut self,
         py: Python<'_>,
         command_json: &str,
         operation: Option<Py<PyAny>>,
+        lease_grant_seal: Option<PyRef<'_, NativeLeaseGrantSeal>>,
     ) -> PyResult<(String, Option<Py<NativeRuntimeReceiptSeal>>)> {
+        let trusted_lease_grant_seal = lease_grant_seal
+            .as_deref()
+            .filter(|seal| self.matches_lease_grant_authority(seal));
         let outcome = self
             .core
-            .dispatch(command_json, || {
+            .dispatch(command_json, trusted_lease_grant_seal, || {
                 let Some(callback) = operation else {
                     return Invocation::OperationFailed;
                 };
@@ -3063,6 +5652,140 @@ impl NativeRuntimeSession {
     }
 }
 
+impl NativeRuntimeSession {
+    fn matches_continuation_authority(&self, supplied: &Arc<ContinuationAuthorityBinding>) -> bool {
+        self.continuation_authority
+            .as_ref()
+            .is_some_and(|active| Arc::ptr_eq(active, supplied))
+    }
+
+    fn require_live_continuation_snapshot(
+        &self,
+        py: Python<'_>,
+        runtime_snapshot: &Bound<'_, PyAny>,
+        supplied_authority: &Arc<ContinuationAuthorityBinding>,
+    ) -> PyResult<()> {
+        if !self.matches_continuation_authority(supplied_authority) {
+            return Err(PyValueError::new_err(
+                "continuation state authority does not bind native session",
+            ));
+        }
+        if !runtime_snapshot
+            .get_type()
+            .is(supplied_authority.runtime_snapshot_type.bind(py))
+        {
+            return Err(PyValueError::new_err(
+                "runtime snapshot must have the exact trusted type",
+            ));
+        }
+        let supplied: String = runtime_snapshot
+            .call_method0("_canonical_text")?
+            .extract()?;
+        let live = self.core.snapshot_json().map_err(|_| {
+            PyValueError::new_err(
+                "native runtime snapshot exceeds the declared deterministic envelope",
+            )
+        })?;
+        if supplied != live {
+            return Err(PyValueError::new_err(
+                "runtime snapshot is not the live native session state",
+            ));
+        }
+        Ok(())
+    }
+
+    fn matches_lease_grant_authority(&self, seal: &NativeLeaseGrantSeal) -> bool {
+        match (
+            self.continuation_authority.as_ref(),
+            seal.continuation_authority.as_ref(),
+        ) {
+            (Some(active), Some(supplied)) => Arc::ptr_eq(active, supplied),
+            _ => false,
+        }
+    }
+
+    fn issue_evaluated_lease_grant(
+        &self,
+        canonical_grant: &str,
+        canonical_progress: &str,
+        canonical_strategy_change: Option<&str>,
+        supplied_authority: &Arc<ContinuationAuthorityBinding>,
+        continuation_request_id: &str,
+    ) -> PyResult<NativeLeaseGrantSeal> {
+        if !self.matches_continuation_authority(supplied_authority) {
+            return Err(PyValueError::new_err(
+                "native lease grant authority does not bind this session",
+            ));
+        }
+        let value = parse_runtime_canonical(canonical_grant)
+            .map_err(|_| PyValueError::new_err("lease grant must be canonical JSON"))?;
+        let grant = LeaseGrant::parse(&value)
+            .map_err(|_| PyValueError::new_err("lease grant record is invalid"))?;
+        if grant.continuation_request_id != continuation_request_id {
+            return Err(PyValueError::new_err(
+                "native lease grant does not bind the authorized request",
+            ));
+        }
+        let progress_admitted = validate_evaluated_progress_authority(
+            canonical_progress,
+            &grant,
+            &supplied_authority.task_id,
+            &supplied_authority.governance_id,
+            &supplied_authority.progress_contract_id,
+        )
+        .map_err(|_| {
+            PyValueError::new_err(
+                "native lease grant does not bind exact objective progress authority",
+            )
+        })?;
+        let strategy_admitted = match (
+            grant.strategy_change_id.as_deref(),
+            canonical_strategy_change,
+        ) {
+            (Some(expected), Some(canonical)) => {
+                validate_evaluated_strategy_authority(
+                    canonical,
+                    expected,
+                    &supplied_authority.task_id,
+                    &supplied_authority.governance_id,
+                )
+                .map_err(|_| {
+                    PyValueError::new_err(
+                        "native lease grant does not bind exact admitted strategy authority",
+                    )
+                })?;
+                true
+            }
+            (None, None) => false,
+            _ => {
+                return Err(PyValueError::new_err(
+                    "native lease grant strategy authority is inconsistent",
+                ));
+            }
+        };
+        if !progress_admitted && !strategy_admitted {
+            return Err(PyValueError::new_err(
+                "native lease grant lacks measurable progress or an admitted strategy",
+            ));
+        }
+        let prior_state_id = self.core.state_id().map_err(|_| {
+            PyValueError::new_err("native runtime state cannot issue a lease grant")
+        })?;
+        self.core
+            .validate_lease_application(&grant, &prior_state_id)
+            .map_err(|reason| {
+                PyValueError::new_err(format!(
+                    "native runtime rejected governance grant issuance: {}",
+                    reason.code()
+                ))
+            })?;
+        Ok(NativeLeaseGrantSeal::from_grant(
+            &grant,
+            Some(Arc::clone(supplied_authority)),
+        ))
+    }
+}
+
 #[pyfunction]
 fn canonicalize_json(canonical_json: &str) -> PyResult<String> {
     let value = parse_canonical(canonical_json)
@@ -3071,14 +5794,71 @@ fn canonicalize_json(canonical_json: &str) -> PyResult<String> {
         .map_err(|_| PyValueError::new_err("value is not admitted canonical JSON"))
 }
 
+#[pyfunction]
+#[allow(clippy::too_many_arguments)]
+fn _register_continuation_engine(
+    py: Python<'_>,
+    evaluator: Py<PyAny>,
+    observer: Py<PyAny>,
+    committer: Py<PyAny>,
+    continuation_state_type: Py<PyAny>,
+    continuation_request_type: Py<PyAny>,
+    runtime_snapshot_type: Py<PyAny>,
+    orchestration_state_type: Py<PyAny>,
+    progress_record_type: Py<PyAny>,
+    strategy_materialization_type: Py<PyAny>,
+) -> PyResult<()> {
+    if !evaluator.bind(py).is_callable()
+        || !observer.bind(py).is_callable()
+        || !committer.bind(py).is_callable()
+        || !continuation_state_type.bind(py).is_callable()
+        || !continuation_request_type.bind(py).is_callable()
+        || !runtime_snapshot_type.bind(py).is_callable()
+        || !orchestration_state_type.bind(py).is_callable()
+        || !progress_record_type.bind(py).is_callable()
+        || !strategy_materialization_type.bind(py).is_callable()
+    {
+        return Err(PyValueError::new_err(
+            "continuation engine bindings must be callable",
+        ));
+    }
+    let evaluator_integrity = Arc::new(PythonFunctionIntegrity::root(py, evaluator.bind(py))?);
+    let observer_integrity = Arc::new(PythonFunctionIntegrity::root(py, observer.bind(py))?);
+    let committer_integrity = Arc::new(PythonFunctionIntegrity::root(py, committer.bind(py))?);
+    CONTINUATION_ENGINE
+        .set(
+            py,
+            ContinuationEngine {
+                evaluator,
+                observer,
+                committer,
+                continuation_state_type,
+                continuation_request_type,
+                runtime_snapshot_type,
+                orchestration_state_type,
+                progress_record_type,
+                strategy_materialization_type,
+                evaluator_integrity,
+                observer_integrity,
+                committer_integrity,
+            },
+        )
+        .map_err(|_| PyValueError::new_err("continuation engine is already initialized"))
+}
+
 #[pymodule]
 fn _runtime(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<NativeRuntimeSession>()?;
     module.add_class::<NativeRuntimeReceiptSeal>()?;
+    module.add_class::<NativeLeaseGrantSeal>()?;
+    module.add_class::<NativeContinuationSupervisorAuthority>()?;
+    module.add_class::<NativeContinuationRequestSeal>()?;
+    module.add_class::<NativeContinuationStateSeal>()?;
     module.add_class::<NativeEvidenceAccumulator>()?;
     module.add_class::<NativeEvidenceSummarySeal>()?;
     module.add_class::<NativeEvidenceReceiptSeal>()?;
     module.add_function(wrap_pyfunction!(canonicalize_json, module)?)?;
+    module.add_function(wrap_pyfunction!(_register_continuation_engine, module)?)?;
     module.add("PROTOCOL_VERSION", PROTOCOL_VERSION)?;
     module.add("EVIDENCE_PROTOCOL_VERSION", EVIDENCE_PROTOCOL_VERSION)?;
     module.add("EVIDENCE_PROFILE", EVIDENCE_PROFILE)?;
@@ -3107,6 +5887,140 @@ mod tests {
         .unwrap()
     }
 
+    fn continuation_identity(byte: char) -> String {
+        std::iter::repeat(byte).take(64).collect()
+    }
+
+    fn continuation_core() -> RuntimeCore {
+        let limits = Limits {
+            requests: 8,
+            executions: 4,
+            retries: 2,
+            history: 8,
+        }
+        .validate()
+        .unwrap();
+        let policy = json!({
+            "admitted_progress": ["measurable_progress"],
+            "authority_layer": "governance",
+            "initial_budget": {
+                "execution_delta": 4,
+                "history_delta": 8,
+                "mutation_delta": 0,
+                "request_delta": 8,
+                "retry_delta": 2,
+            },
+            "lease_schedule": [{
+                "execution_delta": 2,
+                "history_delta": 4,
+                "mutation_delta": 0,
+                "request_delta": 4,
+                "retry_delta": 1,
+            }],
+            "max_lease_requests": 2,
+            "max_leases": 1,
+            "max_strategy_recoveries": 1,
+            "policy_key": "experimental.tiny",
+            "policy_version": 1,
+            "progress_contract_id": continuation_identity('a'),
+            "protocol_version": CONTINUATION_PROTOCOL_VERSION,
+            "task_profile": "tiny",
+            "task_profile_version": 1,
+            "total_ceiling": {
+                "execution_delta": 6,
+                "history_delta": 12,
+                "mutation_delta": 0,
+                "request_delta": 12,
+                "retry_delta": 3,
+            },
+        });
+        let policy_canonical = canonical_value(&policy).unwrap();
+        let policy_id = domain_fingerprint(CONTINUATION_POLICY_ID_DOMAIN, &policy_canonical);
+        let receipt_body = json!({
+            "authority_layer": "governance",
+            "continuation_policy_id": policy_id,
+            "governance_id": continuation_identity('b'),
+            "governance_receipt_id": continuation_identity('c'),
+            "progress_contract_id": continuation_identity('a'),
+            "protocol_version": CONTINUATION_POLICY_RECEIPT_VERSION,
+            "status": "admitted",
+            "task_id": continuation_identity('d'),
+            "task_profile": "tiny",
+            "task_profile_version": 1,
+        });
+        let receipt_id = domain_fingerprint(
+            CONTINUATION_POLICY_RECEIPT_ID_DOMAIN,
+            &canonical_value(&receipt_body).unwrap(),
+        );
+        let mut receipt = receipt_body;
+        receipt
+            .as_object_mut()
+            .unwrap()
+            .insert("receipt_id".to_owned(), Value::String(receipt_id));
+        let context_json = canonical_value(&json!({
+            "continuation_policy": policy,
+            "continuation_policy_receipt": receipt,
+        }))
+        .unwrap();
+        let context = ContinuationContext::parse(&context_json, limits).unwrap();
+        RuntimeCore::new_with_continuation("rust-continuation", limits, context).unwrap()
+    }
+
+    fn lease_command(
+        runtime: &RuntimeCore,
+        lease_index: u64,
+        resources: LeaseResources,
+        cumulative: LeaseResources,
+    ) -> String {
+        let continuation = runtime.continuation.as_ref().unwrap();
+        let grant_body = json!({
+            "authority_layer": "governance",
+            "continuation_policy_id": continuation.context.policy.policy_id,
+            "continuation_policy_receipt_id": continuation.context.policy_receipt_id,
+            "continuation_request_id": continuation_identity('e'),
+            "cumulative_granted": cumulative.value(),
+            "decision_logical_tick": 1,
+            "governance_id": continuation.context.governance_id,
+            "governance_receipt_id": continuation.context.governance_receipt_id,
+            "granted_resources": resources.value(),
+            "lease_index": lease_index,
+            "orchestration_state_id": continuation_identity('f'),
+            "prior_continuation_state_id": continuation_identity('1'),
+            "prior_runtime_state_id": runtime.state_id().unwrap(),
+            "progress_id": continuation_identity('2'),
+            "protocol_version": LEASE_GRANT_RECEIPT_VERSION,
+            "runtime_session_id": runtime.session_id,
+            "status": "granted",
+            "strategy_change_id": null,
+            "task_id": continuation.context.task_id,
+            "total_ceiling": continuation.context.policy.total_ceiling.value(),
+        });
+        let grant_id = domain_fingerprint(
+            LEASE_GRANT_ID_DOMAIN,
+            &canonical_value(&grant_body).unwrap(),
+        );
+        let mut receipt_body = grant_body;
+        receipt_body
+            .as_object_mut()
+            .unwrap()
+            .insert("lease_grant_id".to_owned(), Value::String(grant_id));
+        let receipt_id = domain_fingerprint(
+            LEASE_GRANT_RECEIPT_ID_DOMAIN,
+            &canonical_value(&receipt_body).unwrap(),
+        );
+        let mut receipt = receipt_body;
+        receipt
+            .as_object_mut()
+            .unwrap()
+            .insert("receipt_id".to_owned(), Value::String(receipt_id));
+        canonical_runtime_value(&json!({
+            "command_type": "apply_lease",
+            "grant_receipt": receipt,
+            "protocol_version": PROTOCOL_VERSION,
+        }))
+        .unwrap()
+    }
+
     fn read_command(path: &str, dependency: &str) -> String {
         canonical_value(&json!({
             "admission_id": ADMISSION,
@@ -3127,7 +6041,17 @@ mod tests {
     where
         F: FnOnce() -> Invocation,
     {
-        runtime.dispatch(command, invoke).unwrap()
+        runtime.dispatch(command, None, invoke).unwrap()
+    }
+
+    fn run_with_issued_grant<F>(runtime: &mut RuntimeCore, command: &str, invoke: F) -> String
+    where
+        F: FnOnce() -> Invocation,
+    {
+        let value = parse_runtime_canonical(command).unwrap();
+        let grant = LeaseGrant::parse(&value["grant_receipt"]).unwrap();
+        let seal = NativeLeaseGrantSeal::from_grant(&grant, None);
+        runtime.dispatch(command, Some(&seal), invoke).unwrap()
     }
 
     #[test]
@@ -3328,6 +6252,158 @@ mod tests {
             outcome_receipt(&rejected)["rejection"]["reason_code"],
             Reason::UnsupportedCommand.code()
         );
+    }
+
+    #[test]
+    fn applies_exact_governance_lease_without_consuming_tool_resources() {
+        let mut runtime = continuation_core();
+        let before = runtime.counters;
+        let command = lease_command(
+            &runtime,
+            1,
+            LeaseResources {
+                requests: 4,
+                executions: 2,
+                retries: 1,
+                mutations: 0,
+                history: 4,
+            },
+            LeaseResources {
+                requests: 4,
+                executions: 2,
+                retries: 1,
+                mutations: 0,
+                history: 4,
+            },
+        );
+        let outcome = run_with_issued_grant(&mut runtime, &command, || Invocation::OperationFailed);
+        let receipt = outcome_receipt(&outcome);
+        assert_eq!(
+            receipt["protocol_version"],
+            LEASE_APPLICATION_RECEIPT_VERSION
+        );
+        assert_eq!(receipt["status"], "accepted");
+        assert_eq!(receipt["logical_tick_delta"], 1);
+        assert_eq!(
+            receipt["runtime_budget_delta"],
+            LeaseResources::default().value()
+        );
+        assert_eq!(runtime.counters.requests, before.requests);
+        assert_eq!(runtime.counters.executions, before.executions);
+        assert_eq!(runtime.counters.retries, before.retries);
+        assert_eq!(runtime.limits.requests, 12);
+        assert_eq!(runtime.limits.executions, 6);
+        assert_eq!(runtime.limits.retries, 3);
+        assert_eq!(runtime.limits.history, 12);
+        assert_eq!(
+            runtime
+                .continuation
+                .as_ref()
+                .unwrap()
+                .applied_grant_ids
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn rejects_hash_consistent_but_unissued_lease_without_state_change() {
+        let mut runtime = continuation_core();
+        let resources = LeaseResources {
+            requests: 4,
+            executions: 2,
+            retries: 1,
+            mutations: 0,
+            history: 4,
+        };
+        let command = lease_command(&runtime, 1, resources, resources);
+        let prior = runtime.state_id().unwrap();
+        let outcome = run(&mut runtime, &command, || Invocation::OperationFailed);
+        assert_eq!(
+            outcome_receipt(&outcome)["reason_code"],
+            LeaseApplyReason::UnissuedGrant.code()
+        );
+        assert_eq!(runtime.state_id().unwrap(), prior);
+        assert_eq!(runtime.limits.requests, 8);
+        assert_eq!(
+            runtime
+                .continuation
+                .as_ref()
+                .unwrap()
+                .applied_grant_ids
+                .len(),
+            0
+        );
+    }
+
+    #[test]
+    fn rejects_duplicate_and_skipped_lease_applications_without_state_change() {
+        let mut runtime = continuation_core();
+        let resources = LeaseResources {
+            requests: 4,
+            executions: 2,
+            retries: 1,
+            mutations: 0,
+            history: 4,
+        };
+        let command = lease_command(&runtime, 1, resources, resources);
+        run_with_issued_grant(&mut runtime, &command, || Invocation::OperationFailed);
+        let accepted_state = runtime.state_id().unwrap();
+        let duplicate =
+            run_with_issued_grant(&mut runtime, &command, || Invocation::OperationFailed);
+        assert_eq!(
+            outcome_receipt(&duplicate)["reason_code"],
+            LeaseApplyReason::StaleRuntimeState.code()
+        );
+        assert_eq!(runtime.state_id().unwrap(), accepted_state);
+
+        let mut fresh = continuation_core();
+        let skipped_command = lease_command(&fresh, 2, resources, resources);
+        let skipped =
+            run_with_issued_grant(&mut fresh, &skipped_command, || Invocation::OperationFailed);
+        assert_eq!(
+            outcome_receipt(&skipped)["reason_code"],
+            LeaseApplyReason::LeaseIndexMismatch.code()
+        );
+        assert_eq!(
+            fresh.continuation.as_ref().unwrap().applied_grant_ids.len(),
+            0
+        );
+    }
+
+    #[test]
+    fn rejects_forged_grant_identity_and_tick_overflow_state_neutrally() {
+        let resources = LeaseResources {
+            requests: 4,
+            executions: 2,
+            retries: 1,
+            mutations: 0,
+            history: 4,
+        };
+        let mut runtime = continuation_core();
+        let command = lease_command(&runtime, 1, resources, resources);
+        let mut value = parse_runtime_canonical(&command).unwrap();
+        value["grant_receipt"]["lease_grant_id"] = Value::String(continuation_identity('9'));
+        let forged = canonical_runtime_value(&value).unwrap();
+        let prior = runtime.state_id().unwrap();
+        let rejected = run_with_issued_grant(&mut runtime, &forged, || Invocation::OperationFailed);
+        assert_eq!(
+            outcome_receipt(&rejected)["reason_code"],
+            LeaseApplyReason::GrantIdentityMismatch.code()
+        );
+        assert_eq!(runtime.state_id().unwrap(), prior);
+
+        let mut overflow = continuation_core();
+        overflow.counters.logical_tick = u64::MAX;
+        let command = lease_command(&overflow, 1, resources, resources);
+        let prior = overflow.state_id().unwrap();
+        let rejected =
+            run_with_issued_grant(&mut overflow, &command, || Invocation::OperationFailed);
+        assert_eq!(
+            outcome_receipt(&rejected)["reason_code"],
+            LeaseApplyReason::ArithmeticOverflow.code()
+        );
+        assert_eq!(overflow.state_id().unwrap(), prior);
     }
 
     #[test]

@@ -12,7 +12,7 @@ QSOL-IBAE explores whether strong execution invariants can reduce redundant tool
 
 The v0.x line starts intentionally small. The first objective is not to build another general agent framework. It is to prove a compact execution kernel with measurable behavior.
 
-## v0.4 scope
+## v0.5 scope
 
 The v0.1 kernel provides:
 
@@ -51,9 +51,10 @@ The accepted v0.3 Rust deterministic runtime adds:
 - structured execution-layer rejection records with reason codes and relevant invariant IDs;
 - transaction-safe full-envelope construction, exact-JSON observation semantics, and capability-ID rebinding before an admitted read can enter the cache path;
 - independent Python/Rust canonical-byte, SHA-256, execution-semantic, and receipt conformance fixtures;
-- a deliberately limited command family: `execute_read` and `record_retry` only.
+- a deliberately limited accepted v0.3 command family: `execute_read` and
+  `record_retry`.
 
-The v0.4 implementation candidate adds deterministic governance and compact
+The accepted v0.4 implementation adds deterministic governance and compact
 evidence machinery above and below those accepted semantics:
 
 - an OpenAI-only, versioned governance policy with explicit supervisor,
@@ -88,6 +89,74 @@ known-admission accounting and continuity, but cannot cover an authorized read
 on their own. Volatile reads and mutations are classified and fail closed by
 governance, but no effect-execution command is invented in this phase.
 
+The v0.5 implementation candidate adds objective progress and finite governed
+continuation without changing those frozen v0.2-v0.4 records:
+
+- a versioned integer progress-measure contract over canonical obligation state
+  or governed observed/derived counters, bound exactly into continuation
+  policy, state, and native context; classification/completion are derived from
+  exact bound sources, and external counters require a source-bound native
+  observation matched to its governed tool admission plus contiguous semantic
+  value/basis endpoints that cannot be replayed by rotating receipt IDs;
+- closed `measurable_progress`, `no_progress`, `regression`,
+  `new_information`, and `incomparable` classifications, with completion
+  computed separately and model confidence/activity excluded;
+- structured strategy materiality over admitted strategy identity, capability
+  frontier, target obligations, dependency path, recovery mode, and cycle
+  breaking; receipts revalidate their bound material, live cycles are derived
+  from native history, and descriptive paraphrases have no authority;
+- governance-owned continuation policies with exact initial budgets, ordered
+  finite lease schedules, checked cumulative ceilings, a six-entry minimum
+  initial cycle window, request caps that reserve a terminal denial, and a
+  finite strategy-recovery allowance;
+- one task/session continuation ledger with deterministic grant/deny receipts,
+  native-bound decision/recovery semantics, single-use measurable-progress
+  endpoints, one lineage-bound terminal effective-ceiling denial marker outside
+  an already exhausted ordinary request ledger, request-and-schedule-aware compact
+  AI recovery state, live progress-state refresh, and no self-extension by runtime, tools, or future
+  workers;
+- a once-issued, session-scoped native supervisor request capability separate
+  from the public requester label, with the exact evaluator, context observer,
+  and application committer captured once in native storage during trusted
+  module initialization and cloned by the dedicated continuation-session
+  factory, integrity checks over mutable Python function dependencies even
+  outside the package and behind descriptors, callback-free exact
+  request/progress/strategy fields before governance comparison plus
+  post-evaluation integrity checks and native rederivation of the exact
+  progress-or-admitted-strategy predicate before a grant is sealed,
+  one-shot native sealing of the complete initial state only from exact
+  registered context types and rederived, authority-bound progress after Rust
+  derives its decision/progress seeds, one live native lineage
+  generation that retires every predecessor, exact live-session checks for
+  context observation/application commit and checkpoint snapshots, exact
+  callback-free progress validation at observer entry plus a native
+  prior/result projection that permits only observation endpoints to change,
+  benchmark objects kept entirely outside governance evaluation, exact request seals,
+  and an opt-in
+  Rust `apply_lease` transition
+  that independently validates the authorized request and full governance
+  grant against the live per-instance session before issuing its
+  non-constructible grant seal; it changes only exact limits plus one runtime
+  logical tick and rejects unissued/replayed/forged/stale or equal-ID
+  cross-session authority without mutation;
+- context observation preserves the current strategy identity; only an
+  admitted strategy-change grant advances that lineage, preventing rewind and
+  replay of an earlier change receipt;
+- in-process structural checkpoints validated against the complete live native
+  snapshot, a separate fixed-shape continuation
+  evidence receipt whose count/aggregate must match the sealed full progress
+  history, checkpoint-evidence-bound semantic continuation partial
+  receipts whose reason is validated when the checkpoint is created and whose
+  request- or schedule-cap terminal path cites—and revalidates on
+  consumption—the exact lineage-bound denial marker, providing a normal partial
+  even when ordinary denials consumed the request ledger first, and
+  watchdog observations whose exact lease-exhaustion flag is
+  identity-bearing but cannot claim completion;
+- exact experimental `tiny`, `standard`, `extended`, and `repository` profiles
+  plus a deterministic model-free schedule benchmark with no correctness
+  authority or universal recommendation; unmet base demand is reported rather
+  than clipped into completion.
+
 There are deliberately **no model calls yet**. OpenAI SDK integration comes only after the kernel invariants are independently testable.
 
 ## Architecture
@@ -113,7 +182,8 @@ Benchmark observations remain outside correctness authority.
 See [ARCHITECTURE.md](ARCHITECTURE.md), [INVARIANTS.md](INVARIANTS.md),
 [RUNTIME_PROTOCOL.md](RUNTIME_PROTOCOL.md),
 [GOVERNANCE_PROTOCOL.md](GOVERNANCE_PROTOCOL.md), and
-[EVIDENCE_PROTOCOL.md](EVIDENCE_PROTOCOL.md).
+[EVIDENCE_PROTOCOL.md](EVIDENCE_PROTOCOL.md), and
+[CONTINUATION_PROTOCOL.md](CONTINUATION_PROTOCOL.md).
 
 ## Provider scope
 
@@ -143,6 +213,8 @@ python tools/render_v0_2_fixture.py
 python tools/render_v0_3_fixture.py
 python tools/render_v0_4_fixture.py
 python tools/stress_compact_evidence.py
+python tools/render_v0_5_fixture.py
+python tools/render_budget_profile_benchmark.py
 ```
 
 Run both language suites with:
@@ -165,10 +237,13 @@ External code contributions are not currently accepted without a separate writte
 
 ## Status
 
-Experimental v0.4 pre-release implementation candidate. PR #4 merged the exact
-reviewed v0.3 Rust-runtime head, so v0.3 is accepted rather than pending review.
-The merged v0.2 Python orchestrator remains the semantic reference above that
-runtime. v0.4 adds deterministic governance/receipt contracts and bounded
-evidence transport; continuation leases, live OpenAI integration, accelerators,
+Experimental v0.5 pre-release implementation candidate. PR #5 merged the exact
+reviewed v0.4 governance/compact-evidence head, so v0.1-v0.4 are accepted. The
+v0.5 branch adds objective progress, material strategy-change admission,
+precommitted continuation policies, governance grant/deny receipts, exact Rust
+lease application, structural in-process checkpoint/resume, compact
+continuation evidence, and semantic partial finalization. Live OpenAI
+integration, mutation execution, durable cross-process resume, accelerators,
 distributed execution, and local workers remain later gated phases. No
-production, authentication, or performance claim is made.
+production, authentication, universal-calibration, or performance claim is
+made.

@@ -1,12 +1,17 @@
 # IBAE Runtime Protocol v1
 
-Status: accepted v0.3 implementation contract; unchanged by v0.4.
+Status: accepted v0.3 implementation contract with an opt-in v0.5 lease-
+application extension. Legacy v0.3/v0.4 bytes remain unchanged.
 
 `IBAE-RUNTIME-PROTOCOL-V1` is the narrow in-process boundary between Python orchestration and the Rust execution authority. It is transported as canonical UTF-8 JSON through one opaque PyO3 session. It is not an RPC or network protocol.
 
 ## Authority boundary
 
-Python may construct a command, provide an admitted cacheable-read callback, and consume copied outcomes. Rust alone mutates runtime counters, logical ticks, cache, history, and runtime state identity.
+Python may construct a command, provide an admitted cacheable-read callback,
+and consume copied outcomes. Rust alone mutates runtime limits, counters,
+logical ticks, cache, history, the opt-in applied-lease ledger, and runtime
+state identity. Python governance may supply a canonical grant, but cannot
+directly change a native limit.
 
 The native session exposes only:
 
@@ -38,7 +43,9 @@ Mappings require unique string keys. NaN, infinities, non-canonical number spell
 
 ## Commands
 
-Only two closed command variants exist.
+Three closed command variants exist. `execute_read` and `record_retry` retain
+their accepted v0.3 semantics. `apply_lease` is accepted only for a v0.5
+continuation-enabled session.
 
 ### `execute_read`
 
@@ -96,6 +103,53 @@ Exception messages, Python object representations, and addresses never enter cor
 
 This command performs one checked retry-counter transition. It does not request or grant more budget.
 
+### `apply_lease`
+
+```json
+{
+  "command_type": "apply_lease",
+  "grant_receipt": {"protocol_version":"IBAE-CONTINUATION-LEASE-GRANT-V1"},
+  "protocol_version": "IBAE-RUNTIME-PROTOCOL-V1"
+}
+```
+
+The `grant_receipt` value is the complete canonical governance receipt, not an ID or a
+caller-selected delta. Rust independently parses its exact schema and
+recomputes both `lease_grant_id` and `receipt_id`. An opted-in native session
+already binds the exact task, governance receipt, continuation policy/receipt,
+initial limits, full indexed schedule, and total ceiling. Application requires
+an exact next index, exact prior runtime session/state, matching authority
+lineage, a schedule-bounded mutation-free vector, checked cumulative grant,
+and no duplicate/replayed grant ID.
+
+Rust does not decide whether progress justifies a lease and exposes no
+`request_lease` command. Trusted module initialization captures the exact
+deterministic evaluator, context observer, and application committer once in
+native storage and removes the bootstrap entrypoint. Continuation-session
+creation clones only those originals into a Rust-private per-instance binding and returns a separate
+once-issued, session-scoped supervisor request capability.
+The binding records the captured functions' code, every reachable mutable
+Python function dependency regardless of module, underlying descriptor
+functions, referenced globals and default/closure bindings, and reachable IBAE
+helper/class definitions and rejects session creation or
+evaluator/observer/committer entry if any are mutated in place. Native request
+entry requires the exact trusted type before callbacks and rechecks integrity
+after them. It seals the complete initial zero-decision continuation state only
+after independently deriving its decision and progress aggregate seeds; every
+later state must preserve full native lineage. Each reseal advances one
+non-serialized live generation and retires its predecessor. Observation and
+application commit require an exact snapshot of that same live native session.
+The dedicated continuation factory extracts it before returning the runtime;
+the generic constructor rejects continuation arguments, and the runtime facade
+does not expose its native handle. The requester label alone is not authority.
+That capability seals one exact request; the seal
+invokes only the pinned evaluator, after which Rust independently validates the
+authorized request and full canonical grant against the live native
+session/state before issuing the non-constructible grant seal. There is no raw
+exported grant issuer. A structurally identical duplicate session has distinct
+non-serialized native authority and cannot issue a seal usable by the original
+session. Governance grants; Rust seals and applies only that decision.
+
 Unknown variants—including `request_lease` and `finalize`—reject without runtime mutation. Each canonical attempted command, command type, and valid admission ID remains bound into its distinct rejection receipt. Those command semantics are not reserved by implementation and require their later roadmap phase.
 
 ## Transition accounting
@@ -111,9 +165,18 @@ The logical runtime tick is a checked exact integer derived only from committed 
 | Request-budget rejection | 0 | 0 | 0 | 0 |
 | Accepted retry | 0 | 0 | 0 | 1 |
 | Retry-budget rejection | 0 | 0 | 0 | 0 |
+| Accepted lease application | 0 | 0 | 0 | 1 |
+| Rejected lease application | 0 | 0 | 0 | 0 |
 | Malformed/unsupported command | 0 | 0 | 0 | 0 |
 
 Cold observation commit and cache-hit history commit each append the same canonical transition identity. Retained history truncates deterministically at its configured bound. Rust constructs and bounds the complete prospective outcome on an isolated candidate state before replacing authoritative state, so an output-serialization failure cannot leave a committed transition without a receipt.
+
+Accepted lease application changes the runtime limits by the exact granted
+request/execution/retry/history vector, advances the native logical tick once,
+records the grant in the opt-in lease ledger, and appends no execution history.
+Mutation delta remains zero. It consumes no request, execution, cache-hit,
+retry, or mutation counter. Rejected application changes no limit, counter,
+tick, history, cache, ledger, or state identity.
 
 ## Identities
 
@@ -130,7 +193,17 @@ New v0.3 identities use `SHA256(domain || NUL || canonical_record)` with these d
 - `ibae.runtime-state-id.v1`;
 - `ibae.runtime-receipt-id.v1`.
 
+The v0.5 application uses separate domains:
+
+- `ibae.runtime-lease-application-id.v1`;
+- `ibae.runtime-lease-application-receipt-id.v1`.
+
 A command identity includes its prior state identity, so repeated requests have distinct occurrence identities even when their semantic read key is reusable. State identity includes exact counters/tick, bounded history, cache key/observation identities, limits, protocol, and session identity.
+
+Legacy session/state records omit continuation entirely and retain their prior
+bytes. An opt-in session additionally binds exact task/governance/policy
+lineage, full precommitted policy, cumulative grants, applied grant IDs, and
+next lease index into its session/state identity.
 
 Wall-clock time, latency, build duration, worker/thread/device assignment, Python `hash()`/`id()`, and memory addresses are absent.
 
@@ -163,6 +236,27 @@ It lets the evidence reducer reject a reconstructed or altered Python receipt
 before reducer mutation, but it is not a signature, producer authentication,
 remote attestation, or durable provenance.
 
+`apply_lease` instead returns a separately versioned
+`IBAE-RUNTIME-LEASE-APPLICATION-RECEIPT-V1` execution-authority record. It
+binds command/application/receipt IDs, task/governance/policy/session lineage,
+grant and grant-receipt IDs, lease index, exact limit delta, cumulative grant,
+total ceiling, resulting limits/state, runtime budget delta, logical-tick
+delta, status, and closed rejection evidence. It deliberately carries no
+v0.3 source seal; `IBAE-CONTINUATION-CHECKPOINT-V1` supports structural
+in-process lineage, not authentication or durable reconstruction.
+
+An accepted application additionally requires two non-serialized in-process
+bindings: the exact supervisor-authorized native request seal that enters the
+pinned evaluator, and the non-constructible native grant seal bound to the
+resulting grant and live per-instance native state. Canonical hash consistency
+alone cannot authorize a lease; a structural caller or equal-ID duplicate
+session cannot mint a usable seal, and a missing or mismatched binding is
+state-neutral.
+
+The native policy parser also requires at least six initial history entries and
+strictly more request decisions than scheduled leases. This preserves complete
+period-1/2/3 detection and one recordable terminal lease-ceiling decision.
+
 ## Rejection taxonomy
 
 ```text
@@ -176,6 +270,22 @@ IBAE-RT-REJECT-RETRY-BUDGET
 IBAE-RT-REJECT-ARITHMETIC-OVERFLOW
 IBAE-RT-REJECT-INVALID-OBSERVATION
 IBAE-RT-REJECT-OPERATION-FAILED
+```
+
+Lease application has its own closed taxonomy:
+
+```text
+IBAE-RT-LEASE-REJECT-CONTINUATION-DISABLED
+IBAE-RT-LEASE-REJECT-GRANT-IDENTITY
+IBAE-RT-LEASE-REJECT-POLICY-MISMATCH
+IBAE-RT-LEASE-REJECT-STALE-GOVERNANCE
+IBAE-RT-LEASE-REJECT-STALE-RUNTIME-STATE
+IBAE-RT-LEASE-REJECT-LEASE-INDEX
+IBAE-RT-LEASE-REJECT-SCHEDULE
+IBAE-RT-LEASE-REJECT-CEILING
+IBAE-RT-LEASE-REJECT-UNSUPPORTED-RESOURCE
+IBAE-RT-LEASE-REJECT-UNISSUED-GRANT
+IBAE-RT-LEASE-REJECT-ARITHMETIC-OVERFLOW
 ```
 
 No rejection grants authority or promotes execution state into orchestration/governance state.

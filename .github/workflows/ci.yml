@@ -48,6 +48,14 @@ jobs:
         run: |
           python tools/stress_compact_evidence.py > /tmp/v0.4-compact-evidence-stress.json
           cmp fixtures/v0.4/compact-evidence-stress.json /tmp/v0.4-compact-evidence-stress.json
+      - name: Verify v0.5 progress/continuation conformance fixture
+        run: |
+          python tools/render_v0_5_fixture.py > /tmp/v0.5-progress-continuation.json
+          cmp fixtures/v0.5/progress-continuation-reference.json /tmp/v0.5-progress-continuation.json
+      - name: Verify v0.5 budget-profile benchmark fixture
+        run: |
+          python tools/render_budget_profile_benchmark.py > /tmp/v0.5-budget-profile-benchmark.json
+          cmp fixtures/v0.5/budget-profile-benchmark.json /tmp/v0.5-budget-profile-benchmark.json
       - run: python benchmarks/basic.py
       - name: Build wheel from fresh source
         run: python -m pip wheel . --no-deps --wheel-dir /tmp/qsol-wheel
@@ -60,21 +68,33 @@ jobs:
           import importlib.metadata
 
           import ibae
-          from ibae.conformance import v0_4_reference_fixture
+          from ibae.conformance import (
+              v0_4_reference_fixture,
+              v0_5_budget_benchmark_fixture,
+              v0_5_reference_fixture,
+          )
 
-          assert importlib.metadata.version("qsol-ibae") == "0.4.0a0"
+          assert importlib.metadata.version("qsol-ibae") == "0.5.0a0"
           assert ibae.RUNTIME_PROTOCOL_VERSION == "IBAE-RUNTIME-PROTOCOL-V1"
           assert ibae.GOVERNANCE_PROTOCOL_VERSION == "IBAE-GOVERNANCE-PROTOCOL-V1"
           assert ibae.EVIDENCE_PROTOCOL_VERSION == "IBAE-COMPACT-EVIDENCE-V1"
-          fixture = v0_4_reference_fixture()
-          assert fixture["finalization"]["acceptance"]["status"] == "accepted"
-          assert fixture["compact_evidence"]["source_bound"] is True
+          assert ibae.CONTINUATION_PROTOCOL_VERSION == "IBAE-CONTINUATION-LEASE-V1"
+          assert ibae.PROGRESS_PROTOCOL_VERSION == "IBAE-OBJECTIVE-PROGRESS-V1"
+          legacy_fixture = v0_4_reference_fixture()
+          assert legacy_fixture["finalization"]["acceptance"]["status"] == "accepted"
+          assert legacy_fixture["compact_evidence"]["source_bound"] is True
+          continuation_fixture = v0_5_reference_fixture()
+          assert continuation_fixture["lease_decisions"]["first_grant"]["status"] == "granted"
+          assert continuation_fixture["partial_finalization"]["record"]["status"] == "partial"
+          benchmark = v0_5_budget_benchmark_fixture()
+          assert benchmark["benchmark_only"] is True
+          assert benchmark["correctness_authority"] is False
           PY
       - name: Preserve generated lock and conformance evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: v0.4-build-evidence
+          name: v0.5-build-evidence
           if-no-files-found: warn
           path: |
             rust/Cargo.lock
@@ -82,4 +102,6 @@ jobs:
             /tmp/v0.3-runtime.json
             /tmp/v0.4-governance-evidence.json
             /tmp/v0.4-compact-evidence-stress.json
+            /tmp/v0.5-progress-continuation.json
+            /tmp/v0.5-budget-profile-benchmark.json
             /tmp/qsol-wheel/*.whl
