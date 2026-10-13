@@ -17,7 +17,7 @@ import json
 from typing import Any
 
 from ._records import CanonicalValue, require_symbol
-from .canonical import canonical_json, domain_fingerprint
+from .canonical import canonical_json, canonical_tool_key, domain_fingerprint
 from .continuation import (
     BudgetVector, ContinuationCheckpoint, ContinuationEvidenceReceipt,
     ContinuationPartialReason, ContinuationPartialReceipt, ContinuationPolicy,
@@ -166,6 +166,64 @@ def _proposal_batch(proposal: NormalizedProposal, index: int) -> ProposalBatch:
                          actions, ordering=ProposalOrdering.CANONICAL_INDEPENDENT)
 
 
+def _cache_locator(action: ActionProposal, dependency: str) -> str:
+    return domain_fingerprint("ibae.synthetic-cache-locator.v1", {
+        "tool": action.capability, "arguments": action.arguments, "dependency": dependency,
+    })
+
+
+def _preflight_independent_batch(
+    state: OrchestrationState, batch: ProposalBatch, *, runtime: RustRuntimeSession,
+    available_fixture_keys: frozenset[str], dependency: str, completed_cache_keys: set[str],
+) -> tuple[ProposalBatch, list[dict]]:
+    """Partition before committing admission, preserving complete manifests.
+
+    The pure admission preview determines canonical independent action groups.
+    A prefix of executable groups fits the exact live native capacity. Every
+    deduplicated proposal stays with its representative. Unavailable independent
+    groups never erase executable neighbors. When no subgroup is executable the
+    ordinary rejection/partial path still records the attempted batch.
+    """
+    preview = admit_batch(state, batch)
+    by_id = {item.proposal_id: item for item in batch.proposals}
+    snapshot = runtime.snapshot
+    capacity = min(snapshot.limits.max_requests - snapshot.requests,
+                   snapshot.limits.max_executions - snapshot.executions)
+    selected: set[str] = set()
+    deferred_actions: dict[str, str] = {}
+    for decision in preview.receipt.decisions:
+        if decision.status is not DecisionStatus.ADMITTED:
+            continue
+        assert decision.action_id is not None
+        action = by_id[decision.proposal_id]
+        if _cache_locator(action, dependency) in completed_cache_keys:
+            reason = "cross-segment-cold-provenance-required"
+        elif canonical_tool_key(action.capability, action.arguments, dependency) not in available_fixture_keys:
+            # Read only declared availability metadata here. The adapter's
+            # output is never retrieved before actual governed admission.
+            reason = "frozen-source-unavailable"
+        else:
+            reason = "deferred-native-read-capacity" if capacity == 0 else None
+        if reason is None:
+            selected.add(decision.action_id)
+            capacity -= 1
+        else:
+            deferred_actions[decision.action_id] = reason
+    if not selected or not deferred_actions:
+        return batch, []
+    retained = []
+    deferred = []
+    for decision in preview.receipt.decisions:
+        if decision.action_id in deferred_actions and decision.status in (
+            DecisionStatus.ADMITTED, DecisionStatus.DEDUPLICATED,
+        ):
+            deferred.append({"proposal_id": decision.proposal_id, "action_id": decision.action_id,
+                             "reason": deferred_actions[decision.action_id]})
+        else:
+            retained.append(by_id[decision.proposal_id])
+    return ProposalBatch(batch.batch_key, batch.strategy, tuple(retained), ordering=batch.ordering), deferred
+
+
 def _strategy_material(mode: str, description: str, tools: list[str], targets: tuple[str, ...]) -> StrategyMaterialization:
     alternate = tuple(name for name in tools if name.endswith(".alternate"))
     primary = tuple(name for name in tools if not name.endswith(".alternate"))
@@ -221,6 +279,7 @@ def run_synthetic_transcript(transcript: dict) -> SyntheticRunResult:
     fixtures = tuple(SyntheticReadFixture(item["tool_name"], item["arguments"], dependency, item["output"])
                      for item in record["fixtures"])
     universe = FakeReadUniverse(fixtures)
+    available_fixture_keys = frozenset(item.tool_key for item in fixtures)
     supervisor = FakeSupervisor(tuple(NormalizedProposal.from_record(item) for item in record["proposals"]))
     # Tool availability is declared before the supervisor runs. Extra frozen
     # sources can be unsuccessful primary paths, but never produce authority.
@@ -246,8 +305,8 @@ def run_synthetic_transcript(transcript: dict) -> SyntheticRunResult:
             "source_manifest_id": domain_fingerprint("ibae.synthetic-frozen-world.v1", {
                 "source_version": record["source_version"], "fixtures": record["fixtures"],
             }),
-            "receipt_scope": "one-admitted-manifest",
-            "whole_task_requires": "every-declared-obligation-covered-by-accepted-source-observations",
+            "receipt_scope": "whole-declared-objectives",
+            "whole_task_requires": "one-native-bound-manifest-covers-every-declared-objective",
             "multi_segment_summary_is_final_acceptance": False,
         }, requester=PrincipalAuthority.OPENAI_SUPERVISOR,
     )
@@ -283,6 +342,7 @@ def run_synthetic_transcript(transcript: dict) -> SyntheticRunResult:
     backend_calls = 0
     checkpoint = None
     continuation_partial = None
+    full_final = None
 
     def observe(prior: OrchestrationState) -> None:
         nonlocal continuation, last_progress
@@ -300,7 +360,7 @@ def run_synthetic_transcript(transcript: dict) -> SyntheticRunResult:
         context = SupervisorContext(task, governance, governance_policy, policy,
                                     continuation, state, runtime, supervisor_capability)
         projection = SupervisorProjection(context)
-        proposal = supervisor.propose(projection, index=index)
+        proposal = supervisor.propose(projection.canonical_record(), index=index)
         if proposal is None:
             break
         event = {"index": index, "projection_id": projection.projection_id,
@@ -316,6 +376,15 @@ def run_synthetic_transcript(transcript: dict) -> SyntheticRunResult:
             except (TypeError, ValueError):
                 event["intervention"] = "reject_undeclared_strategy"
             else:
+                source_batch_id = batch.batch_id
+                batch, deferred = _preflight_independent_batch(
+                    state, batch, runtime=runtime, available_fixture_keys=available_fixture_keys,
+                    dependency=dependency,
+                    completed_cache_keys=completed_cache_keys,
+                )
+                if deferred:
+                    event["source_batch_id"] = source_batch_id
+                    event["deferred_proposals"] = deferred
                 admission = admit_batch(state, batch)
                 state = admission.next_state
                 event["admission_receipt_id"] = admission.receipt.receipt_id
@@ -361,9 +430,7 @@ def run_synthetic_transcript(transcript: dict) -> SyntheticRunResult:
                     source_outputs = []
                     for decision in admitted:
                         action = by_id[decision.proposal_id]
-                        cache_key = domain_fingerprint("ibae.synthetic-cache-locator.v1", {
-                            "tool": action.capability, "arguments": action.arguments, "dependency": dependency,
-                        })
+                        cache_key = _cache_locator(action, dependency)
                         if cache_key in completed_cache_keys:
                             segment["rejections"].append({"reason": "cross-segment-cold-provenance-required"})
                             break
@@ -415,14 +482,19 @@ def run_synthetic_transcript(transcript: dict) -> SyntheticRunResult:
                             # the declared equality predicate establishes this
                             # deterministic synthetic acceptance problem only.
                             covered = {item[0] for item in candidates}
-                            targeted = {target for targets in targets_by_action.values() for target in targets}
-                            satisfied = compact.source_bound and bool(targeted) and targeted <= covered and not segment["rejections"]
+                            # This task declares every rule. A segment may
+                            # preserve independent proofs and progress, but its
+                            # finalizer may accept only when this single native
+                            # manifest proves the complete declared objective.
+                            satisfied = (compact.source_bound
+                                         and set(state.obligations.known_ids) <= covered
+                                         and not segment["rejections"])
                             gates = (
                                 AcceptanceGateResult(COMPACT_EVIDENCE_GATE_KEY, satisfied, compact.receipt_id),
                                 AcceptanceGateResult(ORCHESTRATION_RECEIPT_GATE_KEY, True, orchestration.receipt_id),
                                 AcceptanceGateResult(EXECUTION_RECEIPT_GATE_KEY, satisfied, execution.receipt_id),
                             )
-                            if satisfied:
+                            if compact.source_bound:
                                 for obligation_id, proof in candidates:
                                     proof["compact_evidence_receipt_id"] = compact.receipt_id
                                     proofs[obligation_id] = proof
@@ -432,6 +504,10 @@ def run_synthetic_transcript(transcript: dict) -> SyntheticRunResult:
                                          compact if accepted else None, gates,
                                          requester=PrincipalAuthority.OPENAI_SUPERVISOR)
                 segment["finalization"] = final.canonical_record()
+                if accepted and full_final is None:
+                    # Retain the immutable full-objective receipt at issuance;
+                    # later diagnostics cannot revoke or hide this evidence.
+                    full_final = final.canonical_record()
                 segment["gate_results"] = [item.canonical_record() for item in gates]
                 segment["measurement_status"] = ("indeterminate" if any(
                     item.get("reason") == "frozen-source-unavailable" for item in segment["rejections"]
@@ -470,6 +546,11 @@ def run_synthetic_transcript(transcript: dict) -> SyntheticRunResult:
                 orchestration_state=state, prior_strategy=active_strategy,
                 proposed_strategy=pending_strategy,
             )
+            if change is not None:
+                current_change_record = change.canonical_record()
+                if current_change_record not in strategy_changes:
+                    strategy_changes.append(current_change_record)
+                event["strategy_change_id"] = change.strategy_change_id
             requested = policy.lease_schedule[continuation.leases_granted] if continuation.leases_granted < len(policy.lease_schedule) else BudgetVector(request_delta=1)
             request = ContinuationRequest.from_state(
                 continuation, progress=last_progress, requested_resources=requested,
@@ -547,8 +628,6 @@ def run_synthetic_transcript(transcript: dict) -> SyntheticRunResult:
         )
         continuation_partial = ContinuationPartialReceipt(state=continuation, checkpoint=checkpoint, reason=partial_reason)
     complete = set(proofs) == set(state.obligations.known_ids)
-    full_final = (segments[0]["finalization"] if complete and len(segments) == 1
-                  and segments[0]["finalization"]["status"] == "accepted" else None)
     result = {
         "protocol_version": SYNTHETIC_CONTROL_VERSION, "input_id": input_id,
         "scenario_id": record["scenario_id"],

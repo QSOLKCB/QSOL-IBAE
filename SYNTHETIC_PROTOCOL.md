@@ -17,8 +17,10 @@ privilege. The synthetic and future live adapters share this bounded normalized
 boundary; a later live adapter cannot introduce an alternate authority path.
 The only proprietary provider admitted by the boundary is OpenAI.
 
-A deterministic supervisor consumes the same exact-source-validated compact
-`SupervisorProjection` that a future live transport will receive. Retrieved
+A deterministic supervisor consumes only a detached inert canonical projection
+record, matching the data boundary intended for future live transport. The
+trusted runner retains the live `SupervisorProjection`, runtime and native
+lineage witness; none of these objects is passed to an adapter. Retrieved
 repository, tool, worker, research and conversation text is inert data. Claims
 of progress or completion do not satisfy an obligation or produce a lease.
 
@@ -40,9 +42,13 @@ of progress or completion do not satisfy an obligation or produce a lease.
 7. RECALIBRATE only through a separately versioned admitted profile. Research
    observations cannot modify the running policy.
 
-Legacy evidence is manifest-scoped. A segmented run must identify the exact
-scope of each accepted final/partial receipt and preserve explicit native
-continuation boundaries. A conformance summary is not a new native seal or a
+Legacy evidence is manifest-scoped. Every segment retains its exact compact
+source proof and native continuation boundary. An actual final acceptance
+requires the segment manifest to prove every declared task objective; smaller
+segments remain partial even when their independent observations prove some
+objectives. Valid independent proofs survive deferred, rejected or mismatching
+neighbors. A previously issued whole-task acceptance receipt remains valid
+after later diagnostic segments. A conformance summary is not a new native seal or a
 replacement global finalizer. In particular, lease-application transitions
 cannot be omitted to manufacture a continuous legacy read-evidence chain.
 

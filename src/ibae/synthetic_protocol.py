@@ -16,7 +16,7 @@ from typing import Any, Final
 
 from ._records import bounded_utf8_length, require_fingerprint, require_symbol
 from .canonical import canonical_json, canonical_tool_key, domain_fingerprint
-from .supervisor import SupervisorProjection
+from .supervisor import _validate_projection
 
 NORMALIZED_PROPOSAL_VERSION: Final = "IBAE-NORMALIZED-SUPERVISOR-PROPOSAL-V1"
 SYNTHETIC_FIXTURE_VERSION: Final = "IBAE-SYNTHETIC-READ-FIXTURE-V1"
@@ -30,6 +30,7 @@ MAX_PROPOSALS: Final = 128
 MAX_READ_FIXTURES: Final = 128
 MAX_TEXT_BYTES: Final = 4_096
 MAX_BATCH_ACTIONS: Final = 64
+MAX_STRATEGY_PATTERN: Final = 12
 MAX_JSON_NODES: Final = 4_096
 MAX_JSON_DEPTH: Final = 16
 
@@ -223,11 +224,11 @@ def _validate_payload(kind: ProposalKind, payload: dict) -> None:
         _strategy(payload["strategy"])
         _ordered_strings("capability names", payload["capability_names"])
         _ordered_strings("target obligations", payload["target_obligation_ids"], fingerprints=True, nonempty=True)
-        _ordered_strings("dependency path", payload["dependency_path"], ordered=False)
+        _ordered_strings("dependency path", payload["dependency_path"], fingerprints=True, ordered=False)
         _symbol("recovery mode", payload["recovery_mode"])
         _exact("initial transition pattern", payload["initial_transition_pattern"], list)
-        if len(payload["initial_transition_pattern"]) > 6:
-            raise ValueError("transition pattern exceeds six entries")
+        if len(payload["initial_transition_pattern"]) > MAX_STRATEGY_PATTERN:
+            raise ValueError("transition pattern exceeds twelve entries")
         for identity in payload["initial_transition_pattern"]:
             _fingerprint("transition identity", identity)
     elif kind is ProposalKind.EFFECT_ATTEMPT:
@@ -613,7 +614,12 @@ class FakeCredentialBroker:
 
 @dataclass(frozen=True, slots=True, init=False)
 class FakeSupervisor:
-    """A frozen, index-addressed stream receiving the actual compact surface."""
+    """A frozen stream receiving only the inert canonical compact surface.
+
+    Live ``SupervisorProjection`` instances retain source runtime and lineage
+    witnesses. The controller must serialize them before this adapter boundary.
+    Structural validation here neither authenticates sources nor admits actions.
+    """
 
     _proposals: tuple[NormalizedProposal, ...]
 
@@ -654,11 +660,12 @@ class FakeSupervisor:
     def stream_id(self) -> str:
         return domain_fingerprint("ibae.synthetic-supervisor-stream-id.v1", self.canonical_record())
 
-    def propose(self, projection: SupervisorProjection, *, index: int) -> NormalizedProposal | None:
-        _exact("supervisor projection", projection, SupervisorProjection)
-        # Canonical validation consumes the same compact state as future live
-        # transport. Projection contents are observations, not authorization.
-        projection.canonical_record()
+    def propose(self, projection: dict, *, index: int) -> NormalizedProposal | None:
+        _exact("supervisor projection record", projection, dict)
+        # The shared parser first copies bounded exact inert JSON, then checks
+        # the complete versioned projection schema. Never accept or retain its
+        # live producer object, runtime session, native seal, or source witness.
+        _validate_projection(projection)
         _exact("proposal stream index", index, int)
         if not 0 <= index <= MAX_PROPOSALS:
             raise ValueError("proposal index is outside the bounded stream")

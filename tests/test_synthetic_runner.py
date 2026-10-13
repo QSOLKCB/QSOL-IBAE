@@ -5,7 +5,7 @@ import json
 
 import pytest
 
-from ibae.canonical import canonical_fingerprint, canonical_json
+from ibae.canonical import canonical_fingerprint, canonical_json, domain_fingerprint
 from ibae.synthetic_protocol import NormalizedProposal, ProposalKind
 from ibae.synthetic_runner import (
     MAX_ACCEPTANCE_RULES, MAX_CONTROL_STEPS, SYNTHETIC_CONTROL_VERSION,
@@ -69,7 +69,7 @@ def test_long_task_uses_exact_grant_application_without_claiming_global_v04_rece
     assert result["final_runtime"]["limits"]["max_executions"] == 4
     first, second = result["segments"]
     assert first["source_bound"] and second["source_bound"]
-    assert first["finalization"]["status"] == second["finalization"]["status"] == "accepted"
+    assert first["finalization"]["status"] == second["finalization"]["status"] == "partial"
     assert first["runtime_receipts"][-1]["resulting_state_id"] == application["prior_state_id"]
     assert second["runtime_receipts"][0]["prior_state_id"] == application["resulting_state_id"]
     assert result["continuation_evidence"]["progress_events"] == 2
@@ -141,12 +141,16 @@ def test_read_backend_never_runs_after_runtime_budget_exhaustion_and_demand_is_r
     result = run_synthetic_transcript(transcript).canonical_record()
     assert result["summary"]["backend_calls"] == 1
     assert result["summary"]["outcome"] == "partial"
-    assert len(result["summary"]["unresolved_obligation_ids"]) == 2
+    assert len(result["summary"]["unresolved_obligation_ids"]) == 1
     assert result["final_runtime"]["counters"]["executions"] == 1
     segment, = result["segments"]
-    assert segment["runtime_receipts"][-1]["status"] == "rejected"
-    assert segment["compact_evidence"] is None
+    assert len(segment["runtime_receipts"]) == 1
+    assert segment["runtime_receipts"][0]["status"] == "accepted"
+    assert segment["compact_evidence"] is not None
+    assert segment["source_bound"] is True
     assert segment["finalization"]["status"] == "partial"
+    assert len(result["objective_proofs"]) == 1
+    assert result["events"][0]["deferred_proposals"][0]["reason"] == "deferred-native-read-capacity"
 
 
 def test_repeated_cross_segment_read_does_not_bypass_cold_provenance():
@@ -286,7 +290,7 @@ def test_material_strategy_proposal_gets_real_governance_recovery_then_observes_
     assert result["segments"][1]["finalization"]["status"] == "accepted"
     assert result["summary"]["outcome"] == "objectives_verified"
     assert result["summary"]["backend_calls"] == 2
-    assert result["full_task_final_receipt"] is None
+    assert result["full_task_final_receipt"] == result["segments"][1]["finalization"]
 
 
 def test_strategy_paraphrase_cannot_change_native_strategy_or_add_authority():
@@ -442,3 +446,117 @@ def test_detailed_same_frontier_cannot_invent_recovery_path_fields():
     assert result["lease_decisions"][0]["denial_reason"] == "IBAE-LEASE-DENY-NO-MEASURABLE-PROGRESS"
     assert result["summary"]["outcome"] == "partial"
     assert result["summary"]["backend_calls"] == 1
+
+
+def test_budget_partitioned_batch_preserves_exact_separate_execution_and_later_progress():
+    grouped = _input()
+    grouped["initial_execution_budget"] = 1
+    preview = run_synthetic_transcript(grouped).canonical_record()
+    deferred_ids = {item["proposal_id"] for item in preview["events"][0]["deferred_proposals"]}
+    source = grouped["proposals"][0]["payload"]
+    # Canonical proposal ordering is an orchestration fact, not list ordering.
+    decisions = preview["segments"][0]["admission"]["decisions"]
+    selected_keys = {item["proposal_key"] for item in decisions}
+    assert len(selected_keys) == len(deferred_ids) == 1
+    initial = deepcopy(source)
+    initial["proposals"] = [item for item in source["proposals"] if item["proposal_key"] in selected_keys]
+    remaining = deepcopy(source)
+    remaining["batch_key"] = "remaining-independent-work"
+    remaining["proposals"] = [item for item in source["proposals"] if item["proposal_key"] not in selected_keys]
+    grouped["proposals"] = [grouped["proposals"][0], _proposal(ProposalKind.CONTINUE, {}),
+                            _proposal(ProposalKind.READ_BATCH, remaining)]
+    separate = deepcopy(grouped)
+    separate["proposals"][0] = _proposal(ProposalKind.READ_BATCH, initial)
+    one_batch = run_synthetic_transcript(grouped).canonical_record()
+    two_batches = run_synthetic_transcript(separate).canonical_record()
+    for field in ("segments", "objective_proofs", "progress", "lease_decisions", "lease_applications",
+                  "final_runtime", "final_continuation", "summary"):
+        assert one_batch[field] == two_batches[field], field
+    assert one_batch["summary"]["outcome"] == "objectives_verified"
+    assert one_batch["summary"]["backend_calls"] == 2
+    assert len(one_batch["lease_applications"]) == 1
+    assert len(one_batch["objective_proofs"]) == 2
+    assert all(segment["finalization"]["status"] == "partial" for segment in one_batch["segments"])
+    assert one_batch["full_task_final_receipt"] is None
+
+
+def test_unavailable_independent_source_does_not_cancel_a_verified_neighbor():
+    transcript = _input()
+    transcript["fixtures"] = transcript["fixtures"][:1]
+    result = run_synthetic_transcript(transcript).canonical_record()
+    assert result["summary"]["backend_calls"] == 1
+    assert len(result["objective_proofs"]) == 1
+    assert len(result["summary"]["unresolved_obligation_ids"]) == 1
+    assert result["segments"][0]["source_bound"] is True
+    assert result["events"][0]["deferred_proposals"][0]["reason"] == "frozen-source-unavailable"
+    assert result["full_task_final_receipt"] is None
+
+
+def test_mismatching_independent_observation_does_not_erase_matching_source_proof():
+    transcript = _input()
+    transcript["fixtures"][0]["output"]["valid"] = False
+    result = run_synthetic_transcript(transcript).canonical_record()
+    assert result["summary"]["backend_calls"] == 2
+    assert result["segments"][0]["source_bound"] is True
+    assert result["segments"][0]["finalization"]["status"] == "partial"
+    assert len(result["objective_proofs"]) == 1
+    assert len(result["summary"]["unresolved_obligation_ids"]) == 1
+    assert result["progress"][0]["classification"] == "measurable_progress"
+
+
+def test_cache_only_neighbor_does_not_cancel_new_independent_cold_evidence():
+    transcript = _input()
+    transcript["fixtures"][0]["output"]["valid"] = False
+    original = transcript["proposals"][0]
+    first = deepcopy(original["payload"])
+    first["batch_key"] = "unsuccessful-primary"
+    first["proposals"] = first["proposals"][:1]
+    transcript["proposals"] = [_proposal(ProposalKind.READ_BATCH, first), original]
+    result = run_synthetic_transcript(transcript).canonical_record()
+    assert result["summary"]["backend_calls"] == 2
+    assert len(result["objective_proofs"]) == 1
+    assert result["events"][1]["deferred_proposals"][0]["reason"] == "cross-segment-cold-provenance-required"
+    assert result["segments"][1]["source_bound"] is True
+    assert result["final_runtime"]["counters"]["requests"] == 2
+
+
+def test_full_task_final_receipt_survives_later_rejected_diagnostic_segment():
+    transcript = _input()
+    before = run_synthetic_transcript(transcript).canonical_record()
+    transcript["proposals"].append(deepcopy(transcript["proposals"][0]))
+    after = run_synthetic_transcript(transcript).canonical_record()
+    assert len(after["segments"]) == 2
+    assert after["segments"][1]["finalization"]["status"] == "partial"
+    assert after["full_task_final_receipt"] == before["full_task_final_receipt"]
+    assert after["summary"]["global_final_acceptance"] is True
+    assert after["summary"]["backend_calls"] == 2
+
+
+def test_prior_diagnostic_segment_does_not_hide_a_later_whole_objective_final():
+    result = _run("material_strategy_recovery")
+    assert result["segments"][0]["finalization"]["status"] == "partial"
+    assert result["segments"][1]["finalization"]["status"] == "accepted"
+    assert result["full_task_final_receipt"] == result["segments"][1]["finalization"]
+    assert result["summary"]["global_final_acceptance"] is True
+
+
+def test_every_grant_strategy_reference_is_retained_at_its_actual_live_state():
+    transcript = _input("material_strategy_recovery")
+    transcript["initial_execution_budget"] = 2
+    transcript["fixtures"].append({"tool_name": "read.primary", "arguments": {"path": "item-1"},
+                                    "output": {"valid": False}})
+    transcript["proposals"].insert(2, _proposal(ProposalKind.READ, {
+        "proposal_key": "intervening-read", "tool_name": "read.primary", "arguments": {"path": "item-1"},
+        "target_obligation_keys": ["objective-0"],
+    }))
+    result = run_synthetic_transcript(transcript).canonical_record()
+    grant, = result["lease_decisions"]
+    assert grant["status"] == "granted"
+    changes = {domain_fingerprint("ibae.strategy-change-id.v1", item): item for item in result["strategy_changes"]}
+    assert len(changes) == 2
+    exact = changes[grant["strategy_change_id"]]
+    assert exact["orchestration_state_id"] == grant["orchestration_state_id"]
+    continuation_event = next(item for item in result["events"] if item["proposal_kind"] == "continue")
+    assert continuation_event["strategy_change_id"] == grant["strategy_change_id"]
+    assert exact["orchestration_state_id"] == continuation_event["before"]["orchestration_state_id"]
+    assert exact["orchestration_state_id"] != result["strategy_changes"][0]["orchestration_state_id"]

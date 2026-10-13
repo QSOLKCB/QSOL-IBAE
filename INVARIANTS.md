@@ -1170,8 +1170,9 @@ live transport admission-equivalence remains a v0.6C activation gate.
 
 **ENFORCED MUST**
 
-Frozen adapters receive no supervisor capability, governance issuer, lease
-setter or effect executor. Every executed synthetic read uses real
+Frozen adapters receive detached inert projection records, never live runtime
+or lineage objects, supervisor capabilities, governance issuers, lease setters
+or effect executors. Every executed synthetic read uses real
 orchestration admission, governed tool authorization and Rust accounting.
 Synthetic output is observation data, not a replacement control plane.
 
@@ -1181,7 +1182,9 @@ Synthetic output is observation data, not a replacement control plane.
 
 Normalized record acceptance does not admit the proposed action or validate
 completion. Exact source observations must satisfy the declared deterministic
-acceptance rules; final/partial receipts retain their real manifest scope.
+acceptance rules. An actual accepted final requires one manifest proving every
+declared task objective; subset segments remain partial. Independent valid
+proofs and previously issued full acceptance survive later diagnostic failures.
 Missing measurements remain unavailable/indeterminate. A diagnostic segmented
 run summary cannot replace a source-bound final receipt.
 

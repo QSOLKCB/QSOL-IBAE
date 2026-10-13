@@ -13,7 +13,7 @@ from dataclasses import dataclass, fields, replace
 
 from ._records import CanonicalValue, bounded_utf8_length, require_symbol
 from .assurance import AssuranceClass, AssuranceEdge, AssuranceGraph, AssuranceNode
-from .canonical import domain_fingerprint
+from .canonical import canonical_json, domain_fingerprint
 from .continuation import (
     BudgetVector, ContinuationCheckpoint, ContinuationPartialReason,
     ContinuationPartialReceipt, ContinuationPolicyReceipt, ContinuationRequest,
@@ -653,19 +653,50 @@ def _untrusted_data(case):
             "data_changes_projection_identity": observed.projection_id != projection.projection_id}
 
 
-def _compact_forgery():
-    """One governed native read, then a record-only compact-evidence forgery."""
-    context, _, _ = reference_supervisor_context("v0.6b.forged_compact_evidence")
-    current = context.orchestration_state
-    capability = next(item for item in current.capabilities if item.name == "read.allowed")
-    schema = current.strategy_schemas[0]
+def _compact_forgery(*, expected_output=..., actual_output=..., include_unmatched_obligation=False):
+    """Verify a declared acceptance predicate before testing record-only forgery.
+
+    Optional inert outputs exercise ordinary positive/negative conformance
+    cases. They cannot supply code, gates, obligation status, or authority.
+    """
+    if type(include_unmatched_obligation) is not bool:
+        raise TypeError("extra fixture obligation flag must be an exact boolean")
+    default = {"fixture": "verified", "success": True}
+    expected = CanonicalValue.from_value(bounded_synthetic_data(
+        default if expected_output is Ellipsis else expected_output, max_bytes=1_024))
+    actual = CanonicalValue.from_value(bounded_synthetic_data(
+        default if actual_output is Ellipsis else actual_output, max_bytes=1_024))
+    rules = [{"obligation_key": "verify.compact.fixture", "tool_name": "read.compact", "arguments": {},
+              "expected_output": expected.to_value()}]
+    if include_unmatched_obligation:
+        rules.append({"obligation_key": "verify.other.fixture", "tool_name": "read.compact", "arguments": {},
+                      "expected_output": {"fixture": "other", "success": True}})
+    obligations = tuple(Obligation(rule["obligation_key"], "Verify the exact declared fixture observation")
+                        for rule in rules)
+    capability = Capability("read.compact", ReplaySafety.CACHEABLE_READ, "Read the exact frozen compact fixture")
+    schema = StrategySchema("compact.fixture")
+    current = OrchestrationState.create(obligations, capabilities=(capability,), strategy_schemas=(schema,))
+    policy = experimental_continuation_profile("tiny")
+    governance_policy = GovernancePolicy("v0.6b.compact.fixture", 1, "tiny", 1, ProviderAuthority.OPENAI,
+        (ToolPermission(capability.name, ToolAuthorityClass.PURE_READ, False, True),),
+        tuple(SUPPORTED_REQUIRED_GATE_KEYS))
+    wrapper = GovernanceWrapper(governance_policy)
+    task, governance = wrapper.admit_task("v0.6b.forged_compact_evidence", {
+        "acceptance_rule": "exact-canonical-governed-observation-equality-v1", "acceptance_rules": rules,
+        "whole_task_requires": "every-declared-obligation-covered-by-accepted-source-observations",
+    }, requester=PrincipalAuthority.OPENAI_SUPERVISOR)
+    policy_receipt = ContinuationPolicyReceipt(policy, governance_policy, governance)
+    runtime, authority = RustRuntimeSession.create_continuation("v0.6b.forged_compact_evidence",
+        continuation_policy=policy, continuation_policy_receipt=policy_receipt)
+    continuation = ContinuationState.create(policy=policy, policy_receipt=policy_receipt,
+        runtime_session=runtime, orchestration_state=current, runtime_snapshot=runtime.snapshot)
+    context = SupervisorContext(task, governance, governance_policy, policy, continuation, current, runtime, authority)
     proposal = ActionProposal("compact.fixture.read", capability.name, {},
-        target_obligation_ids=current.obligations.ready_ids)
+        target_obligation_ids=(obligations[0].obligation_id,))
     batch = ProposalBatch("compact.fixture.batch", Strategy(schema.strategy_key, {}, schema=schema), (proposal,))
     admission = admit_batch(current, batch)
     decision = admission.receipt.decisions[0]
     dependency = current.epistemic_state.dependency_digest(decision.dependency_state_keys)
-    wrapper = GovernanceWrapper(context.governance_policy)
     tool = wrapper.admit_tool(context.task, context.governance, decision, proposal, capability,
         ToolAuthorityClass.PURE_READ, dependency_state_id=dependency,
         requester=PrincipalAuthority.DETERMINISTIC_ORCHESTRATOR)
@@ -674,17 +705,38 @@ def _compact_forgery():
         orchestration.orchestration_id, authorization_manifest=orchestration.authorization_manifest,
         limits=EvidenceLimits(max_cases=1, max_failure_details=1))
     transition = context.runtime_session.execute_admitted_read(decision, proposal, capability,
-        dependency, lambda: {"fixture": "verified", "success": True})
+        dependency, actual.to_value)
     accumulator.record_runtime_case(transition.receipt)
     execution = wrapper.bind_execution(context.task, context.governance, orchestration,
         accumulator.aggregate_summary())
     genuine = accumulator.finalize(execution.execution_id)
-    gates = tuple(AcceptanceGateResult(key, True, receipt_id) for key, receipt_id in (
-        (COMPACT_EVIDENCE_GATE_KEY, genuine.receipt_id),
-        (ORCHESTRATION_RECEIPT_GATE_KEY, orchestration.receipt_id),
-        (EXECUTION_RECEIPT_GATE_KEY, execution.receipt_id)))
+
+    # A valid execution receipt establishes source/coverage, not success at an
+    # arbitrary task. Evaluate the task's declared exact predicate separately,
+    # then apply only the matching targeted obligation and bind native progress.
+    declared = task.acceptance_contract["acceptance_rules"][0]
+    predicate_matched = (transition.receipt.status == "accepted" and genuine.source_bound
+        and obligations[0].obligation_id in proposal.target_obligation_ids
+        and tool.action_id == decision.action_id
+        and proposal.capability == declared["tool_name"]
+        and canonical_json(proposal.arguments) == canonical_json(declared["arguments"])
+        and canonical_json(transition.observation) == canonical_json(declared["expected_output"]))
+    completed = admission.next_state
+    if predicate_matched:
+        completed = replace(completed, obligations=completed.obligations.with_status(
+            obligations[0].obligation_id, ObligationStatus.SATISFIED))
+    progress = evaluate_progress(task_id=task.task_id, governance_id=governance.governance_id,
+        contract=default_obligation_progress_contract(), prior_state=current, current_state=completed)
+    context = _observe(context, current=completed, progress=progress)
+    surface = SupervisorProjection(context).decision_surface
+    task_complete = predicate_matched and progress.task_complete and surface["completion"]["eligible_for_gate_validation"]
+    gates = (
+        AcceptanceGateResult(COMPACT_EVIDENCE_GATE_KEY, task_complete, genuine.receipt_id),
+        AcceptanceGateResult(ORCHESTRATION_RECEIPT_GATE_KEY, True, orchestration.receipt_id),
+        AcceptanceGateResult(EXECUTION_RECEIPT_GATE_KEY, task_complete, execution.receipt_id),
+    )
     original = wrapper.finalize(context.task, context.governance, orchestration, execution,
-        genuine, gates, requester=PrincipalAuthority.OPENAI_SUPERVISOR)
+        genuine if task_complete else None, gates, requester=PrincipalAuthority.OPENAI_SUPERVISOR)
     forged = CompactEvidenceReceipt.from_record(genuine.canonical_record())
     before = context.runtime_session.snapshot._canonical_text()
     try:
@@ -694,12 +746,34 @@ def _compact_forgery():
         rejection = exc.receipt.canonical_record()
     else:
         raise AssertionError("record-only compact evidence unexpectedly finalized")
+    original_record = original.canonical_record()
+    proof = None if not predicate_matched else {
+        "obligation_id": obligations[0].obligation_id,
+        "acceptance_rule_id": domain_fingerprint("ibae.synthetic-acceptance-rule.v1", declared),
+        "tool_admission_receipt_id": tool.receipt_id,
+        "runtime_receipt_id": transition.receipt.receipt_id,
+        "observation_id": transition.receipt.canonical_record()["observation_id"],
+        "compact_evidence_receipt_id": genuine.receipt_id,
+    }
     return {"genuine_compact_receipt_id": genuine.receipt_id,
-            "genuine_final_receipt_id": original.receipt_id, "execution_receipt_id": execution.receipt_id,
+            "genuine_final_receipt_id": original.receipt_id if original_record["status"] == "accepted" else None,
+            "baseline_finalization": original_record, "execution_receipt_id": execution.receipt_id,
             "orchestration_receipt_id": orchestration.receipt_id,
+            "tool_admission_receipt_id": tool.receipt_id,
             "runtime_receipt_id": transition.receipt.receipt_id,
             "structurally_equal_receipt": forged.canonical_record() == genuine.canonical_record(),
             "genuine_source_bound": genuine.source_bound, "forged_source_bound": forged.source_bound,
+            "acceptance_contract": task.acceptance_contract, "observed_output": transition.observation,
+            "predicate_matched": predicate_matched, "task_complete": task_complete,
+            "acceptance_proof": proof,
+            "gate_results": [gate.canonical_record() for gate in gates],
+            "progress": progress.canonical_record(),
+            "completion_surface": surface["completion"],
+            "obligations": surface["obligations"],
+            "live_continuation_state_id": context.continuation_state.continuation_state_id,
+            "live_orchestration_state_id": context.orchestration_state.state_id,
+            "live_progress_evidence_id": context.continuation_state.last_progress_id,
+            "progress_id": progress.progress_id,
             "rejection": rejection, "rejection_state_neutral": before == context.runtime_session.snapshot._canonical_text()}
 
 

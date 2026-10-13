@@ -339,8 +339,10 @@ not routine model context or serialized native authority. ChatGPT/Work/Codex
 interfaces explicitly report unavailable; their interruption histories are
 frozen recovery observations. No actual secret resolution or effects exist.
 
-Each accepted segment receipt retains its one-manifest scope. Only a single
-manifest covering every declared acceptance rule may appear as the full-task
-final receipt. Long segmented completion is separately labelled objective
-verification through a replayable receipt chain, not global v0.4 acceptance.
+Each segment retains exact native compact evidence. Actual final acceptance
+requires a single manifest proving every declared acceptance rule; incomplete
+segments remain partial. Long segmented completion is separately labelled
+objective verification through a replayable compact-proof/partial-receipt chain,
+not global v0.4 acceptance. Adapters receive only detached inert projection
+records; live runtime and lineage witnesses remain inside the trusted runner.
 See `SYNTHETIC_PROTOCOL.md`; all later live/effect gates remain separate.

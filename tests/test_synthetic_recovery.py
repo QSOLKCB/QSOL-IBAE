@@ -8,7 +8,7 @@ from ibae.canonical import canonical_json, domain_fingerprint
 from ibae.synthetic_recovery import (
     MAX_RECOVERY_ASSESSMENT_BYTES, MAX_RECOVERY_SCENARIOS,
     SYNTHETIC_RECOVERY_SCENARIOS, RecoveryAssessment, RecoveryScenario,
-    assess_recovery_scenario, synthetic_recovery_corpus,
+    _compact_forgery, assess_recovery_scenario, synthetic_recovery_corpus,
 )
 
 
@@ -253,6 +253,78 @@ def test_hash_consistent_projection_and_compact_forgery_do_not_supply_native_sou
     assert compact["rejection"]["reason"] == "IBAE-REJECT-INVALID-BOUND-RECEIPT"
     assert compact["rejection"]["stage"] == "finalization"
     assert compact["rejection_state_neutral"] is True
+
+
+def test_compact_forgery_positive_baseline_requires_declared_verified_completion(observed):
+    record = observed["forged_compact_evidence"]
+    contract = record["acceptance_contract"]
+    assert contract["acceptance_rule"] == "exact-canonical-governed-observation-equality-v1"
+    assert len(contract["acceptance_rules"]) == len(record["obligations"]) == 1
+    rule = contract["acceptance_rules"][0]
+    assert canonical_json(rule["expected_output"]) == canonical_json(record["observed_output"])
+    assert record["predicate_matched"] is record["task_complete"] is True
+    assert record["progress"]["task_complete"] is True
+    assert record["progress"]["prior_measures"] != record["progress"]["current_measures"]
+    assert record["progress"]["current_orchestration_state_id"] == record["live_orchestration_state_id"]
+    assert record["progress_id"] == record["live_progress_evidence_id"]
+    assert record["obligations"][0]["status"] == "satisfied"
+    assert record["completion_surface"]["eligible_for_gate_validation"] is True
+    proof = record["acceptance_proof"]
+    assert proof["obligation_id"] == record["obligations"][0]["obligation_id"]
+    assert proof["acceptance_rule_id"] == domain_fingerprint("ibae.synthetic-acceptance-rule.v1", rule)
+    assert proof["tool_admission_receipt_id"] == record["tool_admission_receipt_id"]
+    assert proof["runtime_receipt_id"] == record["runtime_receipt_id"]
+    assert proof["compact_evidence_receipt_id"] == record["genuine_compact_receipt_id"]
+    assert all(item["satisfied"] for item in record["gate_results"])
+    assert record["baseline_finalization"]["status"] == "accepted"
+    assert record["baseline_finalization"]["receipt_id"] == record["genuine_final_receipt_id"]
+
+
+@pytest.mark.parametrize("actual", [
+    None,
+    {"fixture": "wrong", "success": True},
+    {"fixture": "verified", "success": False},
+    {"fixture": "verified", "success": 1},
+    {"fixture": "verified"},
+    {"fixture": "verified", "success": True, "extra": "unrequested"},
+])
+def test_compact_forgery_mismatched_actual_observation_never_mints_final_acceptance(actual):
+    record = _compact_forgery(actual_output=actual)
+    assert record["genuine_source_bound"] is True
+    assert record["predicate_matched"] is record["task_complete"] is False
+    assert record["acceptance_proof"] is None
+    assert record["progress"]["task_complete"] is False
+    assert record["obligations"][0]["status"] == "unsatisfied"
+    assert record["completion_surface"]["eligible_for_gate_validation"] is False
+    assert record["genuine_final_receipt_id"] is None
+    assert record["baseline_finalization"]["status"] == "partial"
+    assert not all(item["satisfied"] for item in record["gate_results"])
+
+
+def test_compact_forgery_checks_expected_output_from_declared_task_contract():
+    expected = {"fixture": "alternate", "success": True}
+    mismatch = _compact_forgery(expected_output=expected)
+    assert mismatch["predicate_matched"] is False
+    assert mismatch["baseline_finalization"]["status"] == "partial"
+    assert mismatch["genuine_final_receipt_id"] is None
+    matching = _compact_forgery(expected_output=expected, actual_output=expected)
+    assert matching["predicate_matched"] is matching["task_complete"] is True
+    assert matching["baseline_finalization"]["status"] == "accepted"
+    assert matching["genuine_final_receipt_id"]
+    # Canonical equality accepts irrelevant dictionary insertion ordering.
+    reordered = _compact_forgery(actual_output={"success": True, "fixture": "verified"})
+    assert reordered == _compact_forgery()
+
+
+def test_compact_forgery_one_verified_read_cannot_cover_unrelated_obligation():
+    record = _compact_forgery(include_unmatched_obligation=True)
+    assert record["predicate_matched"] is True
+    assert record["acceptance_proof"] is not None
+    assert record["task_complete"] is record["progress"]["task_complete"] is False
+    assert sorted(item["status"] for item in record["obligations"]) == ["satisfied", "unsatisfied"]
+    assert record["completion_surface"]["eligible_for_gate_validation"] is False
+    assert record["baseline_finalization"]["status"] == "partial"
+    assert record["genuine_final_receipt_id"] is None
 
 
 @pytest.mark.parametrize("case", ["provider_substitution", "profile_mutation", "research_policy_promotion"])
