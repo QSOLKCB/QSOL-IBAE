@@ -19,15 +19,26 @@ from typing import Final
 from ._records import bounded_utf8_length, require_fingerprint
 from .canonical import canonical_json, domain_fingerprint
 from .governance import GovernancePolicy, GovernanceReceipt, TaskReceipt, _require_governance_binding
-from .supervisor import FreshContextHandoff, _validate_projection
+from .supervisor import MAX_FRESH_CONTEXT_BYTES, FreshContextHandoff, _json_copy, _validate_projection
 from .synthetic_protocol import MAX_PROPOSAL_BYTES, NormalizedProposal, bounded_synthetic_data
-from .transport_activation import ActivationController, ActivationStage, ToolProfile
+from .transport_activation import (
+    MAX_SELECTED_CAPTURE_SURFACE_BYTES,
+    ActivationController,
+    ActivationStage,
+    ToolProfile,
+)
 
 OPENAI_SDK_VERSION: Final = "3.29.0"
 OPENAI_WIRE_VERSION: Final = "IBAE-OPENAI-PROPOSAL-ENVELOPE-V1"
 OPENAI_TRANSPORT_VERSION: Final = "IBAE-OPENAI-TRANSPORT-V1"
+OPENAI_MODEL_INPUT_VERSION: Final = "IBAE-OPENAI-MODEL-INPUT-V1"
+OPENAI_OBSERVATION_VERSION: Final = "IBAE-OPENAI-TRANSPORT-OBSERVATION-V2"
 MAX_RESPONSE_BYTES: Final = 1_048_576
 MAX_ENVELOPE_BYTES: Final = MAX_PROPOSAL_BYTES * 6 + 1_024
+MAX_MODEL_INPUT_BYTES: Final = MAX_FRESH_CONTEXT_BYTES + MAX_SELECTED_CAPTURE_SURFACE_BYTES + 4_096
+# JSON encoding can expand string content. Preserve the accepted native input
+# ceiling and add explicit room for the capture envelope, instructions/schema.
+MAX_REQUEST_BYTES: Final = MAX_MODEL_INPUT_BYTES * 6 + 65_536
 _OPENAI_BASE_URL: Final = "https://api.openai.com/v1"
 _HANDLE = re.compile(r"cred:openai\.[a-z][a-z0-9_.-]{0,47}\Z")
 _ENVIRONMENT_NAME = re.compile(r"[A-Z][A-Z0-9_]{0,127}\Z")
@@ -58,6 +69,15 @@ _INSTRUCTIONS: Final = (
     "Read targets must be nonempty. At most 64 batch actions, 12 transition entries, "
     "4096 UTF-8 bytes per string and 65536 UTF-8 bytes per normalized proposal. "
     "Strategy parameter values are booleans, integers, symbols or symbol arrays."
+    " The separately versioned selected_capture_surface describes selected external "
+    "read capture through the Python transport controller. Its eligibility is distinct "
+    "from native read eligibility in the unchanged IBAE projection. For selected "
+    "external capture, only propose a target whose may_propose_candidate is true, "
+    "using that target's exact tool name, arguments and "
+    "permitted obligation identifiers. Respect its explicit transport budget and "
+    "blocked reasons. A capture produces observation data; a separately admitted "
+    "frozen-snapshot read is still required for native evidence. Neither this "
+    "surface nor API success grants execution or completion authority."
 )
 
 
@@ -82,12 +102,13 @@ class OpenAITransportObservation:
     def __init__(self, record: dict):
         value = bounded_synthetic_data(record, max_bytes=16_384)
         identities = {"task_id", "governance_id", "transport_policy_id", "credential_reference_id", "projection_id"}
-        fields = identities | {"protocol_version", "provider", "stage", "epoch", "call_index", "status", "reason",
+        fields = identities | {"capture_surface_id", "request_context_id",
+                               "protocol_version", "provider", "stage", "epoch", "call_index", "status", "reason",
                                "dispatch_attempted", "proposal_id", "response_id", "transport_only",
                                "control_authority", "live_verification"}
         if type(value) is not dict or set(value) != fields:
             raise ValueError("invalid OpenAI transport observation schema")
-        if (value["protocol_version"] != "IBAE-OPENAI-TRANSPORT-OBSERVATION-V1"
+        if (value["protocol_version"] != OPENAI_OBSERVATION_VERSION
                 or value["provider"] != "openai" or value["transport_only"] is not True
                 or value["control_authority"] is not False or value["live_verification"] is not False):
             raise ValueError("invalid OpenAI transport observation authority")
@@ -98,6 +119,13 @@ class OpenAITransportObservation:
         _integer(value["epoch"], 0, (1 << 64) - 1, "observation epoch")
         _integer(value["call_index"], 0, 127, "observation index")
         _exact(value["dispatch_attempted"], bool, "dispatch observation")
+        for key in ("capture_surface_id", "request_context_id"):
+            if value[key] is None:
+                if value["dispatch_attempted"] or value["status"] == "received":
+                    raise ValueError("dispatched transport requires its exact model context")
+            else:
+                _exact(value[key], str, "transport context identity")
+                require_fingerprint("transport context identity", value[key])
         if value["status"] not in {"received", "unavailable", "failed"} or value["reason"] not in _OBSERVATION_REASONS:
             raise ValueError("invalid transport observation result")
         if value["status"] == "received":
@@ -112,7 +140,7 @@ class OpenAITransportObservation:
             "sdk_unavailable", "credential_unavailable",
         }):
             raise ValueError("inconsistent unavailable transport observation")
-        value["observation_id"] = domain_fingerprint("ibae.openai-transport-observation.v1", value)
+        value["observation_id"] = domain_fingerprint("ibae.openai-transport-observation.v2", value)
         object.__setattr__(self, "_text", canonical_json(value))
 
     def canonical_record(self):
@@ -154,6 +182,14 @@ def _guard_http_response(response, maximum):
         raise OpenAITransportError("response_byte_limit")
 
 
+def _guard_http_request(request):
+    """Bound the SDK's actual serialized body before any HTTP transmission."""
+    if str(request.url) != _OPENAI_BASE_URL + "/responses" or request.method != "POST":
+        raise OpenAITransportError("request_route_rejected")
+    if type(request.content) is not bytes or len(request.content) > MAX_REQUEST_BYTES:
+        raise OpenAITransportError("request_byte_limit")
+
+
 @dataclass(frozen=True, slots=True)
 class OpenAITransportPolicy:
     model: str
@@ -191,6 +227,9 @@ class OpenAITransportPolicy:
                 "timeout_seconds": self.timeout_seconds, "store_responses": self.store_responses,
                 "sdk_version": OPENAI_SDK_VERSION, "automatic_retries": 0,
                 "wire_version": OPENAI_WIRE_VERSION,
+                "model_input_version": OPENAI_MODEL_INPUT_VERSION,
+                "observation_version": OPENAI_OBSERVATION_VERSION,
+                "max_model_input_bytes": MAX_MODEL_INPUT_BYTES, "max_request_bytes": MAX_REQUEST_BYTES,
                 "instructions_id": domain_fingerprint("ibae.openai-supervisor-instructions.v1", _INSTRUCTIONS),
                 "tools_enabled": False, "control_authority": False}
 
@@ -261,9 +300,10 @@ class OpenAICredentialBroker:
         ):
             raise OpenAITransportError("credential_binding_mismatch")
 
-    def _request(self, reference, projection, policy, request, activation, reservation, progress):
+    def _request(self, reference, projection, policy, request, activation, reservation, progress, capture_surface_id):
         self._check(reference, projection)
-        deployment = {"transport_policy_id": policy.policy_id, "credential_reference_id": reference.reference_id}
+        deployment = {"transport_policy_id": policy.policy_id, "credential_reference_id": reference.reference_id,
+                      "capture_surface_id": capture_surface_id}
         activation.check_reservation(reservation, projection, **deployment)
         # Import the optional exact SDK before resolving any credential. Disable
         # alternate endpoints, redirects and proxy/environment HTTP configuration.
@@ -295,7 +335,7 @@ class OpenAICredentialBroker:
 
             with sdk.DefaultHttpx2Client(trust_env=False, follow_redirects=False,
                                         headers={"Accept-Encoding": "identity"},
-                                        event_hooks={"response": [guard]}) as http_client:
+                                        event_hooks={"request": [_guard_http_request], "response": [guard]}) as http_client:
                 with sdk.OpenAI(api_key=secret, admin_api_key="", webhook_secret="",
                                 base_url=_OPENAI_BASE_URL, organization="", project="",
                                 default_headers={"OpenAI-Organization": sdk.omit, "OpenAI-Project": sdk.omit},
@@ -442,11 +482,29 @@ def decode_openai_response(body: bytes, *, policy: OpenAITransportPolicy):
     return decode_proposal_envelope(content[0].get("text")), response_id
 
 
+def _model_input_record(projection, handoff, capture_surface):
+    """Keep the accepted native record intact inside a new transport envelope."""
+    # Validate independently: summing two valid bounded surfaces must not apply
+    # the native copy's node ceiling to their combined envelope.
+    native = (FreshContextHandoff.from_record(handoff).canonical_record() if handoff is not None
+              else {"projection": _validate_projection(projection)})
+    captured = _json_copy(capture_surface, limit=MAX_SELECTED_CAPTURE_SURFACE_BYTES + 256)
+    result = {
+        "protocol_version": OPENAI_MODEL_INPUT_VERSION,
+        "native_context": {"kind": "fresh_handoff" if handoff is not None else "response_continuation",
+                           "record": native},
+        "selected_capture_surface": captured,
+        "control_authority": False,
+    }
+    bounded_utf8_length("OpenAI model input", canonical_json(result), limit=MAX_MODEL_INPUT_BYTES)
+    return result
+
+
 class OpenAIResponsesSupervisor:
     """A finite transport session. It retains no live IBAE runtime or secrets."""
 
     __slots__ = ("__policy", "__broker", "__credential", "__stage", "__profile", "__tools",
-                 "__calls", "__previous", "__binding", "__last_observation")
+                 "__calls", "__previous", "__binding", "__last_observation", "__previous_context_id")
 
     def __init__(self, policy: OpenAITransportPolicy, broker: OpenAICredentialBroker,
                  credential: CredentialReference, *, stage: ActivationStage,
@@ -463,6 +521,7 @@ class OpenAIResponsesSupervisor:
         self.__stage, self.__profile, self.__tools = stage, tool_profile, selected_read_tools
         self.__calls, self.__previous, self.__binding = 0, None, None
         self.__last_observation = None
+        self.__previous_context_id = None
 
     @property
     def previous_response_id(self):
@@ -501,34 +560,48 @@ class OpenAIResponsesSupervisor:
         self.__broker._check(self.__credential, projection)
         binding = (activation, activation.epoch, projection["sources"]["task_id"],
                    projection["sources"]["governance_id"], policy.policy_id)
+        handoff, parent_context_id = None, None
         if previous_response_id is not None:
             _exact(previous_response_id, str, "previous response identifier")
             if (fresh_handoff is not None or not policy.store_responses or self.__binding != binding
                     or previous_response_id != self.__previous or self.__previous is None):
                 raise OpenAITransportError("unverified_response_continuation")
-            model_input = canonical_json({"projection": projection})
+            parent_context_id = self.__previous_context_id
         else:
             _exact(fresh_handoff, dict, "fresh handoff record")
             handoff = FreshContextHandoff.from_record(fresh_handoff).canonical_record()
             if handoff["projection"] != projection:
                 raise OpenAITransportError("fresh_handoff_projection_mismatch")
-            model_input = canonical_json(handoff)
-        request = {"model": policy.model, "instructions": _INSTRUCTIONS, "input": model_input,
-                   "text": {"format": structured_proposal_format()}, "max_output_tokens": policy.max_output_tokens,
-                   "tools": [], "tool_choice": "none", "parallel_tool_calls": False,
-                   "stream": False, "background": False, "store": policy.store_responses}
-        if previous_response_id is not None:
-            request["previous_response_id"] = previous_response_id
         reservation = activation.reserve_call(projection, stage=self.__stage, tool_profile=self.__profile,
                                               selected_read_tools=self.__tools, **deployment)
         self.__calls += 1  # Failed/ambiguous dispatch still consumes a finite attempt.
         self.__previous, self.__binding = None, None
+        self.__previous_context_id = None
         progress = _RequestProgress()
         reason, status, proposal_id, response_id = "interrupted", "failed", None, None
+        capture_surface_id, request_context_id = None, None
         try:
             activation.check_reservation(reservation, projection, **deployment)
+            capture_surface = activation.selected_capture_surface(projection, reservation=reservation)
+            model_input = _model_input_record(projection, handoff, capture_surface)
+            capture_surface_id = model_input["selected_capture_surface"]["surface_id"]
+            _exact(capture_surface_id, str, "selected capture surface identity")
+            require_fingerprint("selected capture surface identity", capture_surface_id)
+            model_input_text = canonical_json(model_input)
+            request_context_id = domain_fingerprint("ibae.openai-request-context.v1", {
+                "input_json": model_input_text, "previous_response_id": previous_response_id,
+                "parent_request_context_id": parent_context_id, "transport_policy_id": policy.policy_id,
+                "call_index": index,
+            })
+            request = {"model": policy.model, "instructions": _INSTRUCTIONS, "input": model_input_text,
+                       "text": {"format": structured_proposal_format()}, "max_output_tokens": policy.max_output_tokens,
+                       "tools": [], "tool_choice": "none", "parallel_tool_calls": False,
+                       "stream": False, "background": False, "store": policy.store_responses}
+            if previous_response_id is not None:
+                request["previous_response_id"] = previous_response_id
+            bounded_utf8_length("OpenAI request", canonical_json(request), limit=MAX_REQUEST_BYTES)
             decoded, failure = self.__broker._request(self.__credential, projection, policy, request, activation,
-                                                     reservation, progress)
+                                                     reservation, progress, capture_surface_id)
             if failure is not None:
                 reason = failure
                 status = "unavailable" if reason in {"sdk_unavailable", "credential_unavailable"} else "failed"
@@ -537,17 +610,19 @@ class OpenAIResponsesSupervisor:
                 reason = "invalid_provider_response"
                 raise OpenAITransportError("invalid_provider_response")
             reason = "activation_rejected"
-            activation.check_reservation(reservation, projection, **deployment)
+            activation.check_reservation(reservation, projection, capture_surface_id=capture_surface_id, **deployment)
             proposal, response_id = decoded
             if policy.store_responses:
                 self.__previous, self.__binding = response_id, binding
+                self.__previous_context_id = request_context_id
             reason, status, proposal_id = "proposal_received", "received", proposal.proposal_id
             return proposal
         finally:
             self.__last_observation = OpenAITransportObservation({
-                "protocol_version": "IBAE-OPENAI-TRANSPORT-OBSERVATION-V1", "provider": "openai",
+                "protocol_version": OPENAI_OBSERVATION_VERSION, "provider": "openai",
                 "task_id": projection["sources"]["task_id"], "governance_id": projection["sources"]["governance_id"],
                 **deployment, "projection_id": domain_fingerprint("ibae.supervisor-projection-id.v1", projection),
+                "capture_surface_id": capture_surface_id, "request_context_id": request_context_id,
                 "stage": int(self.__stage), "epoch": reservation.epoch, "call_index": index,
                 "status": status, "reason": reason, "dispatch_attempted": progress.dispatch_attempted,
                 "proposal_id": proposal_id, "response_id": response_id,

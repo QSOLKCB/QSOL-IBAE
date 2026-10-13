@@ -18,11 +18,13 @@ from typing import Any
 
 from ._records import require_fingerprint, require_symbol
 from .canonical import canonical_json, domain_fingerprint
-from .supervisor import SupervisorContext, SupervisorProjection, _validate_projection
+from .supervisor import SupervisorContext, SupervisorProjection, _json_copy, _validate_projection
 from .synthetic_protocol import NormalizedProposal, ProposalKind, bounded_synthetic_data
 
 ACTIVATION_VERSION = "IBAE-TRANSPORT-ACTIVATION-V1"
 STAGE_OBSERVATION_VERSION = "IBAE-TRANSPORT-STAGE-OBSERVATION-V1"
+SELECTED_CAPTURE_SURFACE_VERSION = "IBAE-SELECTED-CAPTURE-SURFACE-V1"
+MAX_SELECTED_CAPTURE_SURFACE_BYTES = 131_072
 MAX_TRANSPORT_CALLS = 1_024
 MAX_SELECTED_READ_TOOLS = 32
 MAX_RETAINED_PROPOSALS = 16
@@ -437,7 +439,7 @@ class ActivationController:
                  "_observations", "_live_proposals", "_stream_overflow",
                  "_transport_policy_id", "_credential_reference_id", "_lock",
                  "_live_source_bindings", "_captures", "_used_read_proposals", "_capture_plan",
-                 "_capture_next_state_id", "_capture_attempts", "_capture_inflight")
+                 "_capture_next_state_id", "_capture_attempts", "_capture_inflight", "_selection_records")
 
     def __init__(self, task_id: str, governance_id: str, *, max_transport_calls: int = 16,
                  transport_policy_id: str | None = None,
@@ -467,6 +469,7 @@ class ActivationController:
         self._capture_next_state_id: str | None = None
         self._capture_attempts: tuple[SelectedReadAttempt, ...] = ()
         self._capture_inflight: tuple[_PendingCapture, ...] = ()
+        self._selection_records: tuple[tuple[str, str], ...] = ()
 
     def __reduce__(self):
         raise TypeError("transport activation cannot be serialized or restored")
@@ -535,6 +538,142 @@ class ActivationController:
         """The current deterministic host-side occurrence, not model authority."""
         return f"capture.{self.epoch}.{self.call_count}"
 
+    @_locked
+    def register_selected_read(self, selection) -> None:
+        """Materialize an already authorized resource ID into bounded arguments.
+
+        Registration never grants a tool/resource or retains a native witness.
+        The exact canonical descriptor must hash to a currently selected ID.
+        """
+        from .readonly_adapters import GitHubReadSelection
+
+        _exact("selected read resource", selection, GitHubReadSelection)
+        self._active()
+        if (self.stage is not ActivationStage.OPENAI_SELECTED_READS
+                or selection.selection_id not in self.selected_read_selection_ids):
+            raise ActivationError("resource registration requires its exact stage-3 operator selection")
+        text = canonical_json(selection.canonical_record())
+        records = dict(self._selection_records)
+        if records.get(selection.selection_id) == text:
+            return
+        if self._live_proposals:
+            raise ActivationError("registered targets cannot change after an owned stage-3 model response")
+        if self._ledger.pending is not None or self._capture_plan is not None:
+            raise ActivationError("cannot register a resource during a transport call")
+        records[selection.selection_id] = text
+        self._selection_records = tuple(sorted(records.items()))
+
+    @_locked
+    def selected_capture_surface(self, projection: dict, *,
+                                 reservation: TransportCallReservation | None = None) -> dict:
+        """A separate candidate-only view; never alters the accepted A surface.
+
+        A detached projection omits exact argument keys, strategy parameters and
+        orchestration tick. Those checks remain explicitly unknown until actual
+        trusted-host admission. A positive candidate label never means eligible,
+        admitted or executable. The budget accounts for this model request.
+        """
+        from .readonly_adapters import GitHubReadSelection
+
+        record = _validate_projection(projection)
+        self._binding(record["sources"]["task_id"], record["sources"]["governance_id"])
+        reserved = reservation is not None
+        if reserved:
+            self._ledger.check(reservation, self)
+            if (reservation.kind != "openai" or reservation.stage is not self.stage
+                    or reservation.projection_id != domain_fingerprint("ibae.transport-projection-binding.v1", record)):
+                raise ActivationError("capture surface does not match the pending model request")
+        remaining = max(0, self.remaining_transport_calls - (0 if reserved else 1))
+        attempts = MAX_SELECTED_READ_CAPTURES - len(self._capture_attempts) - len(self._capture_inflight)
+        surface = record["decision_surface"]
+        capacity = surface["budgets"]["orchestration_capacity"]
+        reasons = []
+        if self.stage is not ActivationStage.OPENAI_SELECTED_READS:
+            reasons.append("stage3_not_active")
+        if self.revoked:
+            reasons.append("transport_revoked")
+        if surface["authority"]["revoked"] or not surface["authority"]["supervisor_capability_present"]:
+            reasons.append("native_authority_unavailable")
+        if surface["control_classification"] in {"governance_blocked", "pending_lease", "complete"}:
+            reasons.append("native_control_not_ready")
+        if remaining == 0:
+            reasons.append("no_transport_capacity_after_model_call")
+        if attempts == 0:
+            reasons.append("capture_attempt_limit")
+        if len(self._live_proposals) >= MAX_RETAINED_PROPOSALS:
+            reasons.append("owned_proposal_retention_limit")
+        if self._capture_plan is not None or (self._ledger.pending is not None and not reserved):
+            reasons.append("another_transport_operation_outstanding")
+        if not surface["ready_obligation_ids"]:
+            reasons.append("no_ready_obligation")
+        if not surface["strategy_schema_ids"]:
+            reasons.append("no_declared_strategy_schema")
+        if capacity["max_batch_proposals"] < 1:
+            reasons.append("no_batch_capacity")
+        if capacity["occurrence_owners"] < 1:
+            reasons.append("no_occurrence_capacity")
+        if self._capture_next_state_id is not None and record["sources"]["orchestration_state_id"] != self._capture_next_state_id:
+            reasons.append("host_orchestration_state_not_advanced")
+        ready = set(surface["ready_obligation_ids"])
+        targets = [{"key": item["key"], "obligation_id": item["obligation_id"]}
+                   for item in surface["obligations"] if item["obligation_id"] in ready]
+        capabilities = {item["name"]: item for item in surface["capabilities"]}
+        selections, candidates = dict(self._selection_records), []
+        for tool in self.selected_read_tools:
+            for identity in self.selected_read_selection_ids:
+                blocked, arguments = list(reasons), None
+                capability = capabilities.get(tool)
+                if capability is None:
+                    blocked.append("capability_unavailable")
+                else:
+                    if not capability["available"]:
+                        blocked.append("capability_unavailable")
+                    if capability["replay_safety"] != "occurrence_sensitive":
+                        blocked.append("capture_requires_occurrence_sensitive_capability")
+                    if capability["permission_id"] is None or capability["granted_authority_class"] != "volatile_read":
+                        blocked.append("volatile_read_permission_missing")
+                    if capability["cache_reuse_granted"]:
+                        blocked.append("remote_http_cache_reuse_forbidden")
+                    if capability["unresolved_state_count"]:
+                        blocked.append("unresolved_capability_dependencies")
+                if identity not in selections:
+                    blocked.append("selected_resource_not_registered")
+                else:
+                    try:
+                        arguments = GitHubReadSelection.from_record(json.loads(selections[identity])).arguments_for(tool)
+                    except (TypeError, ValueError):
+                        blocked.append("selected_resource_does_not_support_tool")
+                if capability is not None and arguments is not None and capability["semantic_argument_count"] < len(arguments):
+                    blocked.append("argument_schema_cannot_cover_selection")
+                candidates.append({"tool_name": tool, "selection_id": identity,
+                    "arguments": arguments, "proposal_kind": "read", "may_propose_candidate": not blocked,
+                    "host_admission_required": True, "execution_authorized": False,
+                    "blocking_reasons": sorted(set(blocked)),
+                    "capability_id": None if capability is None else capability["capability_id"],
+                    "permission_id": None if capability is None else capability["permission_id"]})
+        result = {"protocol_version": SELECTED_CAPTURE_SURFACE_VERSION,
+            "task_id": self.task_id, "governance_id": self.governance_id, "stage": int(self.stage),
+            "epoch": self.epoch, "transport_policy_id": self.transport_policy_id,
+            "credential_reference_id": self.credential_reference_id, "source_binding_id": _source_binding(record),
+            "selected_read_tools": list(self.selected_read_tools),
+            "selected_read_selection_ids": list(self.selected_read_selection_ids),
+            "current_openai_call_reserved": reserved, "remaining_transport_calls": self.remaining_transport_calls,
+            "remaining_after_current_openai_call": remaining, "remaining_capture_attempts": attempts,
+            "host_next_capture_occurrence_key": f"capture.{self.epoch}.{self.call_count + (0 if reserved else 1)}",
+            "ready_targets": targets, "resolved_dependency_records": [
+                {"key": item["key"], "record_id": item["record_id"]} for item in surface["epistemic"] if item["dependency_resolved"]],
+            "candidates": candidates, "blocking_reasons": sorted(set(reasons)),
+            "may_propose_candidate": any(item["may_propose_candidate"] for item in candidates),
+            "host_admission_required": True, "unresolved_admission_checks": [
+                "fresh_native_context", "exact_argument_schema", "exact_strategy_parameters",
+                "current_orchestration_tick", "exact_dependency_fingerprint", "declared_sequence_occurrence",
+                "deterministic_batch_admission", "governed_volatile_tool_admission"],
+            "http_capture_native_accounted": False, "snapshot_native_read_separate": True,
+            "control_authority": False, "execution_authorized": False, "final_acceptance": False}
+        result = _json_copy(result, limit=MAX_SELECTED_CAPTURE_SURFACE_BYTES)
+        result["surface_id"] = domain_fingerprint("ibae.selected-capture-surface.v1", result)
+        return result
+
     def _active(self) -> None:
         if self.revoked:
             raise ActivationError("transport activation is revoked")
@@ -565,7 +704,8 @@ class ActivationController:
         return (self.epoch, self.stage, self.transport_policy_id, self.credential_reference_id,
                 self.call_count, self._ledger.pending, self._live_proposals, self._stream_overflow,
                 self._live_source_bindings, self._captures, self._used_read_proposals,
-                self._capture_plan, self._capture_next_state_id, self._capture_attempts, self._capture_inflight)
+                self._capture_plan, self._capture_next_state_id, self._capture_attempts, self._capture_inflight,
+                self._selection_records)
 
     def _check_verification_fence(self, fence: tuple) -> None:
         if fence != self._verification_fence():
@@ -635,7 +775,8 @@ class ActivationController:
         self._authorization = authorization
         self._live_proposals, self._stream_overflow = (), False
         self._live_source_bindings, self._captures, self._used_read_proposals = (), (), ()
-        self._capture_plan, self._capture_next_state_id = None, None
+        self._capture_plan = None
+        self._selection_records = ()
 
     @_locked
     def reserve_call(self, projection: dict, *, stage: ActivationStage,
@@ -660,7 +801,8 @@ class ActivationController:
 
     @_locked
     def check_reservation(self, reservation: TransportCallReservation, projection: dict, *,
-                          transport_policy_id: str, credential_reference_id: str) -> None:
+                          transport_policy_id: str, credential_reference_id: str,
+                          capture_surface_id: str | None = None) -> None:
         self._ledger.check(reservation, self)
         self._deployment(transport_policy_id, credential_reference_id)
         record = self._projection(projection)
@@ -669,6 +811,10 @@ class ActivationController:
                 or reservation.credential_reference_id != credential_reference_id
                 or reservation.projection_id != domain_fingerprint("ibae.transport-projection-binding.v1", record)):
             raise ActivationError("reservation does not bind this projection or stage")
+        if capture_surface_id is not None:
+            _identity("selected capture surface identity", capture_surface_id)
+            if self.selected_capture_surface(record, reservation=reservation)["surface_id"] != capture_surface_id:
+                raise ActivationError("selected capture surface changed during the model call")
 
     @_locked
     def reserve_read(self, *, task_id: str, governance_id: str,
@@ -739,6 +885,7 @@ class ActivationController:
         detached = self._projection(projection)
         source_binding = _source_binding(detached)
         epoch, stage, before = self.epoch, self.stage, self.call_count
+        registered_selections = self._selection_records
         proposal = OpenAIResponsesSupervisor.propose(
             supervisor, detached, index=index, activation=self,
             fresh_handoff=fresh_handoff, previous_response_id=previous_response_id,
@@ -746,6 +893,7 @@ class ActivationController:
         _exact("normalized live proposal", proposal, NormalizedProposal)
         with self._lock:
             if (self.revoked or self.epoch != epoch or self.stage is not stage
+                    or self._selection_records != registered_selections
                     or self.call_count != before + 1 or self._ledger.pending is not None):
                 raise ActivationError("official call did not preserve its transport reservation")
             if len(self._live_proposals) == MAX_RETAINED_PROPOSALS:
@@ -810,6 +958,9 @@ class ActivationController:
                 raise ActivationError("host did not advance the prior capture's orchestration state")
             _, transition, tool_admission = _admit_selected_read(
                 context, proposal, batch, dependency_fingerprint, self.capture_occurrence_key)
+            # The admission happened even if HTTP later fails or transport is
+            # rolled back. Its host-state advancement cannot be silently lost.
+            self._capture_next_state_id = transition.next_state.state_id
             plan = _PendingCapture(source, tool_name, selection.selection_id,
                                    proposal.proposal_id, dependency_fingerprint)
             self._capture_plan = plan
@@ -967,7 +1118,8 @@ class ActivationController:
         self._observations.clear()
         self._live_proposals, self._stream_overflow = (), False
         self._live_source_bindings, self._captures, self._used_read_proposals = (), (), ()
-        self._capture_plan, self._capture_next_state_id = None, None
+        self._capture_plan = None
+        self._selection_records = ()
 
     @_locked
     def revoke(self) -> None:
@@ -977,7 +1129,8 @@ class ActivationController:
             self._observations.clear()
             self._live_proposals, self._stream_overflow = (), False
             self._live_source_bindings, self._captures, self._used_read_proposals = (), (), ()
-            self._capture_plan, self._capture_next_state_id = None, None
+            self._capture_plan = None
+            self._selection_records = ()
 
     @_locked
     def canonical_record(self) -> dict:
@@ -995,6 +1148,7 @@ class ActivationController:
             "credential_reference_id": self.credential_reference_id,
             "tool_profile": self.tool_profile.value, "selected_read_tools": list(self.selected_read_tools),
             "selected_read_selection_ids": list(self.selected_read_selection_ids),
+            "registered_selected_read_selection_ids": [identity for identity, _ in self._selection_records],
             "epoch": self.epoch, "epoch_scope": "python_transport_only", "revoked": self.revoked,
             "maximum_transport_calls": self._ledger.limit, "consumed_transport_calls": self.call_count,
             "openai_transport_calls": self._ledger.openai_calls,

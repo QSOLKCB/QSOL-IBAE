@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 import ibae.openai_transport as transport
-from ibae.canonical import canonical_json
+from ibae.canonical import canonical_json, domain_fingerprint
 from ibae.openai_transport import (
     CredentialReference, MAX_RESPONSE_BYTES, OPENAI_SDK_VERSION, OpenAICredentialBroker,
     OpenAIResponsesSupervisor, OpenAITransportError, OpenAITransportPolicy,
@@ -21,6 +21,7 @@ from ibae.transport_activation import (
     ActivationController, ActivationStage, OperatorStageAuthorization, ToolProfile,
 )
 from test_supervisor import _context
+from test_transport_activation import simulated_selected_host
 
 
 _PLACEHOLDER = "fixture-only-not-a-real-credential"
@@ -190,6 +191,88 @@ def test_ambiguous_nonfinite_deep_or_invalid_unicode_json_is_rejected(text):
         decode_proposal_envelope(text)
 
 
+def test_model_input_preserves_native_bytes_and_detaches_capture_observation():
+    _, activation, projection, handoff, _ = _setup()
+    native_bytes = canonical_json(projection)
+    handoff_bytes = canonical_json(handoff)
+    surface = activation.selected_capture_surface(projection)
+    expected = canonical_json(surface)
+    record = transport._model_input_record(projection, handoff, surface)
+    assert canonical_json(record["native_context"]["record"]) == handoff_bytes
+    assert canonical_json(record["native_context"]["record"]["projection"]) == native_bytes
+    assert canonical_json(record["selected_capture_surface"]) == expected
+    surface.clear()
+    assert canonical_json(record["selected_capture_surface"]) == expected
+    record["native_context"]["record"]["projection"]["data"].clear()
+    assert canonical_json(projection) == native_bytes and canonical_json(handoff) == handoff_bytes
+    with pytest.raises((ValueError, TypeError)):
+        transport._model_input_record(projection, handoff, {"oversized": "x" * transport.MAX_MODEL_INPUT_BYTES})
+
+
+@pytest.mark.parametrize("simulated_selected_host", [{"selection_count": 16}], indirect=True)
+def test_combined_input_accepts_maximum_native_registry_without_clipping(simulated_selected_host):
+    from ibae.epistemic import EpistemicClass, EpistemicRecord, EpistemicState
+    from ibae.obligations import Obligation
+    from ibae.orchestration import Capability, OrchestrationState, ReplaySafety
+    from ibae.supervisor import DataOrigin, MAX_DATA_ITEMS, SupervisorData
+    from test_supervisor import _id
+
+    activation, selected_context, _, _, _, _, _, _ = simulated_selected_host
+    obligations = tuple(Obligation(f"o{index:03d}." + "x" * 123,
+                                  ("description " * 300).strip()) for index in range(128))
+    records = []
+    for index in range(256):
+        records.append(EpistemicRecord(f"e{index:03d}." + "x" * 123, EpistemicClass.DERIVED,
+                                      {"value": index}, dependencies=tuple(item.key for item in records)))
+    capabilities = selected_context.orchestration_state.capabilities + tuple(Capability(f"c{index:03d}." + "x" * 123, ReplaySafety.CACHEABLE_READ,
+        ("description " * 300).strip(), required_state_keys=tuple(item.key for item in records[:128]),
+        semantic_argument_keys=tuple(f"a{key:03d}." + "x" * 123 for key in range(32))) for index in range(63))
+    state = OrchestrationState.create(obligations, capabilities=capabilities,
+        strategy_schemas=selected_context.orchestration_state.strategy_schemas,
+        epistemic_state=EpistemicState(tuple(records)))
+    context, _, _ = _context(state=state, permissions=selected_context.governance_policy.tool_permissions)
+    data = tuple(SupervisorData(DataOrigin.DOCUMENT, _id(str(index)), "\0" * 4096) for index in range(MAX_DATA_ITEMS))
+    projection = SupervisorProjection(context, data=data)
+    detached = projection.canonical_record()
+    handoff = FreshContextHandoff(projection).canonical_record()
+    captured = activation.selected_capture_surface(detached)
+    assert len(captured["ready_targets"]) == 128 and len(captured["candidates"]) == 16
+    assert all(item["may_propose_candidate"] for item in captured["candidates"])
+    assert 65_536 < len(canonical_json(captured).encode()) <= transport.MAX_SELECTED_CAPTURE_SURFACE_BYTES
+    for fresh in (handoff, None):
+        model_input = transport._model_input_record(detached, fresh, captured)
+        nested = model_input["native_context"]["record"]["projection"]
+        assert canonical_json(nested) == canonical_json(detached)
+        assert len(nested["decision_surface"]["epistemic"]) == 256
+        assert len(model_input["selected_capture_surface"]["resolved_dependency_records"]) == 256
+        assert len(canonical_json(model_input).encode()) <= transport.MAX_MODEL_INPUT_BYTES
+
+
+def test_stage3_actual_sdk_input_exposes_exact_capture_candidates_separate_from_native_reads(simulated_selected_host):
+    controller, context, selection, proposal, _, _, calls, _ = simulated_selected_host
+    model_input = calls["openai_inputs"][-1]
+    assert model_input["protocol_version"] == transport.OPENAI_MODEL_INPUT_VERSION
+    native = model_input["native_context"]["record"]["projection"]
+    assert canonical_json(native) == canonical_json(SupervisorProjection(context).canonical_record())
+    captured = model_input["selected_capture_surface"]
+    candidate, = captured["candidates"]
+    assert candidate["tool_name"] == "github.repository"
+    assert candidate["selection_id"] == selection.selection_id
+    assert candidate["arguments"] == proposal.payload["arguments"] == selection.arguments_for("github.repository")
+    assert candidate["proposal_kind"] == "read" and candidate["may_propose_candidate"] is True
+    assert candidate["host_admission_required"] is True and candidate["execution_authorized"] is False
+    capability, = native["decision_surface"]["capabilities"]
+    assert capability["runtime_supported"] is False and capability["read_proposal_eligible"] is False
+    assert captured["current_openai_call_reserved"] is True
+    assert captured["remaining_after_current_openai_call"] == controller.remaining_transport_calls
+    assert captured["host_next_capture_occurrence_key"] == controller.capture_occurrence_key
+    assert {item["key"] for item in captured["ready_targets"]} == {"first", "second"}
+    assert all(len(item["obligation_id"]) == 64 for item in captured["ready_targets"])
+    assert captured["snapshot_native_read_separate"] is True and captured["control_authority"] is False
+    assert "exact_argument_schema" in captured["unresolved_admission_checks"]
+    assert calls["github"] == 0
+
+
 def test_exact_types_and_hard_limits_are_enforced():
     with pytest.raises(TypeError):
         _policy(max_calls=True)
@@ -231,7 +314,11 @@ def test_mocked_sdk_request_is_narrow_bounded_and_uses_same_normalized_contract(
     request, = calls["requests"]
     assert request["tools"] == [] and request["tool_choice"] == "none"
     assert request["stream"] is False and request["background"] is False and request["store"] is False
-    assert json.loads(request["input"]) == handoff
+    model_input = json.loads(request["input"])
+    assert model_input["protocol_version"] == transport.OPENAI_MODEL_INPUT_VERSION
+    assert model_input["native_context"] == {"kind": "fresh_handoff", "record": handoff}
+    assert model_input["selected_capture_surface"]["surface_id"]
+    assert model_input["control_authority"] is False
     assert _PLACEHOLDER not in canonical_json(request)
     client, = calls["clients"]
     assert client["max_retries"] == 0 and client["base_url"] == "https://api.openai.com/v1"
@@ -249,9 +336,20 @@ def test_mocked_sdk_request_is_narrow_bounded_and_uses_same_normalized_contract(
     assert observed["governance_id"] == projection["sources"]["governance_id"]
     assert observed["transport_policy_id"] == supervisor.policy_id
     assert observed["credential_reference_id"] == supervisor.deployment_binding[1]
+    assert observed["protocol_version"] == transport.OPENAI_OBSERVATION_VERSION
+    assert observed["capture_surface_id"] == model_input["selected_capture_surface"]["surface_id"]
+    assert observed["request_context_id"] == domain_fingerprint("ibae.openai-request-context.v1", {
+        "input_json": request["input"], "previous_response_id": None, "parent_request_context_id": None,
+        "transport_policy_id": supervisor.policy_id, "call_index": 0,
+    })
     assert observed["epoch"] == activation.epoch and observed["stage"] == 1 and observed["call_index"] == 0
     assert observed["transport_only"] is True and observed["live_verification"] is False
     assert observed["control_authority"] is False and _PLACEHOLDER not in canonical_json(observed)
+    for field in ("capture_surface_id", "request_context_id"):
+        rejected = {key: value for key, value in observed.items() if key != "observation_id"}
+        rejected[field] = None
+        with pytest.raises(ValueError, match="exact model context"):
+            transport.OpenAITransportObservation(rejected)
     observed["status"] = "changed"
     assert supervisor.last_observation.canonical_record()["status"] == "received"
 
@@ -263,9 +361,17 @@ def test_continuation_requires_owned_successful_stored_response_and_same_epoch(m
         supervisor.propose(projection, index=0, activation=activation, previous_response_id="resp_unknown")
     supervisor.propose(projection, index=0, activation=activation, fresh_handoff=handoff)
     previous = supervisor.previous_response_id
+    first_context_id = supervisor.last_observation.canonical_record()["request_context_id"]
     supervisor.propose(projection, index=1, activation=activation, previous_response_id=previous)
     assert calls["requests"][1]["previous_response_id"] == previous
     assert calls["requests"][1]["instructions"] == calls["requests"][0]["instructions"]
+    continued_input = json.loads(calls["requests"][1]["input"])
+    assert continued_input["native_context"] == {"kind": "response_continuation", "record": {"projection": projection}}
+    first_input = json.loads(calls["requests"][0]["input"])
+    assert continued_input["selected_capture_surface"]["surface_id"] != first_input["selected_capture_surface"]["surface_id"]
+    assert supervisor.last_observation.canonical_record()["request_context_id"] == domain_fingerprint(
+        "ibae.openai-request-context.v1", {"input_json": calls["requests"][1]["input"], "previous_response_id": previous,
+            "parent_request_context_id": first_context_id, "transport_policy_id": supervisor.policy_id, "call_index": 1})
     other = ActivationController(activation.task_id, activation.governance_id, max_transport_calls=4)
     with pytest.raises(OpenAITransportError, match="unverified"):
         supervisor.propose(projection, index=2, activation=other, previous_response_id=previous)
@@ -382,6 +488,17 @@ def test_http_header_guard_rejects_error_redirect_encoding_and_large_body_withou
         response = SimpleNamespace(status_code=status, headers=headers)
         with pytest.raises(OpenAITransportError):
             transport._guard_http_response(response, MAX_RESPONSE_BYTES)
+
+
+def test_serialized_sdk_request_guard_has_closed_route_and_byte_ceiling():
+    transport._guard_http_request(SimpleNamespace(url="https://api.openai.com/v1/responses", method="POST", content=b"{}"))
+    for request in (
+        SimpleNamespace(url="https://other.invalid/v1/responses", method="POST", content=b"{}"),
+        SimpleNamespace(url="https://api.openai.com/v1/responses", method="GET", content=b"{}"),
+        SimpleNamespace(url="https://api.openai.com/v1/responses", method="POST", content=b"x" * (transport.MAX_REQUEST_BYTES + 1)),
+    ):
+        with pytest.raises(OpenAITransportError):
+            transport._guard_http_request(request)
 
 
 def test_installed_pinned_sdk_serializes_expected_request_without_network(monkeypatch):

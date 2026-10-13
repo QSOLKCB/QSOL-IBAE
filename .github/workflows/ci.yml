@@ -108,6 +108,10 @@ jobs:
           assert transport_fixture["offline_only"] is True
           assert transport_fixture["live_verification"] is False
           assert transport_fixture["fixture_equivalence"]["equivalent"] is True
+          assert transport_fixture["observed_snapshot_equivalence"]["native_consumption_equivalence"]["equivalent"] is True
+          assert transport_fixture["observed_snapshot_equivalence"]["live_capture_verified"] is False
+          assert transport_fixture["selected_capture_admission"]["http_dispatches"] == 0
+          assert len(transport_fixture["selected_capture_admission"]["cases"]) == 6
           legacy_fixture = v0_4_reference_fixture()
           assert legacy_fixture["finalization"]["acceptance"]["status"] == "accepted"
           assert legacy_fixture["compact_evidence"]["source_bound"] is True

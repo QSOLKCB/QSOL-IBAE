@@ -359,5 +359,10 @@ configure exact task/governance credential binding and each stage gate before
 any live dispatch. SDK-mock tests and detached JSON receipts are not live proof.
 Public GitHub reads are restricted to fixed selected GET resources; private
 authenticated GitHub and direct ChatGPT/Work/Codex session access are unavailable.
-All data still enters the accepted admission/native evidence boundaries.
+Selected GETs use occurrence-sensitive VOLATILE_READ admission and a separate
+finite transport ledger. Exact retained responses become immutable snapshots for
+separately governed native consumption; snapshot cache reuse does not establish
+current remote freshness. Capture candidates in model context require full typed
+host admission before any GET. Failed capture admissions retain their next-state
+binding and spent capacity across rollback. Genuine live verification is BLOCKED.
 See `OPENAI_TRANSPORT_PROTOCOL.md` for activation, rollback and limitations.

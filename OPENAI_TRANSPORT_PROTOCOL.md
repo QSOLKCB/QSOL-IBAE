@@ -37,6 +37,17 @@ JSON and unsupported wire versions fail closed with bounded structured status.
 Raw response bytes are bounded before parsing. Latency, usage and remote request
 IDs are transport observations, excluded from deterministic admission authority.
 
+The separately versioned model-input envelope preserves the exact accepted native
+projection/handoff and adds an inert selected-capture surface. Literal target
+arguments come only from registered selections named by current operator
+configuration. Capture candidates expose transport capacity, ready targets,
+source identities and definitive blockers separately from native read eligibility.
+A candidate explicitly requires trusted-host typed admission; missing exact
+schema, tick, dependency and occurrence checks remain machine-readable unknowns.
+The surface never advertises HTTP as native cacheable work. Request-context and
+capture-surface identities bind the actual transmitted input, including current
+context on provider continuation requests, and are checked across dispatch.
+
 ## Credentials
 
 The model and orchestration see only opaque `cred:openai.<name>` references.
