@@ -404,7 +404,7 @@ __all__ = [
 # explicitly activated dispatch, not during package import or offline replay.
 from .openai_transport import (
     CredentialReference, OpenAICredentialBroker, OpenAIResponsesSupervisor,
-    OpenAITransportError, OpenAITransportPolicy, decode_openai_response,
+    OpenAITransportError, OpenAITransportObservation, OpenAITransportPolicy, decode_openai_response,
     decode_proposal_envelope, encode_proposal_envelope, openai_interface_manifest,
 )
 from .readonly_adapters import (
@@ -414,7 +414,7 @@ from .readonly_adapters import (
 )
 from .transport_activation import (
     ActivationController, ActivationError, ActivationStage, OperatorStageAuthorization,
-    StageObservation, ToolProfile,
+    SelectedReadAttempt, SelectedReadCapture, SelectedReadCaptureError, StageObservation, ToolProfile,
 )
 
 __all__ += [
@@ -422,8 +422,15 @@ __all__ += [
     "ExternalObservationReceipt", "FrozenReadAdapter", "GitHubReadAdapter",
     "GitHubReadSelection", "GitHubRequestPlan", "GitHubTransportUnavailable",
     "OpenAICredentialBroker", "OpenAIResponsesSupervisor", "OpenAITransportError",
-    "OpenAITransportPolicy", "OperatorStageAuthorization", "StageObservation", "ToolProfile",
+    "OpenAITransportObservation", "OpenAITransportPolicy", "OperatorStageAuthorization", "StageObservation", "ToolProfile",
     "decode_openai_response", "decode_proposal_envelope", "encode_proposal_envelope",
     "openai_interface_manifest", "parse_github_response", "readonly_interface_manifest",
     "unsupported_session_continuation",
 ]
+
+from .observed_snapshots import (
+    ObservedReadSnapshot, SnapshotReadAdapter, verify_observed_snapshot_stage,
+)
+__all__ += ["ObservedReadSnapshot", "SnapshotReadAdapter", "verify_observed_snapshot_stage"]
+
+__all__ += ["SelectedReadAttempt", "SelectedReadCapture", "SelectedReadCaptureError"]

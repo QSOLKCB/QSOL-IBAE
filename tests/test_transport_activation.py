@@ -1,4 +1,10 @@
-"""Offline transport safety tests. No mocked response passes a live gate."""
+"""Offline transport safety tests, never actual live verification.
+
+The explicit mocked-host integration at the end exercises production gates
+through real SDK serialization and frozen HTTP responses. Its simulated stage
+observations are not live provider/source evidence and are never published as
+conformance proof of real live operation. No private live ledger is populated.
+"""
 
 from dataclasses import FrozenInstanceError, replace
 import inspect
@@ -315,7 +321,8 @@ def test_no_stage_or_read_profile_can_be_selected_through_call_arguments(project
             controller.reserve_call(projection, stage=stage, tool_profile=profile, selected_read_tools=names, **_deployment(controller))
     with pytest.raises(ActivationError, match="stage 3"):
         controller.reserve_read(task_id=controller.task_id, governance_id=controller.governance_id,
-                                tool_name="read.github", selection_id="e" * 64)
+                                tool_name="read.github", selection_id="e" * 64,
+                                proposal_id="a" * 64, dependency_fingerprint="b" * 64)
     assert controller.call_count == 0
 
 
@@ -325,15 +332,15 @@ def test_closed_gate_methods_have_no_caller_evidence_or_success_parameters():
         assert tuple(inspect.signature(getattr(ActivationController, name)).parameters) == ("self",)
 
 
-def test_selected_read_stage_verifier_is_explicitly_unavailable(projection):
+def test_selected_read_stage_requires_owned_captures_never_supplied_proof(projection):
     controller = _controller(projection)
-    with pytest.raises(ActivationError, match="verification is unavailable"):
+    with pytest.raises(ActivationError, match="idle stage 3"):
         controller.verify_selected_read_stage()
     for claimed in (True, {"live_verified": True}, "a" * 64):
         with pytest.raises(TypeError):
             controller.verify_selected_read_stage(claimed)
     assert controller.canonical_record()["active_stage_verification"] == "not_verified"
-    assert controller.canonical_record()["selected_read_stage_verifier"] == "unavailable"
+    assert controller.canonical_record()["selected_read_stage_verifier"] == "owned_capture_and_native_snapshot_parity"
     controller.verify_synthetic_stage()
     assert controller.canonical_record()["active_stage_verification"] == "passed"
     controller.authorize(_authorization(controller))
@@ -430,3 +437,328 @@ def test_offline_records_are_deterministic_and_detached(projection):
     assert len(first.canonical_record()["stage_observations"]) == 1
     assert domain_fingerprint("test.activation.v1", first.canonical_record()) == domain_fingerprint(
         "test.activation.v1", second.canonical_record())
+
+
+def _selected_context(tool_name="github.repository"):
+    from ibae.governance import ToolAuthorityClass, ToolPermission
+    from ibae.orchestration import Capability, ReplaySafety
+    from ibae.readonly_adapters import GitHubReadSelection
+    from test_supervisor import _context
+
+    selection = GitHubReadSelection("example", "project", pull_number=1)
+    arguments = selection.arguments_for(tool_name)
+    capability = Capability(tool_name, ReplaySafety.OCCURRENCE_SENSITIVE,
+                            "Separately governed volatile HTTP capture.",
+                            semantic_argument_keys=tuple(sorted(arguments)))
+    context, _, _ = _context(session="selected.capture", capabilities=(capability,),
+        permissions=(ToolPermission(tool_name, ToolAuthorityClass.VOLATILE_READ, False, False),))
+    proposal = NormalizedProposal(ProposalKind.READ, {"proposal_key": "capture.repository",
+        "tool_name": tool_name, "arguments": arguments,
+        "target_obligation_keys": ["first"]})
+    dependency = context.orchestration_state.epistemic_state.dependency_digest(())
+    return context, selection, proposal, dependency
+
+
+@pytest.mark.parametrize("changed_number", [True, 1.0])
+def test_capture_action_arguments_use_canonical_equality_not_numeric_coercion(changed_number):
+    from ibae.orchestration import ActionProposal
+    from ibae.transport_activation import _admit_selected_read
+
+    context, _, proposal, dependency = _selected_context("github.pull_request")
+    batch = _selected_batch(context, proposal, "capture.3.7")
+    original = batch.proposals[0]
+    changed = ActionProposal(original.proposal_key, original.capability,
+        {**original.arguments, "pull_number": changed_number}, target_obligation_ids=original.target_obligation_ids,
+        occurrence_key=original.occurrence_key)
+    assert changed.arguments == original.arguments  # Python conflates these values.
+    with pytest.raises(ActivationError, match="differs"):
+        _admit_selected_read(context, proposal, replace(batch, proposals=(changed,)), dependency, "capture.3.7")
+
+
+def _selected_batch(context, proposal, occurrence):
+    from ibae.obligations import canonical_obligation_id
+    from ibae.orchestration import ActionProposal, ProposalBatch, ProposalOrdering, Strategy
+
+    payload = proposal.payload
+    action = ActionProposal(payload["proposal_key"], payload["tool_name"], payload["arguments"],
+        target_obligation_ids=tuple(canonical_obligation_id(key) for key in payload["target_obligation_keys"]),
+        occurrence_key=occurrence)
+    schema = context.orchestration_state.strategy_schemas[0]
+    return ProposalBatch("selected.capture", Strategy(schema.strategy_key, {}, schema=schema),
+                         (action,), ordering=ProposalOrdering.DECLARED_SEQUENCE)
+
+
+def test_selected_capture_recomputes_same_real_admission_for_normalized_frozen_inputs():
+    from ibae.governance import ToolAuthorityClass
+    from ibae.transport_activation import _admit_selected_read
+
+    context, _, proposal, dependency = _selected_context()
+    batch = _selected_batch(context, proposal, "capture.3.7")
+    before = context.runtime_session.snapshot.canonical_record()
+    projection, admitted, governed = _admit_selected_read(context, proposal, batch, dependency, "capture.3.7")
+    copied = NormalizedProposal.from_record(proposal.canonical_record())
+    frozen = FakeSupervisor((copied,)).propose(projection, index=0)
+    _, replay, governed_replay = _admit_selected_read(context, frozen, batch, dependency, "capture.3.7")
+    assert admitted.receipt.canonical_record() == replay.receipt.canonical_record()
+    assert governed.canonical_record() == governed_replay.canonical_record()
+    assert admitted.next_state.logical_tick == context.orchestration_state.logical_tick + 1
+    assert governed.authority_class is ToolAuthorityClass.VOLATILE_READ
+    assert governed.cache_reuse_permitted is False
+    assert governed.occurrence_key == "capture.3.7"
+    assert context.runtime_session.snapshot.canonical_record() == before
+    # Pure admission is neither an HTTP call nor native execution evidence.
+    assert governed.canonical_record()["authority_class"] == "volatile_read"
+
+
+def test_selected_capture_admission_rejects_wrong_order_occurrence_dependency_and_args():
+    from ibae.governance import GovernanceRejected
+    from ibae.orchestration import ProposalOrdering
+    from ibae.transport_activation import _admit_selected_read
+
+    context, _, proposal, dependency = _selected_context()
+    batch = _selected_batch(context, proposal, "capture.3.7")
+    with pytest.raises(ActivationError, match="declared-sequence"):
+        _admit_selected_read(context, proposal, replace(batch, ordering=ProposalOrdering.CANONICAL_INDEPENDENT),
+                             dependency, "capture.3.7")
+    with pytest.raises(ActivationError, match="occurrence"):
+        _admit_selected_read(context, proposal, batch, dependency, "capture.3.8")
+    with pytest.raises(GovernanceRejected):
+        _admit_selected_read(context, proposal, batch, "a" * 64, "capture.3.7")
+    changed = NormalizedProposal(ProposalKind.READ,
+        {**proposal.payload, "arguments": {"owner": "example", "repository": "other"}})
+    with pytest.raises(ActivationError, match="differs"):
+        _admit_selected_read(context, changed, batch, dependency, "capture.3.7")
+    context.supervisor_authority.revoke_all()
+    # A live revoked context may still be inspected, but capture's projection
+    # guard must reject it before issuing a transport reservation.
+    controller = _controller(SupervisorProjection(context).canonical_record())
+    with pytest.raises(ActivationError, match="unavailable supervisor"):
+        controller._projection(SupervisorProjection(context).canonical_record())
+
+
+@pytest.fixture
+def simulated_selected_host(monkeypatch):
+    """Synthetic host integration. No real credential or network operation."""
+    import json
+    import logging
+    from collections import deque
+    import ibae.readonly_adapters as reads
+    from ibae.openai_transport import (OPENAI_SDK_VERSION, OpenAICredentialBroker,
+                                      OpenAIResponsesSupervisor, OpenAITransportPolicy)
+    from ibae.supervisor import FreshContextHandoff
+    from ibae.synthetic_runner import reference_synthetic_transcripts
+    from test_openai_transport import _body
+
+    sdk = pytest.importorskip("openai")
+    if sdk.__version__ != OPENAI_SDK_VERSION:
+        pytest.skip("optional exact SDK is not installed")
+    import httpx2
+
+    context, selection, proposal, dependency = _selected_context()
+    projection = SupervisorProjection(context)
+    detached = projection.canonical_record()
+    handoff = FreshContextHandoff(projection).canonical_record()
+    policy = OpenAITransportPolicy("gpt-5.4", ("gpt-5.4",), live_enabled=True, max_calls=16)
+    broker = OpenAICredentialBroker(context.governance_policy, context.task, context.governance,
+                                   handle="cred:openai.synthetic", environment_name="IBAE_SYNTHETIC_CAPTURE_TEST")
+    controller = ActivationController(context.task.task_id, context.governance.governance_id,
+        transport_policy_id=policy.policy_id, credential_reference_id=broker.reference.reference_id,
+        max_transport_calls=16)
+    smoke = [NormalizedProposal.from_record(item) for item in reference_synthetic_transcripts()["happy_path"]["proposals"]]
+    responses = deque(smoke + smoke + [proposal])
+    calls = {"openai": 0, "github": 0}
+    placeholder = "synthetic-placeholder-not-a-real-credential"
+    monkeypatch.setenv("IBAE_SYNTHETIC_CAPTURE_TEST", placeholder)
+    for name in ("OPENAI_CUSTOM_HEADERS", "OPENAI_BASE_URL"):
+        monkeypatch.delenv(name, raising=False)
+    for name in ("openai", "openai._base_client", "httpx2", "httpcore2", "httpx", "httpcore"):
+        monkeypatch.setattr(logging.getLogger(name), "level", logging.WARNING)
+
+    def respond(request):
+        assert str(request.url) == "https://api.openai.com/v1/responses"
+        assert request.headers["authorization"] == "Bearer " + placeholder
+        calls["openai"] += 1
+        return httpx2.Response(200, headers={"content-type": "application/json"}, content=_body(responses.popleft()))
+
+    original = sdk.DefaultHttpx2Client
+    monkeypatch.setattr(sdk, "DefaultHttpx2Client",
+        lambda **kwargs: original(transport=httpx2.MockTransport(respond), **kwargs))
+    controller.verify_synthetic_stage()
+    for stage, profile in ((ActivationStage.OPENAI_FAKE_TOOLS, ToolProfile.FAKE),
+                            (ActivationStage.OPENAI_DETERMINISTIC_READS, ToolProfile.DETERMINISTIC_READONLY)):
+        controller.authorize(_authorization(controller, stage))
+        supervisor = OpenAIResponsesSupervisor(policy, broker, broker.reference, stage=stage, tool_profile=profile)
+        for index in range(len(smoke)):
+            controller.propose(supervisor, detached, index=index, fresh_handoff=handoff)
+        observed = (controller.verify_fake_tool_stage() if stage is ActivationStage.OPENAI_FAKE_TOOLS
+                    else controller.verify_fixture_stage())
+        assert observed.canonical_record()["live_recovery_verified"] is False
+    controller.authorize(replace(_authorization(controller, ActivationStage.OPENAI_SELECTED_READS),
+        selected_read_tools=("github.repository",), selected_read_selection_ids=(selection.selection_id,)))
+    supervisor = OpenAIResponsesSupervisor(policy, broker, broker.reference,
+        stage=ActivationStage.OPENAI_SELECTED_READS, tool_profile=ToolProfile.SELECTED_READONLY,
+        selected_read_tools=("github.repository",))
+    owned = controller.propose(supervisor, detached, index=0, fresh_handoff=handoff)
+    assert owned == proposal and not responses
+    body = json.dumps({"full_name": "example/project", "default_branch": "main",
+                       "private": False, "archived": False}).encode()
+    settings = {"status": 200, "body": body, "transport_error": False}
+
+    class Response:
+        def __init__(self):
+            self.body = settings["body"]
+            self.remaining = self.body
+            self.status = settings["status"]
+        def getheader(self, name):
+            return {"Content-Length": str(len(self.body)), "Content-Type": "application/json"}.get(name)
+        def read(self, amount):
+            chunk, self.remaining = self.remaining[:amount], self.remaining[amount:]
+            return chunk
+
+    class Connection:
+        def __init__(self, host, **kwargs):
+            assert host == "api.github.com" and kwargs["port"] == 443
+        def request(self, method, path, *, headers):
+            assert method == "GET" and path == "/repos/example/project"
+            calls["github"] += 1
+            if settings["transport_error"]:
+                raise OSError("synthetic HTTP interruption; diagnostic text must not escape")
+        def getresponse(self):
+            return Response()
+        def close(self):
+            pass
+
+    monkeypatch.setattr(reads.http.client, "HTTPSConnection", Connection)
+    adapter = reads.GitHubReadAdapter(selection, controller, task_id=controller.task_id,
+                                      governance_id=controller.governance_id)
+    return controller, context, selection, owned, dependency, adapter, calls, settings
+
+
+def test_simulated_host_full_stage3_capture_and_native_gate(simulated_selected_host):
+    """End-to-end control coverage under offline HTTP mocks, not live evidence."""
+    controller, context, _, proposal, dependency, adapter, calls, _ = simulated_selected_host
+    native_before = context.runtime_session.snapshot.canonical_record()
+    with pytest.raises(ActivationError, match="governed capture plan"):
+        adapter.observe(proposal, dependency)
+    assert calls == {"openai": 7, "github": 0}
+    with pytest.raises(ActivationError, match="cover every"):
+        controller.verify_selected_read_stage()
+    batch = _selected_batch(context, proposal, controller.capture_occurrence_key)
+    capture = controller.capture_selected_read(adapter, proposal, dependency, context=context, batch=batch)
+    assert calls == {"openai": 7, "github": 1}
+    assert controller.call_count == 8
+    assert context.runtime_session.snapshot.canonical_record() == native_before
+    assert capture.next_orchestration_state.logical_tick == context.orchestration_state.logical_tick + 1
+    assert capture.snapshot.canonical_record()["live_capture_verified"] is False
+    assert capture.canonical_record()["http_capture_native_accounted"] is False
+    with pytest.raises(ActivationError, match="already consumed"):
+        controller.capture_selected_read(adapter, proposal, dependency, context=context, batch=batch)
+    with pytest.raises(TypeError):
+        controller.verify_selected_read_stage(capture.snapshot)
+    observed = controller.verify_selected_read_stage().canonical_record()
+    evidence = observed["evidence"]
+    assert observed["stage"] == 3 and observed["live_recovery_verified"] is False
+    assert observed["final_acceptance"] is False
+    assert evidence["http_captures"] == 1 and evidence["native_proof_transport_calls"] == 0
+    assert evidence["http_capture_native_accounted"] is False
+    assert evidence["native_proof"]["native_compact_source_bound"] is True
+    assert evidence["native_proof"]["counters"]["requests"] == 2
+    assert evidence["native_proof"]["counters"]["executions"] == 1
+    assert evidence["native_proof"]["counters"]["cache_hits"] == 1
+    assert evidence["fresh_native_runs"] == 2
+    assert evidence["native_total_counters"]["requests"] == 4
+    assert evidence["native_total_counters"]["executions"] == 2
+    assert context.runtime_session.snapshot.canonical_record() == native_before
+    assert controller.canonical_record()["active_stage_verification"] == "passed"
+    controller.rollback()
+    assert controller.call_count == 8
+    assert controller.canonical_record()["selected_capture_count"] == 0
+    assert controller.canonical_record()["consumed_selected_proposals"] == 0
+    assert controller.canonical_record()["selected_capture_outcomes"]["captured"] == 1
+    assert controller.canonical_record()["selected_capture_attempts"][0]["transport_reservation_consumed"] is True
+    assert capture.snapshot.source_receipt.output["full_name"] == "example/project"
+
+
+def test_simulated_host_rejects_unowned_proposals_and_native_revocation(simulated_selected_host):
+    controller, context, _, proposal, dependency, adapter, calls, _ = simulated_selected_host
+    unowned = NormalizedProposal(ProposalKind.READ, {**proposal.payload, "proposal_key": "unowned"})
+    with pytest.raises(ActivationError, match="owned live proposal"):
+        controller.capture_selected_read(adapter, unowned, dependency, context=context,
+            batch=_selected_batch(context, unowned, controller.capture_occurrence_key))
+    context.supervisor_authority.revoke_all()
+    with pytest.raises(ActivationError, match="unavailable supervisor"):
+        controller.capture_selected_read(adapter, proposal, dependency, context=context,
+            batch=_selected_batch(context, proposal, controller.capture_occurrence_key))
+    assert calls["github"] == 0
+    assert controller.call_count == 7
+    assert controller.canonical_record()["selected_capture_count"] == 0
+
+
+def test_simulated_denied_or_stale_capture_admission_makes_no_get(simulated_selected_host):
+    from ibae.governance import GovernanceRejected
+    from ibae.orchestration import ProposalOrdering
+
+    controller, context, _, proposal, dependency, adapter, calls, _ = simulated_selected_host
+    batch = _selected_batch(context, proposal, controller.capture_occurrence_key)
+    with pytest.raises(ActivationError, match="declared-sequence"):
+        controller.capture_selected_read(adapter, proposal, dependency, context=context,
+            batch=replace(batch, ordering=ProposalOrdering.CANONICAL_INDEPENDENT))
+    with pytest.raises(GovernanceRejected):
+        controller.capture_selected_read(adapter, proposal, "a" * 64, context=context, batch=batch)
+    stale_context = replace(context, orchestration_state=replace(context.orchestration_state, logical_tick=1))
+    with pytest.raises((ValueError, RuntimeError)):
+        controller.capture_selected_read(adapter, proposal, dependency, context=stale_context, batch=batch)
+    record = controller.canonical_record()
+    assert calls["github"] == 0
+    assert controller.call_count == 7
+    assert record["selected_http_reservations"] == 0
+    assert record["selected_capture_attempts"] == []
+    assert record["consumed_selected_proposals"] == 0
+
+
+@pytest.mark.parametrize("failure", ["transport", "http", "malformed_body"])
+def test_simulated_failed_capture_preserves_partial_admission_and_budget(simulated_selected_host, failure):
+    from ibae.transport_activation import SelectedReadCaptureError
+
+    controller, context, _, proposal, dependency, adapter, calls, settings = simulated_selected_host
+    if failure == "transport":
+        settings["transport_error"] = True
+    elif failure == "http":
+        settings["status"] = 503
+    else:
+        settings["body"] = b"not a JSON observation"
+    native_before = context.runtime_session.snapshot.canonical_record()
+    batch = _selected_batch(context, proposal, controller.capture_occurrence_key)
+    with pytest.raises(SelectedReadCaptureError) as caught:
+        controller.capture_selected_read(adapter, proposal, dependency, context=context, batch=batch)
+    error = caught.value
+    assert error.__context__ is None
+    assert "diagnostic text" not in str(error)
+    assert error.attempt.next_orchestration_state.logical_tick == context.orchestration_state.logical_tick + 1
+    assert error.attempt.snapshot_id is None
+    assert error.attempt.transport_call_index == 7
+    assert error.attempt.admission_receipt.prior_state_id == context.orchestration_state.state_id
+    assert calls["github"] == 1
+    record = controller.canonical_record()
+    assert record["selected_capture_count"] == 0
+    assert record["selected_http_reservations"] == 1
+    assert record["openai_transport_calls"] == 7
+    assert record["consumed_transport_calls"] == 8
+    assert record["selected_capture_incomplete"] == 0
+    assert sum(record["selected_capture_outcomes"].values()) == 1
+    assert record["selected_capture_attempts"][0]["transport_reservation_consumed"] is True
+    assert context.runtime_session.snapshot.canonical_record() == native_before
+    with pytest.raises(ActivationError, match="already consumed"):
+        controller.capture_selected_read(adapter, proposal, dependency, context=context, batch=batch)
+    with pytest.raises(ActivationError, match="governed capture plan"):
+        adapter.observe(proposal, dependency)
+    with pytest.raises(ActivationError, match="cover every"):
+        controller.verify_selected_read_stage()
+    assert calls["github"] == 1
+    prior_attempt = record["selected_capture_attempts"][0]
+    controller.rollback()
+    after = controller.canonical_record()
+    assert after["selected_capture_attempts"] == [prior_attempt]
+    assert after["selected_capture_attempts_remaining"] == 15
+    assert after["selected_http_reservations"] == 1
+    assert after["consumed_transport_calls"] == 8

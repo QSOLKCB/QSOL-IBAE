@@ -221,5 +221,9 @@ All notable changes to QSOL-IBAE will be documented here.
   success never substitutes for native execution or governance authority.
 - Add selected GitHub read-only observation contracts and deterministic local
   fixture adapters with native admission-equivalence conformance.
+- Bind selected volatile captures to typed occurrence admission and finite
+  transport counters; preserve bounded partial failure history across rollback.
+- Consume exact immutable observed snapshots through existing governed native
+  reads without claiming current remote freshness or counting GET as native work.
 - Preserve all accepted v0.2–v0.6B fixtures. Live API/recovery verification remains
   separately gated and is not inferred from SDK-mock or offline results.

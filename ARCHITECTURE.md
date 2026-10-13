@@ -767,3 +767,12 @@ normalized proposal boundary. Credentials resolve only inside the configured
 broker after bounded stage authorization. Transport receipts are inert data,
 not native seals or execution authority. Process-local activation records do
 not reconstruct native state, and offline equivalence cannot verify live stages.
+
+Selected external GET capture uses typed occurrence-sensitive admission and
+VOLATILE_READ governance with separate monotone transport accounting. The exact
+bounded retained response can become an immutable ObservedReadSnapshot, whose
+separate SNAPSHOT_READ uses existing Rust accounting, cache and evidence.
+Controller-owned capture provenance and source coverage gate the stage verifier;
+public snapshot hashes never establish that a live capture occurred. Offline
+native parity establishes exact-content consumption only. Historical failure
+attempts retain admitted next-state identity and spent capacity after rollback.

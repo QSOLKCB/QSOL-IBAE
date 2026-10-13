@@ -587,7 +587,8 @@ class GitHubReadAdapter:
         request = plan.canonical_record()
         reservation = self._activation.reserve_read(task_id=self._task_id,
             governance_id=self._governance_id, tool_name=request["proposal"]["payload"]["tool_name"],
-            selection_id=self._selection.selection_id)
+            selection_id=self._selection.selection_id, proposal_id=proposal.proposal_id,
+            dependency_fingerprint=dependency_fingerprint)
         connection = None
         try:
             # Constructing HTTPSConnection does not connect. Check the exact

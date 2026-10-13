@@ -1266,6 +1266,31 @@ rejected. External observation receipts are data; runtime evidence still needs
 existing governed native admitted-read execution. Session reconnection and
 unavailable authenticated integration are reported explicitly.
 
+## IBAE-READONLY-002 — Capture and immutable-content consumption have distinct authority
+
+**ENFORCED MUST**
+
+A selected GET requires exact current normalized source binding, typed
+occurrence-sensitive declared-order admission, governed VOLATILE_READ permission,
+and a single-use finite transport reservation before HTTP dispatch. Capturing
+remote data never consumes or fabricates a native execution counter. Only exact
+retained content can become a separately identified snapshot; its subsequent
+governed SNAPSHOT_READ uses the existing native execution and cache contract.
+Neither snapshot identity nor cache reuse establishes remote freshness.
+
+## IBAE-TRANSPORT-003 — Failed capture evidence cannot replenish authority
+
+**ENFORCED MUST**
+
+Transport and capture-attempt limits are finite and lifetime-monotone. Typed
+admission and next-state identity survive failed or interrupted capture in bounded
+partial records, together with consumed reservation and fixed outcome. Only
+controller-owned successful captures can enter the current stage proof. Rollback
+retires active proofs without deleting historical attempts or refunding capacity.
+Pre-dispatch denial sends no GET; post-dispatch revocation discards the response
+and cannot undo or pretend to cancel a request already sent.
+
 Evidence: `tests/test_openai_transport.py`, `tests/test_transport_activation.py`,
-`tests/test_readonly_adapters.py`, `tests/test_transport_conformance.py` and the
+`tests/test_readonly_adapters.py`, `tests/test_observed_snapshots.py`,
+`tests/test_transport_conformance.py` and the
 separate v0.6C fixture. No fixture claims actual live API or recovery verification.

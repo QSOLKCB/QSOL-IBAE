@@ -159,6 +159,93 @@ def v0_6c_reference_fixture() -> dict:
               "external_effects_executed": 0, "transport_policy": policy.canonical_record(),
               "openai_interfaces": openai_interface_manifest(), "readonly_interfaces": readonly_interface_manifest(),
               "equivalent_streams": streams, "fixture_equivalence": fixture,
+              "observed_snapshot_equivalence": synthetic_snapshot_conformance(),
+              "selected_capture_admission": selected_capture_admission_conformance(),
               "live_gate_status": "blocked_missing_operator_credentials_and_live_stage_evidence"}
     record["conformance_id"] = domain_fingerprint("ibae.openai-readonly-conformance.v1", record)
     return record
+
+
+def synthetic_snapshot_conformance() -> dict:
+    """Frozen HTTP-shaped bytes → immutable snapshot → real native parity."""
+    from .observed_snapshots import ObservedReadSnapshot, verify_observed_snapshot_stage
+    from .readonly_adapters import GitHubReadSelection, GitHubRequestPlan, parse_github_response
+    from .synthetic_protocol import ProposalKind
+    selection = GitHubReadSelection("example", "frozen-project", "main", "a" * 40, 1)
+    proposal = NormalizedProposal(ProposalKind.READ, {"proposal_key": "inspect.frozen.repo",
+        "tool_name": "github.repository", "arguments": selection.arguments_for("github.repository"),
+        "target_obligation_keys": ["inspect"]})
+    plan = GitHubRequestPlan(proposal, selection, "1" * 64)
+    response = {"full_name": "example/frozen-project", "default_branch": "main",
+                "private": False, "archived": False}
+    receipt = parse_github_response(plan, 200, canonical_json(response).encode())
+    snapshot = ObservedReadSnapshot.from_receipt(receipt)
+    proof = verify_observed_snapshot_stage((snapshot,))
+    return {"profile": "synthetic_http_shape_only", "live_capture_verified": False,
+            "transport_calls": 0, "request_id": plan.request_id,
+            "source_receipt_id": receipt.receipt_id, "snapshot_id": snapshot.snapshot_id,
+            "native_consumption_equivalence": proof}
+
+
+def selected_capture_admission_conformance() -> dict:
+    """All selected GET kinds use identical wire/frozen governance admission."""
+    from .continuation import ContinuationPolicyReceipt, ContinuationState, experimental_continuation_profile
+    from .epistemic import EpistemicClass, EpistemicRecord, EpistemicState
+    from .obligations import canonical_obligation_id
+    from .openai_transport import OpenAITransportPolicy, decode_openai_response
+    from .orchestration import ActionProposal, ProposalBatch, ProposalOrdering, Strategy, StrategySchema
+    from .readonly_adapters import GITHUB_READ_TOOLS, GitHubReadSelection, GitHubRequestPlan
+    from .supervisor import SupervisorContext
+    from .synthetic_protocol import ProposalKind
+    from .transport_activation import _admit_selected_read
+
+    selection = GitHubReadSelection("example", "frozen-project", "main", "a" * 40, 1)
+    epistemic = EpistemicState((EpistemicRecord("selected-source", EpistemicClass.DERIVED,
+                                             selection.canonical_record()),))
+    dependency = epistemic.dependency_digest(("selected-source",))
+    capabilities = tuple(Capability(name, ReplaySafety.OCCURRENCE_SENSITIVE,
+        "Selected volatile HTTP observation capture, never native cache reuse.",
+        required_state_keys=("selected-source",),
+        semantic_argument_keys=tuple(sorted(selection.arguments_for(name)))) for name in sorted(GITHUB_READ_TOOLS))
+    schema = StrategySchema("transport.capture.fixture")
+    state = OrchestrationState.create((Obligation("inspect", "Inspect a selected observation."),),
+        epistemic_state=epistemic, capabilities=capabilities, strategy_schemas=(schema,))
+    governance_policy = GovernancePolicy("transport.capture.fixture", 1, "tiny", 1, ProviderAuthority.OPENAI,
+        tuple(ToolPermission(name, ToolAuthorityClass.VOLATILE_READ, False, False) for name in sorted(GITHUB_READ_TOOLS)),
+        tuple(SUPPORTED_REQUIRED_GATE_KEYS))
+    task, governance = GovernanceWrapper(governance_policy).admit_task("transport.capture.fixture",
+        {"profile": "offline_volatile_admission_equivalence", "selection": selection.canonical_record()},
+        requester=PrincipalAuthority.OPENAI_SUPERVISOR)
+    policy = experimental_continuation_profile("tiny")
+    policy_receipt = ContinuationPolicyReceipt(policy, governance_policy, governance)
+    runtime, authority = RustRuntimeSession.create_continuation("transport.capture.fixture",
+        continuation_policy=policy, continuation_policy_receipt=policy_receipt)
+    continuation = ContinuationState.create(policy=policy, policy_receipt=policy_receipt,
+        runtime_session=runtime, orchestration_state=state, runtime_snapshot=runtime.snapshot)
+    context = SupervisorContext(task, governance, governance_policy, policy, continuation, state, runtime, authority)
+    transport_policy = OpenAITransportPolicy("offline-conformance-model", ("offline-conformance-model",))
+    records = []
+    for index, name in enumerate(sorted(GITHUB_READ_TOOLS)):
+        proposal = NormalizedProposal(ProposalKind.READ, {"proposal_key": f"capture-{index}", "tool_name": name,
+            "arguments": selection.arguments_for(name), "target_obligation_keys": ["inspect"]})
+        decoded, _ = decode_openai_response(offline_response_bytes(proposal, index), policy=transport_policy)
+        occurrence = f"capture-0-{index}"
+        action = ActionProposal(f"capture-{index}", name, selection.arguments_for(name),
+            target_obligation_ids=(canonical_obligation_id("inspect"),), required_state_keys=("selected-source",),
+            occurrence_key=occurrence)
+        batch = ProposalBatch(f"capture-batch-{index}", Strategy(schema.strategy_key, {}, schema=schema), (action,),
+                              ordering=ProposalOrdering.DECLARED_SEQUENCE)
+        _, first, first_tool = _admit_selected_read(context, proposal, batch, dependency, occurrence)
+        _, second, second_tool = _admit_selected_read(context, decoded, batch, dependency, occurrence)
+        if (first.receipt.canonical_record() != second.receipt.canonical_record()
+                or first.next_state.state_id != second.next_state.state_id
+                or first_tool.canonical_record() != second_tool.canonical_record()):
+            raise ValueError("wire and frozen capture admission differ")
+        plan = GitHubRequestPlan(proposal, selection, dependency)
+        records.append({"tool_name": name, "proposal_id": proposal.proposal_id,
+            "request_id": plan.request_id, "admission_receipt_id": first.receipt.receipt_id,
+            "tool_admission_receipt_id": first_tool.receipt_id, "next_state_id": first.next_state.state_id,
+            "equivalent": True, "authority_class": "volatile_read", "cache_reuse": False})
+    return {"profile": "offline_capture_admission_equivalence", "live_verification": False,
+            "http_dispatches": 0, "native_requests": runtime.snapshot.requests,
+            "selection_id": selection.selection_id, "cases": records}

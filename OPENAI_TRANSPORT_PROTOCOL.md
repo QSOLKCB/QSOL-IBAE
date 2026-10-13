@@ -158,19 +158,44 @@ user-authorized unavailable-credential path allows review of testable architectu
 with live verification explicitly BLOCKED. Subsequent synthetic, default-disabled
 effect implementation does not open any live transport or effect gate.
 
-## Current stage-3 verification limit
+## Selected capture and immutable native consumption
 
-The selected public GET adapter is implemented, but this candidate has no
-trusted native verifier for an entire selected-live-read task. The explicit
-`verify_selected_read_stage()` operation therefore reports unavailable and
-cannot mint a successful stage observation. This is separate from missing
-credentials and from the supported offline/native fixture probe.
+The selected-read gate has two explicit accounting domains. A selected public
+GET first requires a controller-owned normalized READ proposal, an exact
+operator-selected resource, fresh source-bound context, one typed declared-order
+occurrence, and a matching governed VOLATILE_READ permission with cache reuse
+disabled. The controller reserves finite transport capacity before dispatch.
+The GET is not represented as a Rust execution or a cacheable remote read.
 
-Mutable repository, branch, pull-request and CI observations are not cacheable
-content snapshots merely because their selection or HTTP receipt has a hash.
-The accepted legacy Rust admitted-read path is cacheable-only. Importing a
-mutable external observation requires a separately verified source snapshot and
-matching governed dependency contract; this transport never invents that
-binding or relabels a volatile read. Live selected-read acceptance remains closed
-until its own native evidence integration is verified. No effect stage inherits
-permission or proof from an unavailable read gate.
+A successful bounded response can then become an immutable ObservedReadSnapshot.
+Its identity binds the exact retained receipt and content. A separate governed
+`read.observed_snapshot` SNAPSHOT_READ passes through existing native admitted-read
+execution, dependency binding, evidence and cache accounting. Reusing this local
+content cannot establish current repository, branch, pull-request or CI freshness.
+Even an immutable commit observation does not make its HTTP capture cacheable.
+
+`verify_selected_read_stage()` accepts only successful captures owned by the
+current controller, deployment, epoch and selected tool/resource coverage. Its
+closed verifier compares cold reads and cache hits with the accepted synthetic
+path in fresh native sessions. The proof records each source snapshot and both
+native runs' counters. It proves exact-content admission and consumption
+parity, not whole-task acceptance, remote authenticity or live recovery.
+Public receipt/snapshot deserialization cannot supply controller capture origin.
+
+The shared transport limit counts every reserved OpenAI or selected HTTP attempt;
+separate counters identify each kind. A separate finite lifetime capture-attempt
+limit bounds successful, failed and interrupted capture history. Reservations,
+occurrences and attempt limits cannot be refunded by retries, recovery,
+reconfiguration or rollback. Duplicate, stale and denied captures fail before GET.
+A failed or interrupted dispatched capture retains its typed admission, next-state
+identity, fixed failure status and consumed transport reservation. In-flight
+revocation cannot retract an already-sent GET; its result is discarded when the
+post-response fence fails. Rollback retires active capture proofs while retaining
+budget spend and historical partial outcomes.
+
+Offline conformance uses frozen API-shaped observations and in-memory SDK/HTTPS
+mocks. These tests exercise the implemented path but do not establish any actual
+live OpenAI or GitHub call. Genuine live verification remains BLOCKED until the
+operator supplies the required authorized deployment and its own stage evidence.
+No live effect permission or verification is inherited from implementation
+acceptance or an offline snapshot proof.

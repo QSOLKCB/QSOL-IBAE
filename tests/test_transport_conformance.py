@@ -47,3 +47,26 @@ def test_optional_provider_import_has_no_sdk_or_environment_dependency():
     result = subprocess.run([sys.executable, "-c", "import sys, ibae; assert 'openai' not in sys.modules"],
                             env=environment, check=True, capture_output=True, timeout=30)
     assert result.stdout == result.stderr == b""
+
+
+def test_selected_capture_admission_parity_covers_every_read_kind():
+    from ibae.readonly_adapters import GITHUB_READ_TOOLS
+    from ibae.transport_conformance import selected_capture_admission_conformance
+    record = selected_capture_admission_conformance()
+    assert record["live_verification"] is False
+    assert record["http_dispatches"] == record["native_requests"] == 0
+    assert {case["tool_name"] for case in record["cases"]} == set(GITHUB_READ_TOOLS)
+    assert all(case["equivalent"] and case["authority_class"] == "volatile_read"
+               and case["cache_reuse"] is False for case in record["cases"])
+
+
+def test_frozen_observation_native_proof_does_not_claim_live_capture():
+    from ibae.transport_conformance import synthetic_snapshot_conformance
+    record = synthetic_snapshot_conformance()
+    assert record["transport_calls"] == 0
+    assert record["live_capture_verified"] is False
+    proof = record["native_consumption_equivalence"]
+    assert proof["live_verification"] is False
+    assert proof["equivalent"] is True
+    assert proof["transport_calls"] == 0
+    assert record["snapshot_id"] in proof["source_snapshot_ids"]

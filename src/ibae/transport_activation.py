@@ -18,14 +18,15 @@ from typing import Any
 
 from ._records import require_fingerprint, require_symbol
 from .canonical import canonical_json, domain_fingerprint
-from .supervisor import _validate_projection
-from .synthetic_protocol import NormalizedProposal, bounded_synthetic_data
+from .supervisor import SupervisorContext, SupervisorProjection, _validate_projection
+from .synthetic_protocol import NormalizedProposal, ProposalKind, bounded_synthetic_data
 
 ACTIVATION_VERSION = "IBAE-TRANSPORT-ACTIVATION-V1"
 STAGE_OBSERVATION_VERSION = "IBAE-TRANSPORT-STAGE-OBSERVATION-V1"
 MAX_TRANSPORT_CALLS = 1_024
 MAX_SELECTED_READ_TOOLS = 32
 MAX_RETAINED_PROPOSALS = 16
+MAX_SELECTED_READ_CAPTURES = 16
 MAX_EPOCH = (1 << 64) - 1
 
 
@@ -140,6 +141,8 @@ class OperatorStageAuthorization:
             raise ValueError("only stage 3 requires explicitly selected read tools")
         if bool(self.selected_read_selection_ids) != (self.stage is ActivationStage.OPENAI_SELECTED_READS):
             raise ValueError("only stage 3 requires explicitly selected read resource identities")
+        if len(self.selected_read_tools) * len(self.selected_read_selection_ids) > MAX_SELECTED_READ_CAPTURES:
+            raise ValueError("selected tool/resource coverage exceeds the capture gate bound")
 
     def canonical_record(self) -> dict:
         self.__post_init__()
@@ -188,6 +191,8 @@ class TransportCallReservation:
     projection_id: str | None
     tool_name: str | None
     selection_id: str | None
+    proposal_id: str | None
+    dependency_fingerprint: str | None
 
     def __init__(self) -> None:
         raise TypeError("transport reservations are issued only by their controller")
@@ -199,14 +204,16 @@ class TransportCallReservation:
 class _TransportLedger:
     """Small ordinary Python ledger, shared by dispatch and rollback rehearsal."""
 
-    __slots__ = ("epoch", "used", "limit", "revoked", "pending")
+    __slots__ = ("epoch", "used", "limit", "revoked", "pending", "openai_calls", "selected_read_calls")
 
     def __init__(self, limit: int) -> None:
         self.epoch, self.used, self.limit, self.revoked, self.pending = 0, 0, limit, False, None
+        self.openai_calls, self.selected_read_calls = 0, 0
 
     def reserve(self, owner, stage, task_id, governance_id, kind, projection_id=None,
                 tool_name=None, transport_policy_id=None,
-                credential_reference_id=None, selection_id=None) -> TransportCallReservation:
+                credential_reference_id=None, selection_id=None, proposal_id=None,
+                dependency_fingerprint=None) -> TransportCallReservation:
         if self.revoked:
             raise ActivationError("transport activation is revoked")
         if self.pending is not None:
@@ -220,9 +227,15 @@ class _TransportLedger:
                   "credential_reference_id": credential_reference_id,
                   "kind": kind, "projection_id": projection_id, "tool_name": tool_name}
         values["selection_id"] = selection_id
+        values["proposal_id"] = proposal_id
+        values["dependency_fingerprint"] = dependency_fingerprint
         for name, value in values.items():
             object.__setattr__(reservation, name, value)
         self.used += 1  # Failed/ambiguous calls never refund or auto-retry.
+        if kind == "openai":
+            self.openai_calls += 1
+        elif kind == "selected_read":
+            self.selected_read_calls += 1
         self.pending = reservation
         return reservation
 
@@ -273,6 +286,144 @@ def _rollback_rehearsal() -> dict:
             "live_recovery_verified": False, "provider_request_cancelled": False}
 
 
+def _source_binding(projection: dict) -> str:
+    """Identity for retained request context, never a native authority proof."""
+    return domain_fingerprint("ibae.transport-live-source-binding.v1", {
+        "sources": projection["sources"], "authority": projection["decision_surface"]["authority"]})
+
+
+def _admit_selected_read(context: SupervisorContext, proposal: NormalizedProposal,
+                         batch, dependency_fingerprint: str, occurrence_key: str):
+    """Recompute existing typed orchestration/governance before any HTTP read.
+
+    This pure helper neither dispatches transport nor marks an observation live.
+    The controller separately requires its own live proposal/source lineage.
+    """
+    from .governance import GovernanceWrapper, PrincipalAuthority, ToolAuthorityClass
+    from .obligations import canonical_obligation_id
+    from .orchestration import (ActionProposal, Capability, DecisionStatus,
+                                ProposalBatch, ProposalOrdering, ReplaySafety, admit_batch)
+
+    _exact("live supervisor context", context, SupervisorContext)
+    projection = SupervisorProjection(context).canonical_record()  # Native lineage revalidation.
+    _exact("normalized read proposal", proposal, NormalizedProposal)
+    _exact("selected read batch", batch, ProposalBatch)
+    _identity("selected read dependency", dependency_fingerprint)
+    if (proposal.kind is not ProposalKind.READ or len(batch.proposals) != 1
+            or batch.ordering is not ProposalOrdering.DECLARED_SEQUENCE):
+        raise ActivationError("capture requires one declared-sequence admitted read")
+    payload, action = proposal.payload, batch.proposals[0]
+    _exact("selected read action", action, ActionProposal)
+    if (action.proposal_key != payload["proposal_key"] or action.capability != payload["tool_name"]
+            or canonical_json(action.arguments) != canonical_json(payload["arguments"])
+            or action.target_obligation_ids != tuple(sorted(canonical_obligation_id(key)
+                for key in payload["target_obligation_keys"]))
+            or action.occurrence_key != occurrence_key):
+        raise ActivationError("capture action differs from the owned read or current occurrence")
+    capability = context.orchestration_state.capability(action.capability)
+    _exact("selected read capability", capability, Capability)
+    if capability.replay_safety is not ReplaySafety.OCCURRENCE_SENSITIVE:
+        raise ActivationError("remote HTTP capture is occurrence-sensitive, never cacheable")
+    transition = admit_batch(context.orchestration_state, batch)
+    decisions = transition.receipt.decisions
+    if len(decisions) != 1 or decisions[0].status is not DecisionStatus.ADMITTED:
+        raise ActivationError("selected read was not admitted by deterministic orchestration")
+    tool_admission = GovernanceWrapper(context.governance_policy).admit_tool(
+        context.task, context.governance, decisions[0], action, capability,
+        ToolAuthorityClass.VOLATILE_READ, dependency_state_id=dependency_fingerprint,
+        requester=PrincipalAuthority.DETERMINISTIC_ORCHESTRATOR,
+    )
+    return projection, transition, tool_admission
+
+
+@dataclass(frozen=True, slots=True)
+class SelectedReadCapture:
+    """Capture and next host state; construction/serialization grants nothing.
+
+    HTTP is accounted by the transport ledger. The returned immutable snapshot
+    must receive its own governed native read before native evidence exists.
+    """
+
+    snapshot: Any
+    next_orchestration_state: Any
+    admission_receipt: Any
+    tool_admission: Any
+    selection_id: str
+    proposal_id: str
+    epoch: int
+    transport_call_index: int
+    transport_policy_id: str
+    credential_reference_id: str
+
+    def canonical_record(self) -> dict:
+        return {"protocol_version": "IBAE-SELECTED-READ-CAPTURE-V1",
+            "snapshot_id": self.snapshot.snapshot_id, "source_receipt_id": self.snapshot.source_receipt.receipt_id,
+            "next_orchestration_state_id": self.next_orchestration_state.state_id,
+            "admission_receipt_id": self.admission_receipt.receipt_id,
+            "tool_admission_receipt_id": self.tool_admission.receipt_id,
+            "task_id": self.tool_admission.task_id, "governance_id": self.tool_admission.governance_id,
+            "tool_name": self.tool_admission.tool_name, "selection_id": self.selection_id,
+            "proposal_id": self.proposal_id, "epoch": self.epoch,
+            "transport_call_index": self.transport_call_index,
+            "transport_policy_id": self.transport_policy_id,
+            "credential_reference_id": self.credential_reference_id,
+            "http_capture_native_accounted": False, "native_snapshot_read_required": True,
+            "control_authority": False, "final_acceptance": False}
+
+
+@dataclass(frozen=True, slots=True)
+class SelectedReadAttempt:
+    """Bounded successful/partial capture observation with next host state."""
+
+    next_orchestration_state: Any
+    admission_receipt: Any
+    tool_admission: Any
+    source_binding_id: str
+    selection_id: str
+    proposal_id: str
+    epoch: int
+    transport_call_index: int | None
+    transport_policy_id: str
+    credential_reference_id: str
+    status: str
+    reason: str
+    snapshot_id: str | None
+
+    def canonical_record(self) -> dict:
+        return {"protocol_version": "IBAE-SELECTED-READ-ATTEMPT-V1",
+            "next_orchestration_state_id": self.next_orchestration_state.state_id,
+            "admission_receipt_id": self.admission_receipt.receipt_id,
+            "tool_admission_receipt_id": self.tool_admission.receipt_id,
+            "task_id": self.tool_admission.task_id, "governance_id": self.tool_admission.governance_id,
+            "tool_name": self.tool_admission.tool_name, "selection_id": self.selection_id,
+            "proposal_id": self.proposal_id, "source_binding_id": self.source_binding_id,
+            "occurrence_key": self.tool_admission.occurrence_key, "epoch": self.epoch,
+            "transport_call_index": self.transport_call_index,
+            "transport_reservation_consumed": self.transport_call_index is not None,
+            "transport_policy_id": self.transport_policy_id,
+            "credential_reference_id": self.credential_reference_id,
+            "status": self.status, "reason": self.reason, "snapshot_id": self.snapshot_id,
+            "native_http_execution": False, "control_authority": False, "final_acceptance": False}
+
+
+class SelectedReadCaptureError(ActivationError):
+    """Fixed error carrying the preserved partial admission/next-state result."""
+
+    def __init__(self, attempt: SelectedReadAttempt) -> None:
+        self.attempt = attempt
+        super().__init__("selected capture incomplete: " + attempt.reason)
+
+
+@dataclass(slots=True, eq=False)
+class _PendingCapture:
+    source_binding: str
+    tool_name: str
+    selection_id: str
+    proposal_id: str
+    dependency_fingerprint: str
+    transport_call_index: int | None = None
+
+
 class ActivationController:
     """Single-task, single-outstanding-call, default-off transport control.
 
@@ -284,7 +435,9 @@ class ActivationController:
 
     __slots__ = ("_task_id", "_governance_id", "_ledger", "_stage", "_authorization",
                  "_observations", "_live_proposals", "_stream_overflow",
-                 "_transport_policy_id", "_credential_reference_id", "_lock")
+                 "_transport_policy_id", "_credential_reference_id", "_lock",
+                 "_live_source_bindings", "_captures", "_used_read_proposals", "_capture_plan",
+                 "_capture_next_state_id", "_capture_attempts", "_capture_inflight")
 
     def __init__(self, task_id: str, governance_id: str, *, max_transport_calls: int = 16,
                  transport_policy_id: str | None = None,
@@ -307,6 +460,13 @@ class ActivationController:
         self._observations: dict[ActivationStage, StageObservation] = {}
         self._live_proposals: tuple[NormalizedProposal, ...] = ()
         self._stream_overflow = False
+        self._live_source_bindings: tuple[str, ...] = ()
+        self._captures: tuple[SelectedReadCapture, ...] = ()
+        self._used_read_proposals: tuple[str, ...] = ()
+        self._capture_plan: _PendingCapture | None = None
+        self._capture_next_state_id: str | None = None
+        self._capture_attempts: tuple[SelectedReadAttempt, ...] = ()
+        self._capture_inflight: tuple[_PendingCapture, ...] = ()
 
     def __reduce__(self):
         raise TypeError("transport activation cannot be serialized or restored")
@@ -370,6 +530,11 @@ class ActivationController:
     def remaining_transport_calls(self) -> int:
         return self._ledger.limit - self._ledger.used
 
+    @property
+    def capture_occurrence_key(self) -> str:
+        """The current deterministic host-side occurrence, not model authority."""
+        return f"capture.{self.epoch}.{self.call_count}"
+
     def _active(self) -> None:
         if self.revoked:
             raise ActivationError("transport activation is revoked")
@@ -398,7 +563,9 @@ class ActivationController:
     def _verification_fence(self) -> tuple:
         self._active()
         return (self.epoch, self.stage, self.transport_policy_id, self.credential_reference_id,
-                self.call_count, self._ledger.pending, self._live_proposals, self._stream_overflow)
+                self.call_count, self._ledger.pending, self._live_proposals, self._stream_overflow,
+                self._live_source_bindings, self._captures, self._used_read_proposals,
+                self._capture_plan, self._capture_next_state_id, self._capture_attempts, self._capture_inflight)
 
     def _check_verification_fence(self, fence: tuple) -> None:
         if fence != self._verification_fence():
@@ -467,6 +634,8 @@ class ActivationController:
         self._stage = authorization.stage
         self._authorization = authorization
         self._live_proposals, self._stream_overflow = (), False
+        self._live_source_bindings, self._captures, self._used_read_proposals = (), (), ()
+        self._capture_plan, self._capture_next_state_id = None, None
 
     @_locked
     def reserve_call(self, projection: dict, *, stage: ActivationStage,
@@ -503,19 +672,34 @@ class ActivationController:
 
     @_locked
     def reserve_read(self, *, task_id: str, governance_id: str,
-                     tool_name: str, selection_id: str) -> TransportCallReservation:
+                     tool_name: str, selection_id: str, proposal_id: str,
+                     dependency_fingerprint: str) -> TransportCallReservation:
         self._active()
         self._binding(task_id, governance_id)
         _exact("selected read tool", tool_name, str)
         require_symbol("selected read tool", tool_name)
         _identity("selected read resource identity", selection_id)
+        _identity("selected read proposal identity", proposal_id)
+        _identity("selected read dependency", dependency_fingerprint)
         if (self.stage is not ActivationStage.OPENAI_SELECTED_READS or tool_name not in self.selected_read_tools
                 or selection_id not in self.selected_read_selection_ids):
             raise ActivationError("real read tool is not selected in active stage 3")
-        return self._ledger.reserve(self, self.stage, self.task_id, self.governance_id,
+        self._check_capture_plan(tool_name, selection_id, proposal_id, dependency_fingerprint)
+        if self._capture_plan.transport_call_index is not None:
+            raise ActivationError("selected capture plan already consumed its transport reservation")
+        reservation = self._ledger.reserve(self, self.stage, self.task_id, self.governance_id,
                                     "selected_read", tool_name=tool_name,
                                     transport_policy_id=self.transport_policy_id,
-                                    credential_reference_id=self.credential_reference_id, selection_id=selection_id)
+                                    credential_reference_id=self.credential_reference_id, selection_id=selection_id,
+                                    proposal_id=proposal_id, dependency_fingerprint=dependency_fingerprint)
+        self._capture_plan.transport_call_index = reservation.call_index
+        return reservation
+
+    def _check_capture_plan(self, tool_name, selection_id, proposal_id, dependency_fingerprint) -> None:
+        plan = self._capture_plan
+        if (plan is None or (tool_name, selection_id, proposal_id, dependency_fingerprint)
+                != (plan.tool_name, plan.selection_id, plan.proposal_id, plan.dependency_fingerprint)):
+            raise ActivationError("selected read has no controller-owned governed capture plan")
 
     @_locked
     def check_read_reservation(self, reservation: TransportCallReservation) -> None:
@@ -527,6 +711,8 @@ class ActivationController:
                 or reservation.selection_id not in self.selected_read_selection_ids
                 or reservation.tool_name not in self.selected_read_tools):
             raise ActivationError("read reservation is outside the selected read-only profile")
+        self._check_capture_plan(reservation.tool_name, reservation.selection_id,
+                                 reservation.proposal_id, reservation.dependency_fingerprint)
 
     @_locked
     def complete_call(self, reservation: TransportCallReservation) -> None:
@@ -550,9 +736,11 @@ class ActivationController:
         self._active()
         deployment = OpenAIResponsesSupervisor.deployment_record(supervisor)
         self._deployment(deployment["transport_policy_id"], deployment["credential_reference_id"])
+        detached = self._projection(projection)
+        source_binding = _source_binding(detached)
         epoch, stage, before = self.epoch, self.stage, self.call_count
         proposal = OpenAIResponsesSupervisor.propose(
-            supervisor, projection, index=index, activation=self,
+            supervisor, detached, index=index, activation=self,
             fresh_handoff=fresh_handoff, previous_response_id=previous_response_id,
         )
         _exact("normalized live proposal", proposal, NormalizedProposal)
@@ -564,6 +752,7 @@ class ActivationController:
                 self._stream_overflow = True
             else:
                 self._live_proposals += (NormalizedProposal.from_record(proposal.canonical_record()),)
+                self._live_source_bindings += (source_binding,)
         return proposal
 
     def _require_smoke_stream(self, stage: ActivationStage) -> dict:
@@ -576,6 +765,115 @@ class ActivationController:
                 or [item.canonical_record() for item in self._live_proposals] != transcript["proposals"]):
             raise ActivationError("owned official proposal stream does not match the closed smoke gate")
         return transcript
+
+    def capture_selected_read(self, adapter, proposal: NormalizedProposal,
+                              dependency_fingerprint: str, *, context: SupervisorContext, batch) -> SelectedReadCapture:
+        """Admit one owned live READ, capture HTTP, then freeze its observation.
+
+        The native context is inspected only on this trusted controller side.
+        The adapter receives the detached proposal/dependency and its existing
+        activation checks, never the context, admission object or native seal.
+        """
+        from .observed_snapshots import ObservedReadSnapshot
+        from .readonly_adapters import (ExternalObservationReceipt, GitHubReadAdapter,
+                                        GitHubReadSelection, GitHubRequestPlan)
+
+        _exact("selected read adapter", adapter, GitHubReadAdapter)
+        _exact("normalized selected read", proposal, NormalizedProposal)
+        _exact("live supervisor context", context, SupervisorContext)
+        _identity("selected read dependency", dependency_fingerprint)
+        GitHubReadAdapter.validate_activation(adapter, self)
+        binding = GitHubReadAdapter.binding_record(adapter)
+        self._binding(binding["task_id"], binding["governance_id"])
+        selection = GitHubReadSelection.from_record(binding["selection"])
+        request = GitHubRequestPlan(proposal, selection, dependency_fingerprint).canonical_record()
+        with self._lock:
+            self._active()
+            if self.stage is not ActivationStage.OPENAI_SELECTED_READS:
+                raise ActivationError("selected capture requires active stage 3")
+            if self._capture_plan is not None or self._ledger.pending is not None:
+                raise ActivationError("another transport capture or call is outstanding")
+            if len(self._capture_attempts) + len(self._capture_inflight) >= MAX_SELECTED_READ_CAPTURES:
+                raise ActivationError("selected capture retention bound is exhausted")
+            if proposal.proposal_id in self._used_read_proposals:
+                raise ActivationError("owned selected read proposal was already consumed")
+            tool_name = proposal.payload["tool_name"]
+            if tool_name not in self.selected_read_tools or selection.selection_id not in self.selected_read_selection_ids:
+                raise ActivationError("selected capture is outside its authorized tool/resource scope")
+            current = self._projection(SupervisorProjection(context).canonical_record())
+            source = _source_binding(current)
+            if not any(item == proposal and recorded_source == source
+                       for item, recorded_source in zip(self._live_proposals, self._live_source_bindings)):
+                raise ActivationError("selected read lacks an owned live proposal for the current native context")
+            if (self._capture_next_state_id is not None
+                    and context.orchestration_state.state_id != self._capture_next_state_id):
+                raise ActivationError("host did not advance the prior capture's orchestration state")
+            _, transition, tool_admission = _admit_selected_read(
+                context, proposal, batch, dependency_fingerprint, self.capture_occurrence_key)
+            plan = _PendingCapture(source, tool_name, selection.selection_id,
+                                   proposal.proposal_id, dependency_fingerprint)
+            self._capture_plan = plan
+            self._used_read_proposals += (proposal.proposal_id,)
+            self._capture_inflight += (plan,)
+            fence = self._verification_fence()
+        status, reason, capture = "failed", "capture_failed", None
+        try:
+            # No native witness is stored on the adapter-reachable controller.
+            # Revalidation is trusted-host side; it cannot cancel an HTTP read
+            # already in flight when native revocation subsequently occurs.
+            current = self._projection(SupervisorProjection(context).canonical_record())
+            if _source_binding(current) != source:
+                raise ActivationError("selected native context changed before dispatch")
+            # There is deliberately no injected transport/callback alternative.
+            receipt = GitHubReadAdapter.observe(adapter, proposal, dependency_fingerprint)
+            _exact("selected external observation", receipt, ExternalObservationReceipt)
+            observed = receipt.canonical_record()
+            if observed["request"] != request:
+                status, reason = "invalid_observation", "capture_request_mismatch"
+                raise ActivationError("selected read returned a different request")
+            if observed["status"] != "observed":
+                status, reason = "unavailable", "remote_observation_unavailable"
+                raise ActivationError("selected read did not establish the exact requested observation")
+            status, reason = "invalid_observation", "snapshot_content_rejected"
+            snapshot = ObservedReadSnapshot.from_receipt(receipt)
+            status, reason = "interrupted", "capture_context_changed"
+            current = self._projection(SupervisorProjection(context).canonical_record())
+            if _source_binding(current) != source:
+                raise ActivationError("selected native context changed during capture")
+            with self._lock:
+                # Only this request's single transport reservation may advance.
+                expected = list(fence)
+                expected[4] += 1
+                self._check_verification_fence(tuple(expected))
+                self._check_capture_plan(tool_name, selection.selection_id, proposal.proposal_id,
+                                         dependency_fingerprint)
+                capture = SelectedReadCapture(snapshot, transition.next_state, transition.receipt,
+                    tool_admission, selection.selection_id, proposal.proposal_id, self.epoch,
+                    fence[4], self.transport_policy_id, self.credential_reference_id)
+                self._captures += (capture,)
+                self._capture_next_state_id = transition.next_state.state_id
+                status, reason = "captured", "observation_captured"
+        except Exception:
+            capture = None
+            if self.revoked or self.epoch != fence[0]:
+                status, reason = "interrupted", "transport_epoch_retired"
+            elif plan.transport_call_index is None:
+                status, reason = "not_dispatched", "capture_not_dispatched"
+        finally:
+            with self._lock:
+                attempt = SelectedReadAttempt(transition.next_state, transition.receipt, tool_admission,
+                    source, selection.selection_id, proposal.proposal_id, fence[0], plan.transport_call_index,
+                    fence[2], fence[3], status, reason, None if capture is None else capture.snapshot.snapshot_id)
+                self._capture_attempts += (attempt,)
+                self._capture_inflight = tuple(item for item in self._capture_inflight if item is not plan)
+                if self._capture_plan is plan:
+                    self._capture_plan = None
+                    self._capture_next_state_id = transition.next_state.state_id
+        if capture is None:
+            # Raise outside the except suite: raw transport errors/bodies are
+            # neither the exception context nor part of the partial observation.
+            raise SelectedReadCaptureError(attempt)
+        return capture
 
     def verify_fake_tool_stage(self) -> StageObservation:
         """Combine owned official observations with closed fake-tool replay."""
@@ -615,14 +913,50 @@ class ActivationController:
         return observation
 
     def verify_selected_read_stage(self) -> StageObservation:
-        """Fail closed until a trusted selected-read/native-task verifier exists.
+        """Verify owned HTTP captures and separately governed native consumption.
 
-        An external receipt, a successful GET or a model completion claim cannot
-        stand in for this gate. No stage 4 or effect activation is supported.
+        The native proof concerns immutable captured content, not execution of
+        the HTTP operation, current remote state or external source truth.
         """
-        self._active()
-        raise ActivationError(
-            "selected-read stage verification is unavailable: no trusted native selected-read task verifier")
+        from .observed_snapshots import verify_observed_snapshot_stage
+
+        with self._lock:
+            fence = self._verification_fence()
+            if (self.stage is not ActivationStage.OPENAI_SELECTED_READS
+                    or self._ledger.pending is not None or self._capture_plan is not None):
+                raise ActivationError("selected-read verification requires idle stage 3")
+            required = {(tool, selection) for tool in self.selected_read_tools
+                        for selection in self.selected_read_selection_ids}
+            covered = {(capture.tool_admission.tool_name, capture.selection_id) for capture in self._captures}
+            if not required or covered != required:
+                raise ActivationError("owned selected captures do not cover every authorized tool/resource pair")
+            snapshots = tuple(capture.snapshot for capture in self._captures)
+            snapshot_ids = sorted({snapshot.snapshot_id for snapshot in snapshots})
+            if len(snapshot_ids) != len(snapshots):
+                raise ActivationError("selected captures contain duplicate snapshot identities")
+        result = bounded_synthetic_data(verify_observed_snapshot_stage(snapshots), max_bytes=65_536)
+        if (type(result) is not dict or result.get("equivalent") is not True
+                or result.get("live_verification") is not False or result.get("transport_calls") != 0
+                or result.get("source_snapshot_ids") != snapshot_ids
+                or result.get("snapshot_count") != len(snapshots)
+                or result.get("final_acceptance") is not False):
+            raise ActivationError("selected immutable-snapshot native parity verification failed")
+        _identity("selected snapshot proof identity", result.get("report_id"))
+        with self._lock:
+            self._check_verification_fence(fence)
+            observation = self._observation(live=True, evidence={
+                "scope": "governed_http_capture_then_separate_native_snapshot_consumption",
+                "source_snapshot_ids": snapshot_ids, "http_captures": len(snapshots),
+                "capture_receipts": [capture.canonical_record() for capture in self._captures],
+                "capture_attempts": [attempt.canonical_record() for attempt in self._capture_attempts
+                                     if attempt.epoch == self.epoch],
+                "probe_report_id": result["report_id"], "native_proof": result["native_proof"],
+                "fresh_native_runs": result["fresh_native_runs"],
+                "native_total_counters": result["native_total_counters"],
+                "native_proof_transport_calls": 0, "http_capture_native_accounted": False,
+                "remote_current_state_verified": False, "external_truth_authenticated": False})
+            self._observations[ActivationStage.OPENAI_SELECTED_READS] = observation
+            return observation
 
     @_locked
     def rollback(self) -> None:
@@ -632,6 +966,8 @@ class ActivationController:
         self._stage, self._authorization = ActivationStage.SYNTHETIC, None
         self._observations.clear()
         self._live_proposals, self._stream_overflow = (), False
+        self._live_source_bindings, self._captures, self._used_read_proposals = (), (), ()
+        self._capture_plan, self._capture_next_state_id = None, None
 
     @_locked
     def revoke(self) -> None:
@@ -640,13 +976,18 @@ class ActivationController:
             self._ledger.retire_epoch(revoke=True)
             self._observations.clear()
             self._live_proposals, self._stream_overflow = (), False
+            self._live_source_bindings, self._captures, self._used_read_proposals = (), (), ()
+            self._capture_plan, self._capture_next_state_id = None, None
 
     @_locked
     def canonical_record(self) -> dict:
         """Detached observation. No from_record, restore or activation parser."""
+        reserved_captures = (sum(attempt.transport_call_index is not None for attempt in self._capture_attempts)
+                             + sum(plan.transport_call_index is not None for plan in self._capture_inflight))
+        if reserved_captures != self._ledger.selected_read_calls:
+            raise ActivationError("selected capture reservation evidence does not reconcile")
         current = self._observations.get(self.stage)
-        verification = ("unavailable" if self.stage is ActivationStage.OPENAI_SELECTED_READS else
-                        "passed" if current is not None and current.canonical_record()["epoch"] == self.epoch else
+        verification = ("passed" if current is not None and current.canonical_record()["epoch"] == self.epoch else
                         "not_verified")
         return {"protocol_version": ACTIVATION_VERSION, "task_id": self.task_id,
             "governance_id": self.governance_id, "stage": int(self.stage),
@@ -656,10 +997,19 @@ class ActivationController:
             "selected_read_selection_ids": list(self.selected_read_selection_ids),
             "epoch": self.epoch, "epoch_scope": "python_transport_only", "revoked": self.revoked,
             "maximum_transport_calls": self._ledger.limit, "consumed_transport_calls": self.call_count,
+            "openai_transport_calls": self._ledger.openai_calls,
+            "selected_http_reservations": self._ledger.selected_read_calls,
             "remaining_transport_calls": self.remaining_transport_calls,
             "outstanding_call": self._ledger.pending is not None,
             "active_stage_verification": verification,
-            "selected_read_stage_verifier": "unavailable",
+            "selected_read_stage_verifier": "owned_capture_and_native_snapshot_parity",
+            "selected_capture_count": len(self._captures),
+            "consumed_selected_proposals": len(self._used_read_proposals),
+            "selected_capture_attempts_remaining": MAX_SELECTED_READ_CAPTURES - len(self._capture_attempts) - len(self._capture_inflight),
+            "selected_capture_attempts": [attempt.canonical_record() for attempt in self._capture_attempts],
+            "selected_capture_outcomes": {status: sum(attempt.status == status for attempt in self._capture_attempts)
+                for status in ("captured", "failed", "unavailable", "invalid_observation", "interrupted", "not_dispatched")},
+            "selected_capture_incomplete": len(self._capture_inflight),
             "stage_observations": [self._observations[stage].canonical_record() for stage in sorted(self._observations)],
             "native_authority": False, "serialized_restore_supported": False,
             "live_recovery_verified": False, "effects_supported": False}
