@@ -1290,6 +1290,20 @@ retires active proofs without deleting historical attempts or refunding capacity
 Pre-dispatch denial sends no GET; post-dispatch revocation discards the response
 and cannot undo or pretend to cancel a request already sent.
 
+## IBAE-TRANSPORT-004 — Simulation cannot establish a live predecessor gate
+
+**ENFORCED MUST**
+
+Production stage evidence consumes private single-use outcomes from the closed
+verified HTTP/TLS path, bound to the exact current reservation and normalized
+proposal or captured receipt. Adapter type, decoded success, an HTTP mock and
+serialized records do not prove a live call. Simulation controllers are
+permanently separate, produce only simulation observations and use inert
+adapters; production SDK/HTTPS dispatch rejects them before credentials/network.
+No simulation predecessor, caller flag or receipt hash can authorize a live stage.
+The guarantee assumes the trusted Python host and does not claim remote
+attestation or arbitrary module-tamper protection.
+
 Evidence: `tests/test_openai_transport.py`, `tests/test_transport_activation.py`,
 `tests/test_readonly_adapters.py`, `tests/test_observed_snapshots.py`,
 `tests/test_transport_conformance.py` and the

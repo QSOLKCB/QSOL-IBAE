@@ -356,7 +356,10 @@ tests, exact-head CI/Determinism and authentic Codex endorsement passed.
 The optional official SDK is pinned under `.[openai]`. Import and offline
 conformance require no credential or network call. A trusted operator must
 configure exact task/governance credential binding and each stage gate before
-any live dispatch. SDK-mock tests and detached JSON receipts are not live proof.
+any live dispatch. SDK-mock tests and detached JSON receipts are not live proof. Production gates
+require private one-use verified-network outcomes. The explicit simulation
+controller cannot enter production credential/HTTPS dispatch, and all of its
+stage observations remain simulation-only.
 Public GitHub reads are restricted to fixed selected GET resources; private
 authenticated GitHub and direct ChatGPT/Work/Codex session access are unavailable.
 Selected GETs use occurrence-sensitive VOLATILE_READ admission and a separate

@@ -161,6 +161,7 @@ def v0_6c_reference_fixture() -> dict:
               "equivalent_streams": streams, "fixture_equivalence": fixture,
               "observed_snapshot_equivalence": synthetic_snapshot_conformance(),
               "selected_capture_admission": selected_capture_admission_conformance(),
+              "simulated_activation": simulation_activation_conformance(),
               "live_gate_status": "blocked_missing_operator_credentials_and_live_stage_evidence"}
     record["conformance_id"] = domain_fingerprint("ibae.openai-readonly-conformance.v1", record)
     return record
@@ -187,17 +188,13 @@ def synthetic_snapshot_conformance() -> dict:
             "native_consumption_equivalence": proof}
 
 
-def selected_capture_admission_conformance() -> dict:
-    """All selected GET kinds use identical wire/frozen governance admission."""
+def _selected_capture_fixture_context():
+    """Closed task inputs shared by admission and isolated simulation probes."""
     from .continuation import ContinuationPolicyReceipt, ContinuationState, experimental_continuation_profile
     from .epistemic import EpistemicClass, EpistemicRecord, EpistemicState
-    from .obligations import canonical_obligation_id
-    from .openai_transport import OpenAITransportPolicy, decode_openai_response
-    from .orchestration import ActionProposal, ProposalBatch, ProposalOrdering, Strategy, StrategySchema
-    from .readonly_adapters import GITHUB_READ_TOOLS, GitHubReadSelection, GitHubRequestPlan
+    from .orchestration import StrategySchema
+    from .readonly_adapters import GITHUB_READ_TOOLS, GitHubReadSelection
     from .supervisor import SupervisorContext
-    from .synthetic_protocol import ProposalKind
-    from .transport_activation import _admit_selected_read
 
     selection = GitHubReadSelection("example", "frozen-project", "main", "a" * 40, 1)
     epistemic = EpistemicState((EpistemicRecord("selected-source", EpistemicClass.DERIVED,
@@ -223,6 +220,19 @@ def selected_capture_admission_conformance() -> dict:
     continuation = ContinuationState.create(policy=policy, policy_receipt=policy_receipt,
         runtime_session=runtime, orchestration_state=state, runtime_snapshot=runtime.snapshot)
     context = SupervisorContext(task, governance, governance_policy, policy, continuation, state, runtime, authority)
+    return context, selection, dependency, schema
+
+
+def selected_capture_admission_conformance() -> dict:
+    """All selected GET kinds use identical wire/frozen governance admission."""
+    from .obligations import canonical_obligation_id
+    from .openai_transport import OpenAITransportPolicy, decode_openai_response
+    from .orchestration import ActionProposal, ProposalBatch, ProposalOrdering, Strategy
+    from .readonly_adapters import GITHUB_READ_TOOLS, GitHubRequestPlan
+    from .synthetic_protocol import ProposalKind
+    from .transport_activation import _admit_selected_read
+
+    context, selection, dependency, schema = _selected_capture_fixture_context()
     transport_policy = OpenAITransportPolicy("offline-conformance-model", ("offline-conformance-model",))
     records = []
     for index, name in enumerate(sorted(GITHUB_READ_TOOLS)):
@@ -247,5 +257,75 @@ def selected_capture_admission_conformance() -> dict:
             "tool_admission_receipt_id": first_tool.receipt_id, "next_state_id": first.next_state.state_id,
             "equivalent": True, "authority_class": "volatile_read", "cache_reuse": False})
     return {"profile": "offline_capture_admission_equivalence", "live_verification": False,
-            "http_dispatches": 0, "native_requests": runtime.snapshot.requests,
+            "http_dispatches": 0, "native_requests": context.runtime_session.snapshot.requests,
             "selection_id": selection.selection_id, "cases": records}
+
+
+def simulation_activation_conformance() -> dict:
+    """Full isolated ladder; no production broker, SDK or HTTP request path."""
+    from .obligations import canonical_obligation_id
+    from .orchestration import ActionProposal, ProposalBatch, ProposalOrdering, Strategy
+    from .readonly_adapters import SimulatedGitHubReadAdapter
+    from .supervisor import FreshContextHandoff, SupervisorProjection
+    from .synthetic_protocol import FakeSupervisor, ProposalKind
+    from .transport_activation import (
+        ActivationStage, OperatorStageAuthorization, SimulationActivationController, ToolProfile,
+    )
+
+    context, selection, dependency, schema = _selected_capture_fixture_context()
+    projection = SupervisorProjection(context)
+    detached = projection.canonical_record()
+    handoff = FreshContextHandoff(projection).canonical_record()
+    controller = SimulationActivationController(context.task.task_id, context.governance.governance_id,
+        transport_policy_id=domain_fingerprint("ibae.offline-stage-deployment.v1", "simulation-only"),
+        credential_reference_id=domain_fingerprint("ibae.offline-stage-credential.v1", "no-secret-source"))
+    observations = [controller.verify_synthetic_stage().canonical_record()]
+    smoke = tuple(NormalizedProposal.from_record(item)
+                  for item in reference_synthetic_transcripts()["happy_path"]["proposals"])
+    for stage, profile in ((ActivationStage.OPENAI_FAKE_TOOLS, ToolProfile.FAKE),
+                           (ActivationStage.OPENAI_DETERMINISTIC_READS, ToolProfile.DETERMINISTIC_READONLY),
+                           (ActivationStage.OPENAI_SELECTED_READS, ToolProfile.SELECTED_READONLY)):
+        selected = stage is ActivationStage.OPENAI_SELECTED_READS
+        controller.authorize(OperatorStageAuthorization(stage, controller.task_id, controller.governance_id,
+            controller.epoch, "offline.fixture.operator", profile,
+            ("github.repository",) if selected else (),
+            transport_policy_id=controller.transport_policy_id,
+            credential_reference_id=controller.credential_reference_id,
+            selected_read_selection_ids=(selection.selection_id,) if selected else (), simulation_only=True))
+        if selected:
+            controller.register_selected_read(selection)
+            proposal = NormalizedProposal(ProposalKind.READ, {"proposal_key": "capture.simulated.repository",
+                "tool_name": "github.repository", "arguments": selection.arguments_for("github.repository"),
+                "target_obligation_keys": ["inspect"]})
+            owned = controller.propose(FakeSupervisor((proposal,)), detached, index=0, fresh_handoff=handoff)
+            action = ActionProposal(proposal.payload["proposal_key"], "github.repository", proposal.payload["arguments"],
+                target_obligation_ids=(canonical_obligation_id("inspect"),), required_state_keys=("selected-source",),
+                occurrence_key=controller.capture_occurrence_key)
+            batch = ProposalBatch("capture.simulated.batch", Strategy(schema.strategy_key, {}, schema=schema),
+                                  (action,), ordering=ProposalOrdering.DECLARED_SEQUENCE)
+            body = canonical_json({"full_name": "example/frozen-project", "default_branch": "main",
+                                   "private": False, "archived": False}).encode()
+            adapter = SimulatedGitHubReadAdapter(selection, controller, task_id=controller.task_id,
+                                                governance_id=controller.governance_id, body=body)
+            controller.capture_selected_read(adapter, owned, dependency, context=context, batch=batch)
+            observation = controller.verify_selected_read_stage()
+        else:
+            supervisor = FakeSupervisor(smoke)
+            for index in range(len(smoke)):
+                controller.propose(supervisor, detached, index=index, fresh_handoff=handoff)
+            observation = (controller.verify_fake_tool_stage() if stage is ActivationStage.OPENAI_FAKE_TOOLS
+                           else controller.verify_fixture_stage())
+        observations.append(observation.canonical_record())
+    before = controller.canonical_record()
+    if any(not item["simulation_only"] or item["live_transport_observed"] for item in observations):
+        raise ValueError("offline activation incorrectly claimed live provenance")
+    controller.rollback()
+    after = controller.canonical_record()
+    if before["consumed_transport_calls"] != after["consumed_transport_calls"]:
+        raise ValueError("simulation rollback replenished its finite call budget")
+    record = {"protocol_version": "IBAE-SIMULATED-ACTIVATION-CONFORMANCE-V1",
+        "simulation_only": True, "live_verification": False, "network_dispatches": 0,
+        "credential_resolutions": 0, "stage_observations": observations,
+        "before_rollback": before, "after_rollback": after, "production_gate_authority": False}
+    record["report_id"] = domain_fingerprint("ibae.simulated-activation-conformance.v1", record)
+    return record

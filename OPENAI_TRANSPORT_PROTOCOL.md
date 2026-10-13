@@ -90,6 +90,24 @@ Synthetic/mock SDK responses cannot be reported as live-stage verification.
 Unsupported verification remains unavailable; caller assertions, hashes or
 JSON receipts cannot silently substitute for a verifier.
 
+Production stage input additionally requires a private, one-use verified-network
+outcome bound to the exact controller reservation and decoded proposal or captured
+receipt. The closed HTTP/TLS path checks the expected endpoint, certificate
+verification, hostname checking and an established real TLS stream while it is
+open. SDK-shaped JSON, successful decoding, an official adapter class name or an
+in-memory HTTP mock does not supply this outcome. Public observations contain
+only its bounded classification; serialized records cannot reconstruct it.
+This is a process-local transport check under the trusted-host assumption, not
+remote attestation or protection against arbitrary host/module modification.
+
+A permanently separate simulation controller drives only exact inert synthetic
+supervisor/frozen-read adapters. Its stage observations and predecessors are
+simulation-only and cannot qualify production authorization. Production SDK and
+HTTPS entrypoints reject this controller before credentials or network dispatch;
+a missing test mock cannot accidentally turn a simulated gate into a live call.
+Simulation exercises the shared admission, budgets, rollback and native snapshot
+proofs while always retaining `live_transport_observed=false`.
+
 Rollback and revocation invalidate pending transport context and cannot refund
 used call capacity. They do not create native continuation authority. Stage 4,
 external mutations and effect execution are outside this protocol.
@@ -127,8 +145,14 @@ own execution evidence is obtained. Accepted v0.2–v0.6B fixtures are immutable
 
 ## Supported SDK and official references
 
-The optional dependency is pinned to `openai==3.29.0`, verified against the
+The optional SDK is pinned to `openai==3.29.0`, verified against the
 [official signed release](https://github.com/openai/openai-python/releases/tag/v3.29.0).
+The inspected transport stack is also pinned to `httpx2==2.13.1` and
+`httpcore2==2.13.1`; version mismatch fails closed before credential dispatch.
+These pins bind the private transport metadata used for network provenance.
+The live witness also requires the inspected CPython stdlib TLS socket/core
+metadata; absent or incompatible metadata fails closed. This is a deliberately
+narrow supported transport profile, not a portable remote-attestation API.
 Offline tests exercise this installed SDK's request serialization through an
 in-memory HTTP transport. They do not make API requests.
 

@@ -8,11 +8,13 @@ The bounded decoder is useful offline and never establishes live verification.
 
 from __future__ import annotations
 
+import _ssl
 import importlib
 import json
 import logging
 import os
 import re
+import ssl
 from dataclasses import dataclass
 from typing import Final
 
@@ -29,6 +31,9 @@ from .transport_activation import (
 )
 
 OPENAI_SDK_VERSION: Final = "3.29.0"
+OPENAI_HTTPX2_VERSION: Final = "2.13.1"
+OPENAI_HTTPCORE2_VERSION: Final = "2.13.1"
+OPENAI_LIVE_PROVENANCE_VERSION: Final = "IBAE-OPENAI-VERIFIED-NETWORK-V1"
 OPENAI_WIRE_VERSION: Final = "IBAE-OPENAI-PROPOSAL-ENVELOPE-V1"
 OPENAI_TRANSPORT_VERSION: Final = "IBAE-OPENAI-TRANSPORT-V1"
 OPENAI_MODEL_INPUT_VERSION: Final = "IBAE-OPENAI-MODEL-INPUT-V1"
@@ -40,6 +45,8 @@ MAX_MODEL_INPUT_BYTES: Final = MAX_FRESH_CONTEXT_BYTES + MAX_SELECTED_CAPTURE_SU
 # ceiling and add explicit room for the capture envelope, instructions/schema.
 MAX_REQUEST_BYTES: Final = MAX_MODEL_INPUT_BYTES * 6 + 65_536
 _OPENAI_BASE_URL: Final = "https://api.openai.com/v1"
+_SSL_CONTEXT = ssl.SSLContext
+_SSL_SOCKET_CORE = _ssl._SSLSocket
 _HANDLE = re.compile(r"cred:openai\.[a-z][a-z0-9_.-]{0,47}\Z")
 _ENVIRONMENT_NAME = re.compile(r"[A-Z][A-Z0-9_]{0,127}\Z")
 _MODEL = re.compile(r"[a-z][a-z0-9.-]{0,95}\Z")
@@ -156,6 +163,55 @@ class _RequestProgress:
     # Private per-call state preserves an attempted-dispatch observation even
     # when cancellation propagates without returning from the SDK.
     dispatch_attempted: bool = False
+    verified_result: tuple | None = None
+
+
+def _verified_openai_network_response(client, response) -> bool:
+    """Recognize the pinned normal network path, not a remote attestation.
+
+    Called while the response stream is open. SDK-shaped responses and ordinary
+    HTTP mocks lack this path. The installed Python runtime, SDK and TLS trust
+    store remain trusted; arbitrary host mutation is outside this guarantee.
+    No socket, certificate, request headers or body escapes this check.
+    """
+    try:
+        httpx = importlib.import_module("httpx2")
+        core = importlib.import_module("httpcore2")
+        backend = importlib.import_module("httpcore2._backends.sync")
+        if (httpx.__version__ != OPENAI_HTTPX2_VERSION or core.__version__ != OPENAI_HTTPCORE2_VERSION
+                or type(client) is not httpx.Client or type(response) is not httpx.Response
+                or client._mounts or type(client._transport) is not httpx.HTTPTransport):
+            return False
+        pool = client._transport._pool
+        if (type(pool) is not core.ConnectionPool or type(pool._network_backend) is not backend.SyncBackend
+                or pool._proxy is not None or pool._uds is not None or pool._retries != 0
+                or pool._ssl_context is None or not pool._ssl_context.check_hostname
+                or pool._ssl_context.verify_mode != ssl.CERT_REQUIRED):
+            return False
+        _guard_http_request(response.request)
+        stream = response.extensions.get("network_stream")
+        if type(stream) is not backend.SyncStream:
+            return False
+        # httpx2's default truststore context wraps the real SSLContext and
+        # installs its own socket subclass. Bind to that exact wrapper class,
+        # then inspect handshake metadata on CPython's SSL core, not overridable
+        # Python socket methods.
+        context = getattr(pool._ssl_context, "_ctx", pool._ssl_context)
+        if (type(context) is not _SSL_CONTEXT or context.verify_mode != ssl.CERT_REQUIRED
+                or context.check_hostname is not True):
+            return False
+        socket = stream.get_extra_info("socket")
+        if not isinstance(socket, ssl.SSLSocket) or type(socket) is not context.sslsocket_class:
+            return False
+        tls = socket._sslobj
+        if (type(tls) is not _SSL_SOCKET_CORE or tls.context is not context
+                or tls.server_hostname != "api.openai.com" or tls.server_side is not False
+                or tls.version() not in {"TLSv1.2", "TLSv1.3"} or tls.cipher() is None):
+            return False
+        certificate = tls.getpeercert(True)
+        return type(certificate) is bytes and 1 <= len(certificate) <= 65_536
+    except Exception:
+        return False
 
 
 def _exact(value, kind, label):
@@ -226,6 +282,8 @@ class OpenAITransportPolicy:
                 "max_output_tokens": self.max_output_tokens, "max_response_bytes": self.max_response_bytes,
                 "timeout_seconds": self.timeout_seconds, "store_responses": self.store_responses,
                 "sdk_version": OPENAI_SDK_VERSION, "automatic_retries": 0,
+                "httpx2_version": OPENAI_HTTPX2_VERSION, "httpcore2_version": OPENAI_HTTPCORE2_VERSION,
+                "live_provenance_version": OPENAI_LIVE_PROVENANCE_VERSION,
                 "wire_version": OPENAI_WIRE_VERSION,
                 "model_input_version": OPENAI_MODEL_INPUT_VERSION,
                 "observation_version": OPENAI_OBSERVATION_VERSION,
@@ -309,9 +367,17 @@ class OpenAICredentialBroker:
         # alternate endpoints, redirects and proxy/environment HTTP configuration.
         try:
             sdk = importlib.import_module("openai")
+            httpx = importlib.import_module("httpx2")
+            core = importlib.import_module("httpcore2")
         except ImportError:
             return None, "sdk_unavailable"
-        if getattr(sdk, "__version__", None) != OPENAI_SDK_VERSION:
+        except Exception:
+            # Optional-module initialization can fail before a client exists.
+            # Keep those diagnostics behind the same fixed error boundary.
+            return None, "transport_failed"
+        if (getattr(sdk, "__version__", None) != OPENAI_SDK_VERSION
+                or getattr(httpx, "__version__", None) != OPENAI_HTTPX2_VERSION
+                or getattr(core, "__version__", None) != OPENAI_HTTPCORE2_VERSION):
             return None, "sdk_version_mismatch"
         if any(name in os.environ for name in ("OPENAI_CUSTOM_HEADERS", "OPENAI_BASE_URL")):
             return None, "ambient_transport_configuration"
@@ -330,12 +396,22 @@ class OpenAICredentialBroker:
                     or encoded_secret in canonical_json(request)):
                 return None, "credential_in_input_rejected"
 
+            sent_request, network_verified = None, False
+
+            def request_guard(outgoing):
+                nonlocal sent_request
+                _guard_http_request(outgoing)
+                sent_request = outgoing
+
             def guard(response):
+                nonlocal network_verified
                 _guard_http_response(response, policy.max_response_bytes)
+                network_verified = (sent_request is not None and response.request is sent_request
+                                    and _verified_openai_network_response(http_client, response))
 
             with sdk.DefaultHttpx2Client(trust_env=False, follow_redirects=False,
                                         headers={"Accept-Encoding": "identity"},
-                                        event_hooks={"request": [_guard_http_request], "response": [guard]}) as http_client:
+                                        event_hooks={"request": [request_guard], "response": [guard]}) as http_client:
                 with sdk.OpenAI(api_key=secret, admin_api_key="", webhook_secret="",
                                 base_url=_OPENAI_BASE_URL, organization="", project="",
                                 default_headers={"OpenAI-Organization": sdk.omit, "OpenAI-Project": sdk.omit},
@@ -364,10 +440,14 @@ class OpenAICredentialBroker:
                                     failure = "credential_echo_rejected"
                                 else:
                                     result = (proposal, response_id)
+                                    activation.check_reservation(reservation, projection, **deployment)
+                                    if network_verified:
+                                        progress.verified_result = (reservation, proposal)
         except Exception:
             # Do not stringify, retain, chain or log SDK errors: they may carry
             # Authorization headers, raw bodies or provider diagnostic text.
             result, failure = None, "transport_failed"
+            progress.verified_result = None
         finally:
             secret = None
         return result, failure
@@ -504,7 +584,7 @@ class OpenAIResponsesSupervisor:
     """A finite transport session. It retains no live IBAE runtime or secrets."""
 
     __slots__ = ("__policy", "__broker", "__credential", "__stage", "__profile", "__tools",
-                 "__calls", "__previous", "__binding", "__last_observation", "__previous_context_id")
+                 "__calls", "__previous", "__binding", "__last_observation", "__previous_context_id", "__live_outcome")
 
     def __init__(self, policy: OpenAITransportPolicy, broker: OpenAICredentialBroker,
                  credential: CredentialReference, *, stage: ActivationStage,
@@ -522,6 +602,7 @@ class OpenAIResponsesSupervisor:
         self.__calls, self.__previous, self.__binding = 0, None, None
         self.__last_observation = None
         self.__previous_context_id = None
+        self.__live_outcome = None
 
     @property
     def previous_response_id(self):
@@ -544,8 +625,22 @@ class OpenAIResponsesSupervisor:
     def last_observation(self):
         return self.__last_observation
 
+    def _consume_live_outcome(self, controller, proposal):
+        """Consume internal network provenance; public receipts cannot mint it."""
+        outcome, self.__live_outcome = self.__live_outcome, None
+        if outcome is None:
+            return None
+        owner, reservation, returned = outcome
+        if (owner is not controller or returned is not proposal or controller.revoked
+                or controller.epoch != reservation.epoch or controller.stage is not reservation.stage
+                or controller.call_count != reservation.call_index + 1
+                or self.deployment_binding != (reservation.transport_policy_id, reservation.credential_reference_id)):
+            return None
+        return reservation
+
     def propose(self, projection: dict, *, index: int, activation: ActivationController,
                 fresh_handoff: dict | None = None, previous_response_id: str | None = None):
+        self.__live_outcome = None
         _exact(activation, ActivationController, "activation controller")
         _integer(index, 0, 127, "proposal index")
         policy = self.__policy
@@ -612,7 +707,8 @@ class OpenAIResponsesSupervisor:
             reason = "activation_rejected"
             activation.check_reservation(reservation, projection, capture_surface_id=capture_surface_id, **deployment)
             proposal, response_id = decoded
-            if policy.store_responses:
+            if (policy.store_responses and progress.verified_result is not None
+                    and progress.verified_result[0] is reservation and progress.verified_result[1] is proposal):
                 self.__previous, self.__binding = response_id, binding
                 self.__previous_context_id = request_context_id
             reason, status, proposal_id = "proposal_received", "received", proposal.proposal_id
@@ -629,6 +725,10 @@ class OpenAIResponsesSupervisor:
                 "transport_only": True, "control_authority": False, "live_verification": False,
             })
             activation.complete_call(reservation)
+            if status == "received" and progress.verified_result is not None:
+                witnessed_reservation, returned = progress.verified_result
+                if witnessed_reservation is reservation and returned is proposal:
+                    self.__live_outcome = (activation, reservation, returned)
 
 
 def openai_interface_manifest():

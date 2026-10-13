@@ -1,9 +1,8 @@
 """Offline transport safety tests, never actual live verification.
 
-The explicit mocked-host integration at the end exercises production gates
-through real SDK serialization and frozen HTTP responses. Its simulated stage
-observations are not live provider/source evidence and are never published as
-conformance proof of real live operation. No private live ledger is populated.
+The explicit simulator exercises shared admission and accounting through inert
+fake/frozen adapters. Production SDK mocks are negative provenance tests only:
+their successful decoding never qualifies a live gate. No live ledger is seeded.
 """
 
 from dataclasses import FrozenInstanceError, replace
@@ -18,7 +17,7 @@ from ibae.supervisor_conformance import reference_supervisor_context
 from ibae.synthetic_protocol import FakeSupervisor, NormalizedProposal, ProposalKind
 from ibae.transport_activation import (
     MAX_TRANSPORT_CALLS, ActivationController, ActivationError, ActivationStage,
-    OperatorStageAuthorization, StageObservation, ToolProfile, TransportCallReservation,
+    OperatorStageAuthorization, SimulationActivationController, StageObservation, ToolProfile, TransportCallReservation,
 )
 
 
@@ -42,7 +41,8 @@ def _authorization(controller, stage=ActivationStage.OPENAI_FAKE_TOOLS):
         controller.epoch, "test.operator", profile,
         ("read.github",) if stage is ActivationStage.OPENAI_SELECTED_READS else (),
         transport_policy_id=controller.transport_policy_id, credential_reference_id=controller.credential_reference_id,
-        selected_read_selection_ids=("e" * 64,) if stage is ActivationStage.OPENAI_SELECTED_READS else ())
+        selected_read_selection_ids=("e" * 64,) if stage is ActivationStage.OPENAI_SELECTED_READS else (),
+        simulation_only=controller.simulation_only)
 
 
 def _stage1(projection, *, budget=8):
@@ -538,24 +538,19 @@ def test_selected_capture_admission_rejects_wrong_order_occurrence_dependency_an
 
 @pytest.fixture
 def simulated_selected_host(monkeypatch, request):
-    """Synthetic host integration. No real credential or network operation."""
+    """Explicit offline controller; production dispatch paths are tripwires."""
     import json
-    import logging
-    from collections import deque
+    import ibae.openai_transport as transport
     import ibae.readonly_adapters as reads
-    from ibae.openai_transport import (OPENAI_SDK_VERSION, OpenAICredentialBroker,
-                                      OpenAIResponsesSupervisor, OpenAITransportPolicy)
     from ibae.supervisor import FreshContextHandoff
     from ibae.synthetic_runner import reference_synthetic_transcripts
-    from test_openai_transport import _body
 
-    sdk = pytest.importorskip("openai")
-    if sdk.__version__ != OPENAI_SDK_VERSION:
-        pytest.skip("optional exact SDK is not installed")
-    import httpx2
+    def forbidden(*args, **kwargs):
+        pytest.fail("simulation reached production credential/network dispatch")
 
+    monkeypatch.setattr(transport.OpenAICredentialBroker, "_request", forbidden)
+    monkeypatch.setattr(reads.http.client, "HTTPSConnection", forbidden)
     options = getattr(request, "param", {})
-    budget = options.get("budget", 16)
     context, selection, proposal, dependency = _selected_context()
     selections = [selection]
     for index in range(1, options.get("selection_count", 1)):
@@ -564,86 +559,39 @@ def simulated_selected_host(monkeypatch, request):
     projection = SupervisorProjection(context)
     detached = projection.canonical_record()
     handoff = FreshContextHandoff(projection).canonical_record()
-    policy = OpenAITransportPolicy("gpt-5.4", ("gpt-5.4",), live_enabled=True, max_calls=budget)
-    broker = OpenAICredentialBroker(context.governance_policy, context.task, context.governance,
-                                   handle="cred:openai.synthetic", environment_name="IBAE_SYNTHETIC_CAPTURE_TEST")
-    controller = ActivationController(context.task.task_id, context.governance.governance_id,
-        transport_policy_id=policy.policy_id, credential_reference_id=broker.reference.reference_id,
-        max_transport_calls=budget)
-    smoke = [NormalizedProposal.from_record(item) for item in reference_synthetic_transcripts()["happy_path"]["proposals"]]
-    responses = deque(smoke + smoke + [proposal])
-    calls = {"openai": 0, "github": 0, "openai_inputs": []}
-    placeholder = "synthetic-placeholder-not-a-real-credential"
-    monkeypatch.setenv("IBAE_SYNTHETIC_CAPTURE_TEST", placeholder)
-    for name in ("OPENAI_CUSTOM_HEADERS", "OPENAI_BASE_URL"):
-        monkeypatch.delenv(name, raising=False)
-    for name in ("openai", "openai._base_client", "httpx2", "httpcore2", "httpx", "httpcore"):
-        monkeypatch.setattr(logging.getLogger(name), "level", logging.WARNING)
-
-    def respond(request):
-        assert str(request.url) == "https://api.openai.com/v1/responses"
-        assert request.headers["authorization"] == "Bearer " + placeholder
-        calls["openai"] += 1
-        calls["openai_inputs"].append(json.loads(json.loads(request.content)["input"]))
-        return httpx2.Response(200, headers={"content-type": "application/json"}, content=_body(responses.popleft()))
-
-    original = sdk.DefaultHttpx2Client
-    monkeypatch.setattr(sdk, "DefaultHttpx2Client",
-        lambda **kwargs: original(transport=httpx2.MockTransport(respond), **kwargs))
+    controller = SimulationActivationController(context.task.task_id, context.governance.governance_id,
+        transport_policy_id="c" * 64, credential_reference_id="d" * 64,
+        max_transport_calls=options.get("budget", 16))
+    smoke = tuple(NormalizedProposal.from_record(item) for item in reference_synthetic_transcripts()["happy_path"]["proposals"])
     controller.verify_synthetic_stage()
-    for stage, profile in ((ActivationStage.OPENAI_FAKE_TOOLS, ToolProfile.FAKE),
-                            (ActivationStage.OPENAI_DETERMINISTIC_READS, ToolProfile.DETERMINISTIC_READONLY)):
+    for stage in (ActivationStage.OPENAI_FAKE_TOOLS, ActivationStage.OPENAI_DETERMINISTIC_READS):
         controller.authorize(_authorization(controller, stage))
-        supervisor = OpenAIResponsesSupervisor(policy, broker, broker.reference, stage=stage, tool_profile=profile)
+        supervisor = FakeSupervisor(smoke)
         for index in range(len(smoke)):
             controller.propose(supervisor, detached, index=index, fresh_handoff=handoff)
         observed = (controller.verify_fake_tool_stage() if stage is ActivationStage.OPENAI_FAKE_TOOLS
-                    else controller.verify_fixture_stage())
-        assert observed.canonical_record()["live_recovery_verified"] is False
+                    else controller.verify_fixture_stage()).canonical_record()
+        assert observed["live_transport_observed"] is False and observed["simulation_only"] is True
     controller.authorize(replace(_authorization(controller, ActivationStage.OPENAI_SELECTED_READS),
         selected_read_tools=("github.repository",),
         selected_read_selection_ids=tuple(sorted(item.selection_id for item in selections))))
     for item in selections[:options.get("register_count", len(selections))]:
         controller.register_selected_read(item)
-    supervisor = OpenAIResponsesSupervisor(policy, broker, broker.reference,
-        stage=ActivationStage.OPENAI_SELECTED_READS, tool_profile=ToolProfile.SELECTED_READONLY,
-        selected_read_tools=("github.repository",))
+    supervisor = FakeSupervisor((proposal,))
     owned = controller.propose(supervisor, detached, index=0, fresh_handoff=handoff)
-    assert owned == proposal and not responses
+    calls = {"openai_inputs": [transport._model_input_record(detached, handoff, controller.last_capture_surface)]}
     body = json.dumps({"full_name": "example/project", "default_branch": "main",
                        "private": False, "archived": False}).encode()
-    settings = {"status": 200, "body": body, "transport_error": False,
-                "responses": responses, "policy": policy, "broker": broker, "supervisor": supervisor,
-                "selections": selections}
-
-    class Response:
-        def __init__(self):
-            self.body = settings["body"]
-            self.remaining = self.body
-            self.status = settings["status"]
-        def getheader(self, name):
-            return {"Content-Length": str(len(self.body)), "Content-Type": "application/json"}.get(name)
-        def read(self, amount):
-            chunk, self.remaining = self.remaining[:amount], self.remaining[amount:]
-            return chunk
-
-    class Connection:
-        def __init__(self, host, **kwargs):
-            assert host == "api.github.com" and kwargs["port"] == 443
-        def request(self, method, path, *, headers):
-            assert method == "GET" and path == "/repos/example/project"
-            calls["github"] += 1
-            if settings["transport_error"]:
-                raise OSError("synthetic HTTP interruption; diagnostic text must not escape")
-        def getresponse(self):
-            return Response()
-        def close(self):
-            pass
-
-    monkeypatch.setattr(reads.http.client, "HTTPSConnection", Connection)
-    adapter = reads.GitHubReadAdapter(selection, controller, task_id=controller.task_id,
-                                      governance_id=controller.governance_id)
+    settings = {"body": body, "selections": selections}
+    adapter = reads.SimulatedGitHubReadAdapter(selection, controller, task_id=controller.task_id,
+                                               governance_id=controller.governance_id, body=body)
     return controller, context, selection, owned, dependency, adapter, calls, settings
+
+
+def _simulated_adapter(controller, selection, settings, **changes):
+    from ibae.readonly_adapters import SimulatedGitHubReadAdapter
+    return SimulatedGitHubReadAdapter(selection, controller, task_id=controller.task_id,
+        governance_id=controller.governance_id, **({"body": settings["body"]} | changes))
 
 
 def test_simulated_host_full_stage3_capture_and_native_gate(simulated_selected_host):
@@ -652,12 +600,12 @@ def test_simulated_host_full_stage3_capture_and_native_gate(simulated_selected_h
     native_before = context.runtime_session.snapshot.canonical_record()
     with pytest.raises(ActivationError, match="governed capture plan"):
         adapter.observe(proposal, dependency)
-    assert calls["openai"] == 7 and calls["github"] == 0
+    assert controller.call_count == 7 and adapter.call_count == 0
     with pytest.raises(ActivationError, match="cover every"):
         controller.verify_selected_read_stage()
     batch = _selected_batch(context, proposal, controller.capture_occurrence_key)
     capture = controller.capture_selected_read(adapter, proposal, dependency, context=context, batch=batch)
-    assert calls["openai"] == 7 and calls["github"] == 1
+    assert controller.call_count == 8 and adapter.call_count == 1
     assert controller.call_count == 8
     assert context.runtime_session.snapshot.canonical_record() == native_before
     assert capture.next_orchestration_state.logical_tick == context.orchestration_state.logical_tick + 1
@@ -671,7 +619,9 @@ def test_simulated_host_full_stage3_capture_and_native_gate(simulated_selected_h
     evidence = observed["evidence"]
     assert observed["stage"] == 3 and observed["live_recovery_verified"] is False
     assert observed["final_acceptance"] is False
-    assert evidence["http_captures"] == 1 and evidence["native_proof_transport_calls"] == 0
+    assert evidence["http_captures"] == 0 and evidence["simulated_http_captures"] == 1
+    assert observed["live_transport_observed"] is False and observed["simulation_only"] is True
+    assert evidence["native_proof_transport_calls"] == 0
     assert evidence["http_capture_native_accounted"] is False
     assert evidence["native_proof"]["native_compact_source_bound"] is True
     assert evidence["native_proof"]["counters"]["requests"] == 2
@@ -681,7 +631,7 @@ def test_simulated_host_full_stage3_capture_and_native_gate(simulated_selected_h
     assert evidence["native_total_counters"]["requests"] == 4
     assert evidence["native_total_counters"]["executions"] == 2
     assert context.runtime_session.snapshot.canonical_record() == native_before
-    assert controller.canonical_record()["active_stage_verification"] == "passed"
+    assert controller.canonical_record()["active_stage_verification"] == "simulation_passed"
     controller.rollback()
     assert controller.call_count == 8
     assert controller.canonical_record()["selected_capture_count"] == 0
@@ -701,7 +651,7 @@ def test_simulated_host_rejects_unowned_proposals_and_native_revocation(simulate
     with pytest.raises(ActivationError, match="unavailable supervisor"):
         controller.capture_selected_read(adapter, proposal, dependency, context=context,
             batch=_selected_batch(context, proposal, controller.capture_occurrence_key))
-    assert calls["github"] == 0
+    assert adapter.call_count == 0
     assert controller.call_count == 7
     assert controller.canonical_record()["selected_capture_count"] == 0
 
@@ -721,7 +671,7 @@ def test_simulated_denied_or_stale_capture_admission_makes_no_get(simulated_sele
     with pytest.raises((ValueError, RuntimeError)):
         controller.capture_selected_read(adapter, proposal, dependency, context=stale_context, batch=batch)
     record = controller.canonical_record()
-    assert calls["github"] == 0
+    assert adapter.call_count == 0
     assert controller.call_count == 7
     assert record["selected_http_reservations"] == 0
     assert record["selected_capture_attempts"] == []
@@ -732,13 +682,10 @@ def test_simulated_denied_or_stale_capture_admission_makes_no_get(simulated_sele
 def test_simulated_failed_capture_preserves_partial_admission_and_budget(simulated_selected_host, failure):
     from ibae.transport_activation import SelectedReadCaptureError
 
-    controller, context, _, proposal, dependency, adapter, calls, settings = simulated_selected_host
-    if failure == "transport":
-        settings["transport_error"] = True
-    elif failure == "http":
-        settings["status"] = 503
-    else:
-        settings["body"] = b"not a JSON observation"
+    controller, context, selection, proposal, dependency, adapter, calls, settings = simulated_selected_host
+    changes = ({"failure_reason": "transport_unavailable"} if failure == "transport" else
+               {"status_code": 503} if failure == "http" else {"body": b"not a JSON observation"})
+    adapter = _simulated_adapter(controller, selection, settings, **changes)
     native_before = context.runtime_session.snapshot.canonical_record()
     batch = _selected_batch(context, proposal, controller.capture_occurrence_key)
     with pytest.raises(SelectedReadCaptureError) as caught:
@@ -750,7 +697,7 @@ def test_simulated_failed_capture_preserves_partial_admission_and_budget(simulat
     assert error.attempt.snapshot_id is None
     assert error.attempt.transport_call_index == 7
     assert error.attempt.admission_receipt.prior_state_id == context.orchestration_state.state_id
-    assert calls["github"] == 1
+    assert adapter.call_count == 1
     record = controller.canonical_record()
     assert record["selected_capture_count"] == 0
     assert record["selected_http_reservations"] == 1
@@ -766,7 +713,7 @@ def test_simulated_failed_capture_preserves_partial_admission_and_budget(simulat
         adapter.observe(proposal, dependency)
     with pytest.raises(ActivationError, match="cover every"):
         controller.verify_selected_read_stage()
-    assert calls["github"] == 1
+    assert adapter.call_count == 1
     prior_attempt = record["selected_capture_attempts"][0]
     controller.rollback()
     after = controller.canonical_record()
@@ -781,13 +728,12 @@ def test_failed_capture_next_state_survives_rollback_and_regating(simulated_sele
     """Offline HTTP failure cannot discard the already admitted host transition."""
     from ibae.continuation import (default_obligation_progress_contract, evaluate_progress,
                                    observe_continuation_context)
-    from ibae.openai_transport import OpenAIResponsesSupervisor
     from ibae.supervisor import FreshContextHandoff
     from ibae.synthetic_runner import reference_synthetic_transcripts
     from ibae.transport_activation import SelectedReadCaptureError
 
     controller, context, selection, proposal, dependency, adapter, calls, settings = simulated_selected_host
-    settings["transport_error"] = True
+    adapter = _simulated_adapter(controller, selection, settings, failure_reason="transport_unavailable")
     with pytest.raises(SelectedReadCaptureError) as caught:
         controller.capture_selected_read(adapter, proposal, dependency, context=context,
             batch=_selected_batch(context, proposal, controller.capture_occurrence_key))
@@ -796,18 +742,15 @@ def test_failed_capture_next_state_survives_rollback_and_regating(simulated_sele
     controller.rollback()
     # A transport-only deployment reset also cannot drop admitted host history.
     controller.configure_transport(transport_policy_id="e" * 64, credential_reference_id="f" * 64)
-    controller.configure_transport(transport_policy_id=settings["policy"].policy_id,
-                                   credential_reference_id=settings["broker"].reference.reference_id)
+    controller.configure_transport(transport_policy_id="c" * 64, credential_reference_id="d" * 64)
     detached = SupervisorProjection(context).canonical_record()
     handoff = FreshContextHandoff(SupervisorProjection(context)).canonical_record()
     smoke = [NormalizedProposal.from_record(item) for item in reference_synthetic_transcripts()["happy_path"]["proposals"]]
-    settings["responses"].extend(smoke + smoke + [proposal])
     controller.verify_synthetic_stage()
     for stage, profile in ((ActivationStage.OPENAI_FAKE_TOOLS, ToolProfile.FAKE),
                             (ActivationStage.OPENAI_DETERMINISTIC_READS, ToolProfile.DETERMINISTIC_READONLY)):
         controller.authorize(_authorization(controller, stage))
-        supervisor = OpenAIResponsesSupervisor(settings["policy"], settings["broker"], settings["broker"].reference,
-                                                stage=stage, tool_profile=profile)
+        supervisor = FakeSupervisor(tuple(smoke))
         for index in range(len(smoke)):
             controller.propose(supervisor, detached, index=index, fresh_handoff=handoff)
         if stage is ActivationStage.OPENAI_FAKE_TOOLS:
@@ -817,14 +760,12 @@ def test_failed_capture_next_state_survives_rollback_and_regating(simulated_sele
     controller.authorize(replace(_authorization(controller, ActivationStage.OPENAI_SELECTED_READS),
         selected_read_tools=("github.repository",), selected_read_selection_ids=(selection.selection_id,)))
     controller.register_selected_read(selection)
-    supervisor = OpenAIResponsesSupervisor(settings["policy"], settings["broker"], settings["broker"].reference,
-        stage=ActivationStage.OPENAI_SELECTED_READS, tool_profile=ToolProfile.SELECTED_READONLY,
-        selected_read_tools=("github.repository",))
+    supervisor = FakeSupervisor((proposal,))
     owned = controller.propose(supervisor, detached, index=0, fresh_handoff=handoff)
     with pytest.raises(ActivationError, match="did not advance"):
         controller.capture_selected_read(adapter, owned, dependency, context=context,
             batch=_selected_batch(context, owned, controller.capture_occurrence_key))
-    assert calls["github"] == 1
+    assert adapter.call_count == 1
     assert controller.canonical_record()["selected_capture_attempts"] == [prior_attempt]
     assert "host_orchestration_state_not_advanced" in controller.selected_capture_surface(detached)["blocking_reasons"]
     # Replacing Python state alone is stale; use the existing native observer.
@@ -838,15 +779,16 @@ def test_failed_capture_next_state_survives_rollback_and_regating(simulated_sele
         orchestration_state=next_state, runtime_snapshot=context.runtime_session.snapshot, progress=progress)
     advanced = replace(context, continuation_state=continuation, orchestration_state=next_state)
     next_proposal = NormalizedProposal(ProposalKind.READ, {**proposal.payload, "proposal_key": "capture.retry"})
-    settings["responses"].append(next_proposal)
+    supervisor = FakeSupervisor((next_proposal,))
     projected = SupervisorProjection(advanced)
-    owned = controller.propose(supervisor, projected.canonical_record(), index=1,
+    owned = controller.propose(supervisor, projected.canonical_record(), index=0,
                                 fresh_handoff=FreshContextHandoff(projected).canonical_record())
-    settings["transport_error"] = False
+    adapter = _simulated_adapter(controller, selection, settings)
     capture = controller.capture_selected_read(adapter, owned, dependency, context=advanced,
         batch=_selected_batch(advanced, owned, controller.capture_occurrence_key))
     assert capture.next_orchestration_state.logical_tick == next_state.logical_tick + 1
-    assert calls["github"] == 2
+    assert adapter.call_count == 1
+    assert controller.canonical_record()["selected_http_reservations"] == 2
     assert controller.call_count == 17
     assert controller.canonical_record()["selected_capture_outcomes"]["captured"] == 1
 
@@ -958,7 +900,7 @@ def test_capture_surface_excludes_every_visible_definitive_admission_blocker(sim
 def test_selected_target_registration_is_approved_and_fixed_before_owned_proposal(simulated_selected_host):
     from ibae.readonly_adapters import GitHubReadSelection
 
-    controller, context, selection, _, _, _, calls, settings = simulated_selected_host
+    controller, context, selection, _, _, adapter, calls, settings = simulated_selected_host
     captured = controller.selected_capture_surface(SupervisorProjection(context).canonical_record())
     known = next(item for item in captured["candidates"] if item["selection_id"] == selection.selection_id)
     absent = next(item for item in captured["candidates"] if item["selection_id"] != selection.selection_id)
@@ -970,4 +912,74 @@ def test_selected_target_registration_is_approved_and_fixed_before_owned_proposa
         controller.register_selected_read(settings["selections"][1])
     with pytest.raises(ActivationError, match="operator selection"):
         controller.register_selected_read(GitHubReadSelection("unselected", "project"))
-    assert calls["github"] == 0
+    assert adapter.call_count == 0
+
+
+def test_simulation_mode_cannot_authorize_or_dispatch_production(simulated_selected_host):
+    from ibae.readonly_adapters import GitHubReadAdapter
+    from test_openai_transport import _setup
+
+    simulated, context, selection, _, _, _, _, _ = simulated_selected_host
+    actual, live, projection, handoff, _ = _setup()
+    assert simulated.simulation_only is True and live.simulation_only is False
+    for record in simulated.canonical_record()["stage_observations"]:
+        assert record["simulation_only"] is True
+        assert record["live_transport_observed"] is False
+    assert simulated.canonical_record()["network_dispatch_allowed"] is False
+    with pytest.raises(AttributeError):
+        simulated.simulation_only = False
+    with pytest.raises(ActivationError, match="different simulation mode"):
+        live.authorize(replace(_authorization(live, ActivationStage.OPENAI_DETERMINISTIC_READS), simulation_only=True))
+    with pytest.raises(TypeError, match="activation controller"):
+        actual.propose(projection, index=0, activation=simulated, fresh_handoff=handoff)
+    with pytest.raises(TypeError, match="live activation controller"):
+        ActivationController.propose(simulated, actual, projection, index=0, fresh_handoff=handoff)
+    with pytest.raises(TypeError, match="activation controller"):
+        GitHubReadAdapter(selection, simulated, task_id=context.task.task_id, governance_id=context.governance.governance_id)
+    assert live.call_count == 0
+    assert simulated.call_count == 7
+
+
+def test_official_sdk_mock_stream_never_qualifies_any_live_gate(monkeypatch):
+    import logging
+    from collections import deque
+    from ibae.openai_transport import OPENAI_SDK_VERSION
+    from ibae.synthetic_runner import reference_synthetic_transcripts
+    from test_openai_transport import _body, _setup, _ENVIRONMENT, _PLACEHOLDER
+
+    sdk = pytest.importorskip("openai")
+    if sdk.__version__ != OPENAI_SDK_VERSION:
+        pytest.skip("optional exact SDK is not installed")
+    import httpx2
+
+    supervisor, controller, projection, handoff, _ = _setup()
+    smoke = deque(NormalizedProposal.from_record(item)
+                  for item in reference_synthetic_transcripts()["happy_path"]["proposals"])
+    monkeypatch.setenv(_ENVIRONMENT, _PLACEHOLDER)
+    for name in ("OPENAI_CUSTOM_HEADERS", "OPENAI_BASE_URL"):
+        monkeypatch.delenv(name, raising=False)
+    for name in ("openai", "openai._base_client", "httpx2", "httpcore2", "httpx", "httpcore"):
+        monkeypatch.setattr(logging.getLogger(name), "level", logging.WARNING)
+    requests = []
+
+    def respond(request):
+        requests.append(request)
+        return httpx2.Response(200, headers={"content-type": "application/json"}, content=_body(smoke.popleft()))
+
+    original = sdk.DefaultHttpx2Client
+    monkeypatch.setattr(sdk, "DefaultHttpx2Client",
+                        lambda **kwargs: original(transport=httpx2.MockTransport(respond), **kwargs))
+    for index in range(len(smoke)):
+        with pytest.raises(ActivationError, match="verified live network outcome"):
+            controller.propose(supervisor, projection, index=index, fresh_handoff=handoff)
+        assert supervisor.last_observation.canonical_record()["status"] == "received"
+        assert supervisor._consume_live_outcome(controller, requests[-1]) is None
+    assert len(requests) == controller.call_count == 3
+    with pytest.raises(ActivationError, match="owned official"):
+        controller.verify_fake_tool_stage()
+    with pytest.raises(ActivationError, match="preceding stage"):
+        controller.authorize(_authorization(controller, ActivationStage.OPENAI_DETERMINISTIC_READS))
+    with pytest.raises(ActivationError):
+        controller.verify_fixture_stage()
+    assert controller.stage is ActivationStage.OPENAI_FAKE_TOOLS
+    assert all(not record["live_transport_observed"] for record in controller.canonical_record()["stage_observations"])

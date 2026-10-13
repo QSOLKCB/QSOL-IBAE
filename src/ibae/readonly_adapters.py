@@ -21,9 +21,12 @@ from __future__ import annotations
 
 import json
 import http.client
+import io
 import re
+import socket
 import ssl
-from dataclasses import dataclass
+import _ssl
+from dataclasses import dataclass, field
 from typing import Any, Final
 from urllib.parse import quote
 
@@ -46,6 +49,34 @@ GITHUB_READ_TOOLS: Final = (
     "github.repository", "github.branch", "github.commit",
     "github.pull_request", "github.check_runs", "github.commit_status",
 )
+
+# Trusted-process transport wiring, not remote attestation. Keep the current
+# factory checks too: patching a normal test factory must fail closed instead
+# of silently dispatching through a saved original network implementation.
+_HTTPS_CONNECTION = http.client.HTTPSConnection
+_HTTP_RESPONSE = http.client.HTTPResponse
+_SSL_CONTEXT = ssl.SSLContext
+_SSL_SOCKET = ssl.SSLSocket
+_SSL_SOCKET_CORE = _ssl._SSLSocket
+_SOCKET_IO = socket.SocketIO
+_BUFFERED_READER = io.BufferedReader
+_TRANSPORT_FUNCTIONS = (
+    (http.client, "HTTPSConnection", _HTTPS_CONNECTION),
+    (http.client, "HTTPResponse", _HTTP_RESPONSE),
+    (ssl, "SSLContext", _SSL_CONTEXT),
+    (ssl, "SSLSocket", _SSL_SOCKET),
+    (_ssl, "_SSLSocket", _SSL_SOCKET_CORE),
+    (ssl, "create_default_context", ssl.create_default_context),
+    (socket, "create_connection", socket.create_connection),
+) + tuple((owner, name, getattr(owner, name)) for owner, names in (
+    (http.client.HTTPConnection, ("__init__", "connect", "request", "_send_request", "putrequest", "putheader", "endheaders", "send", "getresponse")),
+    (_HTTPS_CONNECTION, ("__init__", "connect",)),
+    (_HTTP_RESPONSE, ("__init__", "begin", "read", "readinto", "getheader")),
+    (_SSL_CONTEXT, ("wrap_socket",)),
+    (_SSL_SOCKET, ("do_handshake", "getpeercert", "cipher", "version")),
+    (socket.socket, ("makefile",)),
+    (_SOCKET_IO, ("readinto",)),
+) for name in names)
 
 
 def _source_semantics(tool_name: str) -> dict:
@@ -500,6 +531,51 @@ class GitHubTransportUnavailable(RuntimeError):
     """No public response was established; does not infer task or effect state."""
 
 
+def _require_closed_github_transport() -> None:
+    """Reject ordinary HTTP/SSL test replacements before any live dispatch."""
+    if any(getattr(owner, name) is not expected for owner, name, expected in _TRANSPORT_FUNCTIONS):
+        raise GitHubTransportUnavailable("closed GitHub HTTPS transport is unavailable")
+
+
+def _require_verified_github_socket(connection: Any, context: Any) -> ssl.SSLSocket:
+    """Inspect actual completed TLS while its socket is still open.
+
+    These checks distinguish the closed Python network path from ordinary
+    mocked responses. They are not protection against arbitrary host changes,
+    nor do they establish the truth of GitHub's returned content.
+    """
+    _require_closed_github_transport()
+    if (type(connection) is not _HTTPS_CONNECTION or type(context) is not _SSL_CONTEXT
+            or connection.host != "api.github.com" or connection.port != 443
+            or connection._context is not context or connection._tunnel_host is not None
+            or connection.response_class is not _HTTP_RESPONSE
+            or context.verify_mode != ssl.CERT_REQUIRED or context.check_hostname is not True):
+        raise GitHubTransportUnavailable("verified GitHub HTTPS connection is unavailable")
+    stream = connection.sock
+    if (type(stream) is not _SSL_SOCKET or stream.context is not context
+            or stream.server_hostname != "api.github.com"):
+        raise GitHubTransportUnavailable("verified GitHub TLS socket is unavailable")
+    core = stream._sslobj
+    if (type(core) is not _SSL_SOCKET_CORE or core.context is not context
+            or core.server_hostname != "api.github.com" or core.server_side is not False
+            or core.version() not in {"TLSv1.2", "TLSv1.3"} or core.cipher() is None):
+        raise GitHubTransportUnavailable("completed GitHub TLS handshake is unavailable")
+    certificate = core.getpeercert(True)
+    if type(certificate) is not bytes or not 1 <= len(certificate) <= 65_536:
+        raise GitHubTransportUnavailable("verified GitHub TLS peer is unavailable")
+    return stream
+
+
+def _require_github_response_stream(response: Any, stream: Any) -> None:
+    """Bind body reading to the exact previously verified socket, before read."""
+    _require_closed_github_transport()
+    if (type(response) is not _HTTP_RESPONSE or type(stream) is not _SSL_SOCKET
+            or type(response.fp) is not _BUFFERED_READER or type(response.fp.raw) is not _SOCKET_IO
+            or response.fp.raw._sock is not stream
+            or "read" in response.__dict__ or "getheader" in response.__dict__):
+        raise GitHubTransportUnavailable("verified GitHub response stream is unavailable")
+
+
 def _read_http_observation(plan: GitHubRequestPlan, response: http.client.HTTPResponse) -> ExternalObservationReceipt:
     """Bounded response-reader seam; never creates or dispatches a connection."""
     _exact("GitHub request plan", plan, GitHubRequestPlan)
@@ -543,6 +619,7 @@ class GitHubReadAdapter:
     _activation: Any
     _task_id: str
     _governance_id: str
+    _live_outcome: Any = field(default=None, repr=False, compare=False)
 
     def __init__(self, selection: GitHubReadSelection, activation: Any, *,
                  task_id: str, governance_id: str) -> None:
@@ -556,6 +633,10 @@ class GitHubReadAdapter:
         object.__setattr__(self, "_activation", activation)
         object.__setattr__(self, "_task_id", task_id)
         object.__setattr__(self, "_governance_id", governance_id)
+        object.__setattr__(self, "_live_outcome", None)
+
+    def __reduce__(self):
+        raise TypeError("GitHub live transport outcomes cannot be serialized or restored")
 
     def validate_activation(self, activation: Any) -> None:
         """Trusted controller binding check; returns no new capability."""
@@ -580,6 +661,7 @@ class GitHubReadAdapter:
     def observe(self, proposal: NormalizedProposal, dependency_fingerprint: str) -> ExternalObservationReceipt:
         from .transport_activation import ActivationController
 
+        object.__setattr__(self, "_live_outcome", None)
         _exact("activation controller", self._activation, ActivationController)
         _fingerprint("task ID", self._task_id)
         _fingerprint("governance ID", self._governance_id)
@@ -591,26 +673,168 @@ class GitHubReadAdapter:
             dependency_fingerprint=dependency_fingerprint)
         connection = None
         try:
+            _require_closed_github_transport()
             # Constructing HTTPSConnection does not connect. Check the exact
             # live reservation again immediately before the network entry.
+            context = ssl.create_default_context()
             connection = http.client.HTTPSConnection("api.github.com", port=443,
-                timeout=request["timeout_ms"] / 1_000, context=ssl.create_default_context())
+                timeout=request["timeout_ms"] / 1_000, context=context)
+            if type(connection) is not _HTTPS_CONNECTION or type(context) is not _SSL_CONTEXT:
+                raise GitHubTransportUnavailable("closed GitHub HTTPS transport is unavailable")
             self._activation.check_read_reservation(reservation)
             connection.request("GET", request["url"][len("https://api.github.com"):],
                 headers={**request["headers"], "User-Agent": "QSOL-IBAE-readonly-v1", "Accept-Encoding": "identity"})
-            receipt = _read_http_observation(plan, connection.getresponse())
+            stream = _require_verified_github_socket(connection, context)
+            response = connection.getresponse()
+            _require_github_response_stream(response, stream)
+            receipt = _read_http_observation(plan, response)
             # A rollback/revocation while the GET was outstanding retires its
             # result as well as future dispatch. The observation grants nothing.
             self._activation.check_read_reservation(reservation)
+            _require_closed_github_transport()
+            object.__setattr__(self, "_live_outcome", (self._activation, reservation, receipt, receipt.receipt_id))
             return receipt
         except (OSError, http.client.HTTPException):
             raise GitHubTransportUnavailable("public GitHub read unavailable; no result established") from None
         finally:
             try:
                 if connection is not None:
-                    connection.close()
+                    try:
+                        connection.close()
+                    except BaseException:
+                        object.__setattr__(self, "_live_outcome", None)
+                        raise
             finally:
                 self._activation.complete_call(reservation)
+
+    def _consume_live_outcome(self, controller: Any, receipt: Any) -> Any | None:
+        """Consume one exact network result; inert receipt equality is not enough."""
+        from .transport_activation import ActivationController, TransportCallReservation
+
+        outcome = self._live_outcome
+        object.__setattr__(self, "_live_outcome", None)
+        if (type(controller) is not ActivationController or type(receipt) is not ExternalObservationReceipt
+                or type(outcome) is not tuple or len(outcome) != 4
+                or outcome[0] is not controller or outcome[2] is not receipt):
+            return None
+        reservation = outcome[1]
+        request = receipt.canonical_record()["request"]
+        if (type(reservation) is not TransportCallReservation or reservation._owner is not controller
+                or reservation.simulation_only or reservation.kind != "selected_read"
+                or reservation.epoch != controller.epoch or reservation.stage is not controller.stage
+                or reservation.transport_policy_id != controller.transport_policy_id
+                or reservation.credential_reference_id != controller.credential_reference_id
+                or reservation.task_id != self._task_id or reservation.governance_id != self._governance_id
+                or reservation.selection_id != self._selection.selection_id
+                or reservation.tool_name != request["proposal"]["payload"]["tool_name"]
+                or reservation.proposal_id != NormalizedProposal.from_record(request["proposal"]).proposal_id
+                or reservation.dependency_fingerprint != request["dependency_fingerprint"]
+                or controller.revoked or receipt.receipt_id != outcome[3]):
+            return None
+        self.validate_activation(controller)
+        return reservation
+
+
+@dataclass(frozen=True, slots=True, init=False)
+class SimulatedGitHubReadAdapter:
+    """Permanent simulation-only GitHub fixture; no network or live witness.
+
+    It exercises the same request selection, governed reservation, parsing and
+    immutable-snapshot path using bounded inert bytes. Its controller must be
+    the exact separate simulation type. There is no transport callback,
+    credential, native context, TLS socket or production dispatch operation.
+    """
+
+    _selection: GitHubReadSelection
+    _activation: Any = field(repr=False, compare=False)
+    _task_id: str
+    _governance_id: str
+    _body: bytes = field(repr=False)
+    _status_code: int
+    _metadata_text: str
+    _failure_reason: str | None
+    _calls: int = field(default=0, compare=False)
+
+    def __init__(self, selection: GitHubReadSelection, activation: Any, *,
+                 task_id: str, governance_id: str, body: bytes = b"",
+                 status_code: int = 200, failure_reason: str | None = None,
+                 source_metadata: dict | None = None) -> None:
+        from .transport_activation import SimulationActivationController
+
+        _exact("simulation controller", activation, SimulationActivationController)
+        _exact("GitHub selection", selection, GitHubReadSelection)
+        _fingerprint("task ID", task_id)
+        _fingerprint("governance ID", governance_id)
+        _exact("frozen GitHub response body", body, bytes)
+        if len(body) > MAX_GITHUB_RESPONSE_BYTES:
+            raise ValueError("frozen GitHub response exceeds the declared byte bound")
+        _integer("frozen HTTP status", status_code, minimum=100, maximum=599)
+        if failure_reason is not None:
+            _exact("simulation failure", failure_reason, str)
+            if failure_reason != "transport_unavailable":
+                raise ValueError("unsupported frozen GitHub failure")
+        metadata = _metadata({"request_id": None, "etag": None, "has_next_page": False}
+                             if source_metadata is None else source_metadata)
+        object.__setattr__(self, "_selection", GitHubReadSelection.from_record(selection.canonical_record()))
+        object.__setattr__(self, "_activation", activation)
+        object.__setattr__(self, "_task_id", task_id)
+        object.__setattr__(self, "_governance_id", governance_id)
+        object.__setattr__(self, "_body", body)
+        object.__setattr__(self, "_status_code", status_code)
+        object.__setattr__(self, "_metadata_text", canonical_json(metadata))
+        object.__setattr__(self, "_failure_reason", failure_reason)
+        object.__setattr__(self, "_calls", 0)
+
+    @property
+    def call_count(self) -> int:
+        from .transport_activation import MAX_TRANSPORT_CALLS
+
+        return _integer("simulated GitHub call count", self._calls, maximum=MAX_TRANSPORT_CALLS)
+
+    def validate_activation(self, activation: Any) -> None:
+        from .transport_activation import SimulationActivationController
+
+        _exact("simulation controller", activation, SimulationActivationController)
+        if self._activation is not activation or activation.simulation_only is not True:
+            raise ValueError("frozen GitHub adapter belongs to a different simulation")
+        _fingerprint("task ID", self._task_id)
+        _fingerprint("governance ID", self._governance_id)
+        if self._task_id != activation.task_id or self._governance_id != activation.governance_id:
+            raise ValueError("frozen GitHub task/governance bindings differ from simulation")
+        _exact("GitHub selection", self._selection, GitHubReadSelection)
+        self._selection.canonical_record()
+
+    def binding_record(self) -> dict:
+        self.validate_activation(self._activation)
+        return {"task_id": self._task_id, "governance_id": self._governance_id,
+            "selection_id": self._selection.selection_id, "selection": self._selection.canonical_record(),
+            "network_operation_cacheable": False, "simulation_only": True,
+            "live_verification": False, "control_authority": False}
+
+    def observe(self, proposal: NormalizedProposal, dependency_fingerprint: str) -> ExternalObservationReceipt:
+        self.validate_activation(self._activation)
+        plan = GitHubRequestPlan(proposal, self._selection, dependency_fingerprint)
+        request = plan.canonical_record()
+        reservation = self._activation.reserve_read(task_id=self._task_id,
+            governance_id=self._governance_id, tool_name=request["proposal"]["payload"]["tool_name"],
+            selection_id=self._selection.selection_id, proposal_id=proposal.proposal_id,
+            dependency_fingerprint=dependency_fingerprint)
+        try:
+            if reservation.simulation_only is not True:
+                raise GitHubTransportUnavailable("frozen GitHub reads require simulation-only accounting")
+            object.__setattr__(self, "_calls", self.call_count + 1)
+            self._activation.check_read_reservation(reservation)
+            if self._failure_reason is not None:
+                if type(self._failure_reason) is not str or self._failure_reason != "transport_unavailable":
+                    raise ValueError("unsupported frozen GitHub failure")
+                raise GitHubTransportUnavailable("simulated public GitHub read unavailable")
+            _exact("frozen source metadata", self._metadata_text, str)
+            bounded_utf8_length("frozen source metadata", self._metadata_text, limit=2_048)
+            receipt = parse_github_response(plan, self._status_code, self._body, json.loads(self._metadata_text))
+            self._activation.check_read_reservation(reservation)
+            return receipt
+        finally:
+            self._activation.complete_call(reservation)
 
 
 def readonly_interface_manifest() -> dict:

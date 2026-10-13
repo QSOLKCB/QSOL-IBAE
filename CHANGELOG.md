@@ -225,5 +225,9 @@ All notable changes to QSOL-IBAE will be documented here.
   transport counters; preserve bounded partial failure history across rollback.
 - Consume exact immutable observed snapshots through existing governed native
   reads without claiming current remote freshness or counting GET as native work.
+- Require private verified HTTPS/TLS outcomes before live stage evidence or
+  stored Responses continuation; successful mocked decoding never qualifies.
+- Isolate positive offline staging in a permanent simulation controller rejected
+  by production dispatch. SDK initialization failures retain fixed error statuses.
 - Preserve all accepted v0.2–v0.6B fixtures. Live API/recovery verification remains
   separately gated and is not inferred from SDK-mock or offline results.

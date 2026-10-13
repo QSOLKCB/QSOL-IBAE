@@ -127,8 +127,11 @@ def _install_sdk_double(monkeypatch, *, body=None, failure=False, version=OPENAI
             calls["closed"] += 1
 
     sdk = SimpleNamespace(__version__=version, OpenAI=Client, DefaultHttpx2Client=HTTPClient, omit=object())
+    modules = {"openai": sdk,
+               "httpx2": SimpleNamespace(__version__=transport.OPENAI_HTTPX2_VERSION),
+               "httpcore2": SimpleNamespace(__version__=transport.OPENAI_HTTPCORE2_VERSION)}
     monkeypatch.setattr(transport.importlib, "import_module",
-                        lambda name: sdk if name == "openai" else actual_import(name))
+                        lambda name: modules[name] if name in modules else actual_import(name))
     return calls
 
 
@@ -248,9 +251,12 @@ def test_combined_input_accepts_maximum_native_registry_without_clipping(simulat
         assert len(canonical_json(model_input).encode()) <= transport.MAX_MODEL_INPUT_BYTES
 
 
-def test_stage3_actual_sdk_input_exposes_exact_capture_candidates_separate_from_native_reads(simulated_selected_host):
+def test_simulated_stage3_input_exposes_exact_capture_candidates_separate_from_native_reads(simulated_selected_host):
     controller, context, selection, proposal, _, _, calls, _ = simulated_selected_host
-    model_input = calls["openai_inputs"][-1]
+    projection = SupervisorProjection(context)
+    detached = projection.canonical_record()
+    model_input = transport._model_input_record(detached, FreshContextHandoff(projection).canonical_record(),
+                                                controller.selected_capture_surface(detached))
     assert model_input["protocol_version"] == transport.OPENAI_MODEL_INPUT_VERSION
     native = model_input["native_context"]["record"]["projection"]
     assert canonical_json(native) == canonical_json(SupervisorProjection(context).canonical_record())
@@ -263,14 +269,27 @@ def test_stage3_actual_sdk_input_exposes_exact_capture_candidates_separate_from_
     assert candidate["host_admission_required"] is True and candidate["execution_authorized"] is False
     capability, = native["decision_surface"]["capabilities"]
     assert capability["runtime_supported"] is False and capability["read_proposal_eligible"] is False
-    assert captured["current_openai_call_reserved"] is True
-    assert captured["remaining_after_current_openai_call"] == controller.remaining_transport_calls
-    assert captured["host_next_capture_occurrence_key"] == controller.capture_occurrence_key
+    assert captured["current_openai_call_reserved"] is False
+    assert captured["remaining_after_current_openai_call"] == max(0, controller.remaining_transport_calls - 1)
+    assert captured["host_next_capture_occurrence_key"] == f"capture.{controller.epoch}.{controller.call_count + 1}"
     assert {item["key"] for item in captured["ready_targets"]} == {"first", "second"}
     assert all(len(item["obligation_id"]) == 64 for item in captured["ready_targets"])
     assert captured["snapshot_native_read_separate"] is True and captured["control_authority"] is False
     assert "exact_argument_schema" in captured["unresolved_admission_checks"]
-    assert calls["github"] == 0
+    assert controller.canonical_record()["simulation_only"] is True
+
+
+def test_simulated_controller_cannot_enter_production_sdk_or_credential_path(simulated_selected_host):
+    from unittest.mock import patch
+
+    simulated, _, _, _, _, _, _, _ = simulated_selected_host
+    supervisor, _, projection, handoff, _ = _setup()
+    with patch.object(transport.importlib, "import_module") as importer:
+        with patch.object(transport.os.environ, "get") as lookup:
+            with pytest.raises(TypeError, match="activation controller"):
+                supervisor.propose(projection, index=0, activation=simulated, fresh_handoff=handoff)
+    importer.assert_not_called()
+    lookup.assert_not_called()
 
 
 def test_exact_types_and_hard_limits_are_enforced():
@@ -311,6 +330,7 @@ def test_mocked_sdk_request_is_narrow_bounded_and_uses_same_normalized_contract(
     calls = _install_sdk_double(monkeypatch)
     result = supervisor.propose(projection, index=0, activation=activation, fresh_handoff=handoff)
     assert result == _proposal()
+    assert supervisor._consume_live_outcome(activation, result) is None
     request, = calls["requests"]
     assert request["tools"] == [] and request["tool_choice"] == "none"
     assert request["stream"] is False and request["background"] is False and request["store"] is False
@@ -354,24 +374,27 @@ def test_mocked_sdk_request_is_narrow_bounded_and_uses_same_normalized_contract(
     assert supervisor.last_observation.canonical_record()["status"] == "received"
 
 
-def test_continuation_requires_owned_successful_stored_response_and_same_epoch(monkeypatch):
+def test_continuation_rejects_unknown_and_unverified_mock_response_history(monkeypatch):
     supervisor, activation, projection, handoff, _ = _setup(store=True)
     calls = _install_sdk_double(monkeypatch)
     with pytest.raises(OpenAITransportError, match="unverified"):
         supervisor.propose(projection, index=0, activation=activation, previous_response_id="resp_unknown")
     supervisor.propose(projection, index=0, activation=activation, fresh_handoff=handoff)
-    previous = supervisor.previous_response_id
-    first_context_id = supervisor.last_observation.canonical_record()["request_context_id"]
-    supervisor.propose(projection, index=1, activation=activation, previous_response_id=previous)
-    assert calls["requests"][1]["previous_response_id"] == previous
+    assert supervisor.previous_response_id is None
+    previous = supervisor.last_observation.canonical_record()["response_id"]
+    with pytest.raises(OpenAITransportError, match="unverified"):
+        supervisor.propose(projection, index=1, activation=activation, previous_response_id=previous)
+    assert len(calls["requests"]) == 1
+    supervisor.propose(projection, index=1, activation=activation, fresh_handoff=handoff)
+    assert "previous_response_id" not in calls["requests"][1]
     assert calls["requests"][1]["instructions"] == calls["requests"][0]["instructions"]
-    continued_input = json.loads(calls["requests"][1]["input"])
-    assert continued_input["native_context"] == {"kind": "response_continuation", "record": {"projection": projection}}
+    fresh_input = json.loads(calls["requests"][1]["input"])
+    assert fresh_input["native_context"] == {"kind": "fresh_handoff", "record": handoff}
     first_input = json.loads(calls["requests"][0]["input"])
-    assert continued_input["selected_capture_surface"]["surface_id"] != first_input["selected_capture_surface"]["surface_id"]
+    assert fresh_input["selected_capture_surface"]["surface_id"] != first_input["selected_capture_surface"]["surface_id"]
     assert supervisor.last_observation.canonical_record()["request_context_id"] == domain_fingerprint(
-        "ibae.openai-request-context.v1", {"input_json": calls["requests"][1]["input"], "previous_response_id": previous,
-            "parent_request_context_id": first_context_id, "transport_policy_id": supervisor.policy_id, "call_index": 1})
+        "ibae.openai-request-context.v1", {"input_json": calls["requests"][1]["input"], "previous_response_id": None,
+            "parent_request_context_id": None, "transport_policy_id": supervisor.policy_id, "call_index": 1})
     other = ActivationController(activation.task_id, activation.governance_id, max_transport_calls=4)
     with pytest.raises(OpenAITransportError, match="unverified"):
         supervisor.propose(projection, index=2, activation=other, previous_response_id=previous)
@@ -393,6 +416,56 @@ def test_failure_consumes_attempt_clears_continuation_and_does_not_expose_except
     with pytest.raises(OpenAITransportError, match="budget"):
         supervisor.propose(projection, index=1, activation=activation, fresh_handoff=handoff)
     assert len(calls["requests"]) == 1
+
+
+@pytest.mark.parametrize("error,reason,status", [
+    (ImportError("benign import diagnostic"), "sdk_unavailable", "unavailable"),
+    (RuntimeError("benign import diagnostic"), "transport_failed", "failed"),
+])
+def test_sdk_import_failures_are_sanitized_before_credential_resolution(monkeypatch, error, reason, status):
+    from unittest.mock import patch
+
+    supervisor, activation, projection, handoff, _ = _setup(max_calls=1)
+    with patch.object(transport.importlib, "import_module", side_effect=error) as importer:
+        with patch.object(transport.os.environ, "get") as lookup:
+            with pytest.raises(OpenAITransportError, match=f"^{reason}$") as caught:
+                supervisor.propose(projection, index=0, activation=activation, fresh_handoff=handoff)
+    importer.assert_called_once_with("openai")
+    lookup.assert_not_called()
+    assert caught.value.__context__ is None
+    assert "benign import diagnostic" not in str(caught.value)
+    observation = supervisor.last_observation.canonical_record()
+    assert observation["status"] == status and observation["reason"] == reason
+    assert observation["dispatch_attempted"] is False
+    assert observation["proposal_id"] is None and observation["response_id"] is None
+    assert "benign import diagnostic" not in canonical_json(observation)
+    assert activation.call_count == 1
+    assert supervisor.previous_response_id is None
+
+
+@pytest.mark.parametrize("module_name", ["httpx2", "httpcore2"])
+def test_http_transport_version_drift_fails_before_credential_resolution(monkeypatch, module_name):
+    from unittest.mock import patch
+
+    supervisor, activation, projection, handoff, _ = _setup()
+    _install_sdk_double(monkeypatch)
+    module = transport.importlib.import_module(module_name)
+    monkeypatch.setattr(module, "__version__", "0.0.0")
+    with patch.object(transport.os.environ, "get") as lookup:
+        with pytest.raises(OpenAITransportError, match="^sdk_version_mismatch$"):
+            supervisor.propose(projection, index=0, activation=activation, fresh_handoff=handoff)
+    lookup.assert_not_called()
+    assert supervisor.last_observation.canonical_record()["dispatch_attempted"] is False
+
+
+def test_sdk_shaped_success_and_public_receipt_cannot_mint_live_outcome(monkeypatch):
+    supervisor, activation, projection, handoff, _ = _setup()
+    _install_sdk_double(monkeypatch)
+    proposal = supervisor.propose(projection, index=0, activation=activation, fresh_handoff=handoff)
+    assert supervisor.last_observation.canonical_record()["status"] == "received"
+    assert supervisor._consume_live_outcome(activation, proposal) is None
+    assert supervisor._consume_live_outcome(activation, proposal.canonical_record()) is None
+    assert supervisor._consume_live_outcome(activation, supervisor.last_observation.canonical_record()) is None
 
 
 @pytest.mark.parametrize("name", ["OPENAI_BASE_URL", "OPENAI_CUSTOM_HEADERS"])
@@ -533,6 +606,27 @@ def test_installed_pinned_sdk_serializes_expected_request_without_network(monkey
     assert result == _proposal()
     assert len(requests) == 1 and requests[0]["model"] == "gpt-5.4"
     assert requests[0]["text"]["format"]["strict"] is True
+
+
+def test_plain_official_http_client_and_mock_response_have_no_network_provenance():
+    import socket
+
+    sdk = pytest.importorskip("openai")
+    httpx2 = pytest.importorskip("httpx2")
+    from httpcore2._backends.sync import SyncStream
+    request = httpx2.Request("POST", "https://api.openai.com/v1/responses", content=b"{}")
+    response = httpx2.Response(200, request=request, content=_body())
+    # Creating the ordinary client does not open a socket. Response bytes and
+    # a genuine HTTPTransport are insufficient without its actual TLS stream.
+    with sdk.DefaultHttpx2Client(trust_env=False, follow_redirects=False) as client:
+        assert transport._verified_openai_network_response(client, response) is False
+        # An unopened socket wrapped by the actual SDK TLS context still has
+        # no completed TLS core or peer certificate. No connection is attempted.
+        context = client._transport._pool._ssl_context
+        with context.wrap_socket(socket.socket(), server_hostname="api.openai.com",
+                                 do_handshake_on_connect=False) as unopened:
+            response.extensions["network_stream"] = SyncStream(unopened)
+            assert transport._verified_openai_network_response(client, response) is False
 
 
 def test_installed_sdk_error_body_is_rejected_before_eager_error_parsing(monkeypatch):

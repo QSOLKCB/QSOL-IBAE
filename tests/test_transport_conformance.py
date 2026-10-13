@@ -70,3 +70,27 @@ def test_frozen_observation_native_proof_does_not_claim_live_capture():
     assert proof["equivalent"] is True
     assert proof["transport_calls"] == 0
     assert record["snapshot_id"] in proof["source_snapshot_ids"]
+
+
+def test_isolated_stage_ladder_never_dispatches_credentials_or_network(monkeypatch):
+    import socket
+    from ibae.openai_transport import OpenAICredentialBroker
+    from ibae import readonly_adapters
+    from ibae.transport_conformance import simulation_activation_conformance
+    def forbidden(*args, **kwargs):
+        raise AssertionError("isolated simulation attempted production dispatch")
+    monkeypatch.setattr(OpenAICredentialBroker, "_request", forbidden)
+    monkeypatch.setattr(readonly_adapters.http.client, "HTTPSConnection", forbidden)
+    monkeypatch.setattr(socket, "create_connection", forbidden)
+    monkeypatch.setattr(socket, "socket", forbidden)
+    record = simulation_activation_conformance()
+    assert record["simulation_only"] is True
+    assert record["live_verification"] is record["production_gate_authority"] is False
+    assert record["network_dispatches"] == record["credential_resolutions"] == 0
+    assert [item["stage"] for item in record["stage_observations"]] == [0, 1, 2, 3]
+    assert all(item["simulation_only"] and not item["live_transport_observed"]
+               for item in record["stage_observations"])
+    before, after = record["before_rollback"], record["after_rollback"]
+    assert before["active_stage_verification"] == "simulation_passed"
+    assert before["consumed_transport_calls"] == after["consumed_transport_calls"] == 8
+    assert before["network_dispatch_allowed"] is after["network_dispatch_allowed"] is False

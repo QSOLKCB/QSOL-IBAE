@@ -112,6 +112,9 @@ jobs:
           assert transport_fixture["observed_snapshot_equivalence"]["live_capture_verified"] is False
           assert transport_fixture["selected_capture_admission"]["http_dispatches"] == 0
           assert len(transport_fixture["selected_capture_admission"]["cases"]) == 6
+          assert transport_fixture["simulated_activation"]["network_dispatches"] == 0
+          assert transport_fixture["simulated_activation"]["production_gate_authority"] is False
+          assert all(not stage["live_transport_observed"] for stage in transport_fixture["simulated_activation"]["stage_observations"])
           legacy_fixture = v0_4_reference_fixture()
           assert legacy_fixture["finalization"]["acceptance"]["status"] == "accepted"
           assert legacy_fixture["compact_evidence"]["source_bound"] is True

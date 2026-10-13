@@ -9,10 +9,11 @@ import pytest
 from ibae.canonical import canonical_fingerprint, canonical_json
 from ibae.readonly_adapters import (
     GITHUB_READ_TOOLS, GITHUB_TIMEOUT_MS, MAX_GITHUB_RESPONSE_BYTES,
-    ExternalObservationReceipt, FrozenReadAdapter, GitHubReadAdapter,
-    GitHubReadSelection, GitHubRequestPlan, parse_github_response,
+    ExternalObservationReceipt, FrozenReadAdapter, GitHubReadAdapter, SimulatedGitHubReadAdapter,
+    GitHubReadSelection, GitHubRequestPlan, GitHubTransportUnavailable, parse_github_response,
     readonly_interface_manifest, unsupported_session_continuation,
-    _read_http_observation,
+    _read_http_observation, _require_closed_github_transport,
+    _require_verified_github_socket, _require_github_response_stream,
 )
 from ibae.synthetic_protocol import (
     AdapterInterface, AdapterStatus, FakeReadUniverse, NormalizedProposal,
@@ -452,3 +453,119 @@ def test_revoked_adapter_rejects_before_network_and_does_not_spend_capacity(monk
         adapter.observe(_proposal(), DEPENDENCY)
     connection.assert_not_called()
     assert activation.call_count == 0
+
+
+def test_mock_https_factory_cannot_qualify_live_transport_or_fall_back_to_real_network(monkeypatch):
+    replacement = Mock(side_effect=AssertionError("a replacement must not be called"))
+    monkeypatch.setattr("ibae.readonly_adapters.http.client.HTTPSConnection", replacement)
+    with pytest.raises(GitHubTransportUnavailable, match="closed GitHub HTTPS"):
+        _require_closed_github_transport()
+    replacement.assert_not_called()
+
+
+def test_mock_response_method_cannot_qualify_the_closed_network_path(monkeypatch):
+    replacement = Mock(side_effect=AssertionError("a replacement must not be called"))
+    monkeypatch.setattr("ibae.readonly_adapters.http.client.HTTPResponse.read", replacement)
+    with pytest.raises(GitHubTransportUnavailable, match="closed GitHub HTTPS"):
+        _require_closed_github_transport()
+    replacement.assert_not_called()
+
+
+def test_mock_socket_factory_is_rejected_without_using_a_saved_original(monkeypatch):
+    replacement = Mock(side_effect=AssertionError("offline test must not connect"))
+    monkeypatch.setattr("ibae.readonly_adapters.socket.create_connection", replacement)
+    with pytest.raises(GitHubTransportUnavailable):
+        _require_closed_github_transport()
+    replacement.assert_not_called()
+
+
+def test_ordinary_frozen_http_objects_have_no_verified_tls_provenance():
+    with pytest.raises(GitHubTransportUnavailable):
+        _require_verified_github_socket(Mock(), Mock())
+    with pytest.raises(GitHubTransportUnavailable):
+        _require_github_response_stream(_http_response(), Mock())
+    # The exact same frozen payload remains useful as unverified parser data.
+    receipt = _read_http_observation(_plan(), _http_response())
+    assert receipt.canonical_record()["source_authentication"] == "not_established"
+
+
+def test_unconnected_real_https_object_does_not_establish_network_provenance():
+    import http.client
+    import ssl
+
+    context = ssl.create_default_context()
+    connection = http.client.HTTPSConnection("api.github.com", port=443, context=context)
+    try:
+        assert connection.sock is None
+        with pytest.raises(GitHubTransportUnavailable, match="TLS socket"):
+            _require_verified_github_socket(connection, context)
+        assert connection.sock is None
+    finally:
+        connection.close()
+
+
+def test_parsed_or_reconstructed_receipt_cannot_supply_a_live_outcome():
+    from ibae.transport_activation import ActivationController
+
+    task_id, governance_id = "1" * 64, "2" * 64
+    controller = ActivationController(task_id, governance_id)
+    adapter = GitHubReadAdapter(_selection(), controller, task_id=task_id, governance_id=governance_id)
+    parsed = _receipt()
+    restored = ExternalObservationReceipt.from_record(parsed.canonical_record())
+    assert adapter._consume_live_outcome(controller, parsed) is None
+    assert adapter._consume_live_outcome(controller, restored) is None
+    assert controller.call_count == 0
+
+
+def test_simulated_github_adapter_has_permanent_cross_mode_type_separation():
+    from ibae.transport_activation import ActivationController, SimulationActivationController
+
+    task_id, governance_id = "1" * 64, "2" * 64
+    live = ActivationController(task_id, governance_id)
+    simulated = SimulationActivationController(task_id, governance_id)
+    with pytest.raises(TypeError):
+        GitHubReadAdapter(_selection(), simulated, task_id=task_id, governance_id=governance_id)
+    with pytest.raises(TypeError):
+        SimulatedGitHubReadAdapter(_selection(), live, task_id=task_id, governance_id=governance_id)
+    adapter = SimulatedGitHubReadAdapter(_selection(), simulated, task_id=task_id,
+        governance_id=governance_id, body=json.dumps(_data("github.repository")).encode())
+    assert adapter.binding_record()["simulation_only"] is True
+    assert adapter.binding_record()["live_verification"] is False
+    assert adapter.call_count == 0
+    assert not hasattr(adapter, "_live_outcome")
+    assert not hasattr(adapter, "_consume_live_outcome")
+    with pytest.raises(TypeError):
+        GitHubReadAdapter.validate_activation(adapter, simulated)
+
+
+@pytest.mark.parametrize("kwargs", [
+    {"body": "not bytes"}, {"body": b"x" * (MAX_GITHUB_RESPONSE_BYTES + 1)},
+    {"status_code": True}, {"status_code": 600}, {"failure_reason": "arbitrary_failure"},
+    {"failure_reason": 1}, {"endpoint": "https://example.test"}, {"transport": None},
+])
+def test_simulated_response_configuration_is_closed_and_bounded(kwargs):
+    from ibae.transport_activation import SimulationActivationController
+
+    task_id, governance_id = "1" * 64, "2" * 64
+    controller = SimulationActivationController(task_id, governance_id)
+    with pytest.raises((TypeError, ValueError)):
+        SimulatedGitHubReadAdapter(_selection(), controller, task_id=task_id,
+            governance_id=governance_id, **kwargs)
+
+
+def test_simulator_unadmitted_reads_preserve_budget_with_network_tripwires(monkeypatch):
+    from ibae.transport_activation import ActivationError, SimulationActivationController
+
+    task_id, governance_id = "1" * 64, "2" * 64
+    controller = SimulationActivationController(task_id, governance_id)
+    adapter = SimulatedGitHubReadAdapter(_selection(), controller, task_id=task_id,
+        governance_id=governance_id, body=json.dumps(_data("github.repository")).encode())
+    forbidden = Mock(side_effect=AssertionError("simulation must not dispatch a network operation"))
+    monkeypatch.setattr("ibae.readonly_adapters.socket.socket", forbidden)
+    monkeypatch.setattr("ibae.readonly_adapters.socket.create_connection", forbidden)
+    monkeypatch.setattr("ibae.readonly_adapters.socket.getaddrinfo", forbidden)
+    monkeypatch.setattr("ibae.readonly_adapters.http.client.HTTPSConnection", forbidden)
+    with pytest.raises(ActivationError, match="stage 3"):
+        adapter.observe(_proposal(), DEPENDENCY)
+    assert controller.call_count == adapter.call_count == 0
+    forbidden.assert_not_called()

@@ -776,3 +776,10 @@ Controller-owned capture provenance and source coverage gate the stage verifier;
 public snapshot hashes never establish that a live capture occurred. Offline
 native parity establishes exact-content consumption only. Historical failure
 attempts retain admitted next-state identity and spent capacity after rollback.
+
+Production activation consumes reservation-bound private verified-network
+outcomes from the closed pinned HTTPS/TLS stack. Successful mocked HTTP decoding
+cannot establish a live gate. A permanently separate simulation controller uses
+only inert adapters and retains simulation-only observations; production SDK and
+HTTPS paths reject it before credential resolution or dispatch. This separation
+allows offline end-to-end stage testing without granting live deployment authority.

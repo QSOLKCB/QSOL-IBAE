@@ -19,7 +19,7 @@ from typing import Any
 from ._records import require_fingerprint, require_symbol
 from .canonical import canonical_json, domain_fingerprint
 from .supervisor import SupervisorContext, SupervisorProjection, _json_copy, _validate_projection
-from .synthetic_protocol import NormalizedProposal, ProposalKind, bounded_synthetic_data
+from .synthetic_protocol import FakeSupervisor, NormalizedProposal, ProposalKind, bounded_synthetic_data
 
 ACTIVATION_VERSION = "IBAE-TRANSPORT-ACTIVATION-V1"
 STAGE_OBSERVATION_VERSION = "IBAE-TRANSPORT-STAGE-OBSERVATION-V1"
@@ -122,10 +122,12 @@ class OperatorStageAuthorization:
     transport_policy_id: str = field(kw_only=True)
     credential_reference_id: str = field(kw_only=True)
     selected_read_selection_ids: tuple[str, ...] = field(default=(), kw_only=True)
+    simulation_only: bool = field(default=False, kw_only=True)
 
     def __post_init__(self) -> None:
         _exact("activation stage", self.stage, ActivationStage)
         _exact("tool profile", self.tool_profile, ToolProfile)
+        _exact("simulation-only authorization", self.simulation_only, bool)
         _identity("task identity", self.task_id)
         _identity("governance identity", self.governance_id)
         _identity("transport policy identity", self.transport_policy_id)
@@ -154,6 +156,7 @@ class OperatorStageAuthorization:
                 "transport_policy_id": self.transport_policy_id,
                 "credential_reference_id": self.credential_reference_id,
                 "tool_profile": self.tool_profile.value,
+                "simulation_only": self.simulation_only,
                 "selected_read_tools": list(self.selected_read_tools),
                 "selected_read_selection_ids": list(self.selected_read_selection_ids),
                 "authenticated_operator": False, "grants_native_authority": False}
@@ -195,6 +198,7 @@ class TransportCallReservation:
     selection_id: str | None
     proposal_id: str | None
     dependency_fingerprint: str | None
+    simulation_only: bool
 
     def __init__(self) -> None:
         raise TypeError("transport reservations are issued only by their controller")
@@ -231,6 +235,7 @@ class _TransportLedger:
         values["selection_id"] = selection_id
         values["proposal_id"] = proposal_id
         values["dependency_fingerprint"] = dependency_fingerprint
+        values["simulation_only"] = type(owner) is SimulationActivationController
         for name, value in values.items():
             object.__setattr__(reservation, name, value)
         self.used += 1  # Failed/ambiguous calls never refund or auto-retry.
@@ -356,6 +361,7 @@ class SelectedReadCapture:
     transport_call_index: int
     transport_policy_id: str
     credential_reference_id: str
+    simulation_only: bool = False
 
     def canonical_record(self) -> dict:
         return {"protocol_version": "IBAE-SELECTED-READ-CAPTURE-V1",
@@ -369,6 +375,7 @@ class SelectedReadCapture:
             "transport_call_index": self.transport_call_index,
             "transport_policy_id": self.transport_policy_id,
             "credential_reference_id": self.credential_reference_id,
+            "simulation_only": self.simulation_only,
             "http_capture_native_accounted": False, "native_snapshot_read_required": True,
             "control_authority": False, "final_acceptance": False}
 
@@ -390,6 +397,7 @@ class SelectedReadAttempt:
     status: str
     reason: str
     snapshot_id: str | None
+    simulation_only: bool = False
 
     def canonical_record(self) -> dict:
         return {"protocol_version": "IBAE-SELECTED-READ-ATTEMPT-V1",
@@ -405,6 +413,7 @@ class SelectedReadAttempt:
             "transport_policy_id": self.transport_policy_id,
             "credential_reference_id": self.credential_reference_id,
             "status": self.status, "reason": self.reason, "snapshot_id": self.snapshot_id,
+            "simulation_only": self.simulation_only,
             "native_http_execution": False, "control_authority": False, "final_acceptance": False}
 
 
@@ -473,6 +482,11 @@ class ActivationController:
 
     def __reduce__(self):
         raise TypeError("transport activation cannot be serialized or restored")
+
+    @property
+    def simulation_only(self) -> bool:
+        """Permanent type-level isolation, never a caller-selected live claim."""
+        return type(self) is SimulationActivationController
 
     @property
     def task_id(self) -> str:
@@ -652,6 +666,7 @@ class ActivationController:
                     "capability_id": None if capability is None else capability["capability_id"],
                     "permission_id": None if capability is None else capability["permission_id"]})
         result = {"protocol_version": SELECTED_CAPTURE_SURFACE_VERSION,
+            "simulation_only": self.simulation_only,
             "task_id": self.task_id, "governance_id": self.governance_id, "stage": int(self.stage),
             "epoch": self.epoch, "transport_policy_id": self.transport_policy_id,
             "credential_reference_id": self.credential_reference_id, "source_binding_id": _source_binding(record),
@@ -675,6 +690,8 @@ class ActivationController:
         return result
 
     def _active(self) -> None:
+        if type(self) not in (ActivationController, SimulationActivationController):
+            raise TypeError("unsupported activation controller type")
         if self.revoked:
             raise ActivationError("transport activation is revoked")
 
@@ -720,7 +737,8 @@ class ActivationController:
             "transport_policy_id": self.transport_policy_id,
             "credential_reference_id": self.credential_reference_id,
             "tool_profile": self.tool_profile.value, "verification": "passed",
-            "live_transport_observed": live, "live_recovery_verified": False,
+            "simulation_only": self.simulation_only,
+            "live_transport_observed": live and not self.simulation_only, "live_recovery_verified": False,
             "grants_native_authority": False, "restores_native_authority": False,
             "final_acceptance": False, "evidence": evidence, "rollback": rollback,
         })
@@ -757,6 +775,8 @@ class ActivationController:
         _exact("operator authorization", authorization, OperatorStageAuthorization)
         authorization.__post_init__()
         self._active()
+        if authorization.simulation_only != self.simulation_only:
+            raise ActivationError("operator authorization belongs to a different simulation mode")
         self._binding(authorization.task_id, authorization.governance_id)
         self._deployment(authorization.transport_policy_id, authorization.credential_reference_id)
         if authorization.epoch != self.epoch:
@@ -878,6 +898,7 @@ class ActivationController:
         this is not remote attestation or protection against monkeypatching.
         """
         from .openai_transport import OpenAIResponsesSupervisor
+        _exact("live activation controller", self, ActivationController)
         _exact("official supervisor", supervisor, OpenAIResponsesSupervisor)
         self._active()
         deployment = OpenAIResponsesSupervisor.deployment_record(supervisor)
@@ -891,17 +912,30 @@ class ActivationController:
             fresh_handoff=fresh_handoff, previous_response_id=previous_response_id,
         )
         _exact("normalized live proposal", proposal, NormalizedProposal)
+        outcome = OpenAIResponsesSupervisor._consume_live_outcome(supervisor, self, proposal)
         with self._lock:
             if (self.revoked or self.epoch != epoch or self.stage is not stage
                     or self._selection_records != registered_selections
                     or self.call_count != before + 1 or self._ledger.pending is not None):
                 raise ActivationError("official call did not preserve its transport reservation")
+            self._require_live_outcome(outcome, kind="openai", epoch=epoch, call_index=before)
             if len(self._live_proposals) == MAX_RETAINED_PROPOSALS:
                 self._stream_overflow = True
             else:
                 self._live_proposals += (NormalizedProposal.from_record(proposal.canonical_record()),)
                 self._live_source_bindings += (source_binding,)
         return proposal
+
+    def _require_live_outcome(self, reservation, *, kind: str, epoch: int, call_index: int) -> None:
+        """Consume only an exact adapter's private network result, not a record."""
+        if (type(reservation) is not TransportCallReservation or reservation._owner is not self
+                or reservation.simulation_only or self.simulation_only
+                or reservation.epoch != epoch or self.epoch != epoch
+                or reservation.stage is not self.stage or reservation.kind != kind
+                or reservation.call_index != call_index
+                or reservation.transport_policy_id != self.transport_policy_id
+                or reservation.credential_reference_id != self.credential_reference_id):
+            raise ActivationError("response lacks a current verified live network outcome")
 
     def _require_smoke_stream(self, stage: ActivationStage) -> dict:
         self._active()
@@ -923,15 +957,16 @@ class ActivationController:
         activation checks, never the context, admission object or native seal.
         """
         from .observed_snapshots import ObservedReadSnapshot
-        from .readonly_adapters import (ExternalObservationReceipt, GitHubReadAdapter,
+        from .readonly_adapters import (ExternalObservationReceipt, GitHubReadAdapter, SimulatedGitHubReadAdapter,
                                         GitHubReadSelection, GitHubRequestPlan)
 
-        _exact("selected read adapter", adapter, GitHubReadAdapter)
+        adapter_type = SimulatedGitHubReadAdapter if self.simulation_only else GitHubReadAdapter
+        _exact("selected read adapter", adapter, adapter_type)
         _exact("normalized selected read", proposal, NormalizedProposal)
         _exact("live supervisor context", context, SupervisorContext)
         _identity("selected read dependency", dependency_fingerprint)
-        GitHubReadAdapter.validate_activation(adapter, self)
-        binding = GitHubReadAdapter.binding_record(adapter)
+        adapter_type.validate_activation(adapter, self)
+        binding = adapter_type.binding_record(adapter)
         self._binding(binding["task_id"], binding["governance_id"])
         selection = GitHubReadSelection.from_record(binding["selection"])
         request = GitHubRequestPlan(proposal, selection, dependency_fingerprint).canonical_record()
@@ -976,8 +1011,11 @@ class ActivationController:
             if _source_binding(current) != source:
                 raise ActivationError("selected native context changed before dispatch")
             # There is deliberately no injected transport/callback alternative.
-            receipt = GitHubReadAdapter.observe(adapter, proposal, dependency_fingerprint)
+            receipt = adapter_type.observe(adapter, proposal, dependency_fingerprint)
             _exact("selected external observation", receipt, ExternalObservationReceipt)
+            if not self.simulation_only:
+                outcome = GitHubReadAdapter._consume_live_outcome(adapter, self, receipt)
+                self._require_live_outcome(outcome, kind="selected_read", epoch=fence[0], call_index=fence[4])
             observed = receipt.canonical_record()
             if observed["request"] != request:
                 status, reason = "invalid_observation", "capture_request_mismatch"
@@ -1000,7 +1038,7 @@ class ActivationController:
                                          dependency_fingerprint)
                 capture = SelectedReadCapture(snapshot, transition.next_state, transition.receipt,
                     tool_admission, selection.selection_id, proposal.proposal_id, self.epoch,
-                    fence[4], self.transport_policy_id, self.credential_reference_id)
+                    fence[4], self.transport_policy_id, self.credential_reference_id, self.simulation_only)
                 self._captures += (capture,)
                 self._capture_next_state_id = transition.next_state.state_id
                 status, reason = "captured", "observation_captured"
@@ -1014,7 +1052,8 @@ class ActivationController:
             with self._lock:
                 attempt = SelectedReadAttempt(transition.next_state, transition.receipt, tool_admission,
                     source, selection.selection_id, proposal.proposal_id, fence[0], plan.transport_call_index,
-                    fence[2], fence[3], status, reason, None if capture is None else capture.snapshot.snapshot_id)
+                    fence[2], fence[3], status, reason, None if capture is None else capture.snapshot.snapshot_id,
+                    self.simulation_only)
                 self._capture_attempts += (attempt,)
                 self._capture_inflight = tuple(item for item in self._capture_inflight if item is not plan)
                 if self._capture_plan is plan:
@@ -1038,7 +1077,7 @@ class ActivationController:
             raise ActivationError("live fake-tool admission equivalence failed")
         with self._lock:
             self._check_verification_fence(fence)
-            observation = self._observation(live=True, evidence={"scope": "closed_live_stream_fake_tool_equivalence",
+            observation = self._observation(live=True, evidence={"scope": "closed_simulated_stream_fake_tool_equivalence" if self.simulation_only else "closed_live_stream_fake_tool_equivalence",
                 "proposal_stream_id": domain_fingerprint("ibae.transport-proposal-stream.v1", transcript["proposals"]),
                 "probe_report_id": result.report_id})
             self._observations[ActivationStage.OPENAI_FAKE_TOOLS] = observation
@@ -1058,7 +1097,7 @@ class ActivationController:
         _identity("fixture probe report identity", result.get("report_id"))
         with self._lock:
             self._check_verification_fence(fence)
-            observation = self._observation(live=True, evidence={"scope": "closed_live_stream_readonly_fixture_equivalence",
+            observation = self._observation(live=True, evidence={"scope": "closed_simulated_stream_readonly_fixture_equivalence" if self.simulation_only else "closed_live_stream_readonly_fixture_equivalence",
                 "proposal_stream_id": expected_stream, "probe_report_id": result["report_id"]})
             self._observations[ActivationStage.OPENAI_DETERMINISTIC_READS] = observation
         return observation
@@ -1096,8 +1135,9 @@ class ActivationController:
         with self._lock:
             self._check_verification_fence(fence)
             observation = self._observation(live=True, evidence={
-                "scope": "governed_http_capture_then_separate_native_snapshot_consumption",
-                "source_snapshot_ids": snapshot_ids, "http_captures": len(snapshots),
+                "scope": "simulated_capture_then_native_snapshot_consumption" if self.simulation_only else "governed_http_capture_then_separate_native_snapshot_consumption",
+                "source_snapshot_ids": snapshot_ids, "http_captures": 0 if self.simulation_only else len(snapshots),
+                "simulated_http_captures": len(snapshots) if self.simulation_only else 0,
                 "capture_receipts": [capture.canonical_record() for capture in self._captures],
                 "capture_attempts": [attempt.canonical_record() for attempt in self._capture_attempts
                                      if attempt.epoch == self.epoch],
@@ -1140,9 +1180,10 @@ class ActivationController:
         if reserved_captures != self._ledger.selected_read_calls:
             raise ActivationError("selected capture reservation evidence does not reconcile")
         current = self._observations.get(self.stage)
-        verification = ("passed" if current is not None and current.canonical_record()["epoch"] == self.epoch else
+        verification = (("simulation_passed" if self.simulation_only else "passed") if current is not None and current.canonical_record()["epoch"] == self.epoch else
                         "not_verified")
         return {"protocol_version": ACTIVATION_VERSION, "task_id": self.task_id,
+            "simulation_only": self.simulation_only, "network_dispatch_allowed": not self.simulation_only,
             "governance_id": self.governance_id, "stage": int(self.stage),
             "transport_policy_id": self.transport_policy_id,
             "credential_reference_id": self.credential_reference_id,
@@ -1167,3 +1208,58 @@ class ActivationController:
             "stage_observations": [self._observations[stage].canonical_record() for stage in sorted(self._observations)],
             "native_authority": False, "serialized_restore_supported": False,
             "live_recovery_verified": False, "effects_supported": False}
+
+
+class SimulationActivationController(ActivationController):
+    """Permanently offline stage rehearsal, rejected by production adapters.
+
+    Simulated predecessor gates only advance this exact simulator. They never
+    establish provider/source provenance or qualify a production controller.
+    The simulator uses the same finite local accounting and admission checks,
+    but only exact inert fake/frozen adapters can supply its observations.
+    """
+
+    __slots__ = ("_last_capture_surface",)
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._last_capture_surface: str | None = None
+
+    @property
+    def last_capture_surface(self) -> dict | None:
+        return None if self._last_capture_surface is None else json.loads(self._last_capture_surface)
+
+    def propose(self, supervisor: FakeSupervisor, projection: dict, *, index: int,
+                fresh_handoff: dict | None = None, previous_response_id: str | None = None) -> NormalizedProposal:
+        from .supervisor import FreshContextHandoff
+
+        _exact("simulation controller", self, SimulationActivationController)
+        _exact("inert fake supervisor", supervisor, FakeSupervisor)
+        if previous_response_id is not None:
+            raise ActivationError("offline simulation cannot continue a provider response")
+        detached = self._projection(projection)
+        if fresh_handoff is not None:
+            handoff = FreshContextHandoff.from_record(fresh_handoff).canonical_record()
+            if handoff["projection"] != detached:
+                raise ActivationError("simulation handoff does not match its projection")
+        source = _source_binding(detached)
+        reservation = self.reserve_call(detached, stage=self.stage, tool_profile=self.tool_profile,
+            selected_read_tools=self.selected_read_tools, transport_policy_id=self.transport_policy_id,
+            credential_reference_id=self.credential_reference_id)
+        try:
+            self._last_capture_surface = canonical_json(self.selected_capture_surface(detached, reservation=reservation))
+            proposal = FakeSupervisor.propose(supervisor, detached, index=index)
+            _exact("normalized simulated proposal", proposal, NormalizedProposal)
+            with self._lock:
+                self.check_reservation(reservation, detached, transport_policy_id=self.transport_policy_id,
+                                       credential_reference_id=self.credential_reference_id)
+                if not reservation.simulation_only:
+                    raise ActivationError("simulation reservation mode mismatch")
+                if len(self._live_proposals) == MAX_RETAINED_PROPOSALS:
+                    self._stream_overflow = True
+                else:
+                    self._live_proposals += (NormalizedProposal.from_record(proposal.canonical_record()),)
+                    self._live_source_bindings += (source,)
+            return proposal
+        finally:
+            self.complete_call(reservation)

@@ -409,11 +409,11 @@ from .openai_transport import (
 )
 from .readonly_adapters import (
     ExternalObservationReceipt, FrozenReadAdapter, GitHubReadAdapter,
-    GitHubReadSelection, GitHubRequestPlan, GitHubTransportUnavailable,
+    GitHubReadSelection, GitHubRequestPlan, GitHubTransportUnavailable, SimulatedGitHubReadAdapter,
     parse_github_response, readonly_interface_manifest, unsupported_session_continuation,
 )
 from .transport_activation import (
-    ActivationController, ActivationError, ActivationStage, OperatorStageAuthorization,
+    ActivationController, ActivationError, ActivationStage, OperatorStageAuthorization, SimulationActivationController,
     SelectedReadAttempt, SelectedReadCapture, SelectedReadCaptureError, StageObservation, ToolProfile,
 )
 
@@ -434,3 +434,5 @@ from .observed_snapshots import (
 __all__ += ["ObservedReadSnapshot", "SnapshotReadAdapter", "verify_observed_snapshot_stage"]
 
 __all__ += ["SelectedReadAttempt", "SelectedReadCapture", "SelectedReadCaptureError"]
+
+__all__ += ["SimulationActivationController", "SimulatedGitHubReadAdapter"]

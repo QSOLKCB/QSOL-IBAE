@@ -14,7 +14,7 @@ dependencies = []
 
 [project.optional-dependencies]
 dev = ["pytest>=8,<9"]
-openai = ["openai==3.29.0"]
+openai = ["openai==3.29.0", "httpx2==2.13.1", "httpcore2==2.13.1"]
 
 [tool.maturin]
 manifest-path = "rust/Cargo.toml"
