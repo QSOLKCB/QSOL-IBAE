@@ -88,6 +88,12 @@ available tool owns a matching cache entry. Cache content is committed by the
 bound runtime-state identity. A permission forbidding reuse does not prohibit
 an otherwise permitted cold read.
 
+Read eligibility follows the actual governed dependency class: mandatory
+capability dependencies rule out PURE_READ, while SNAPSHOT_READ requires a
+mandatory dependency or a resolved record available for proposal selection.
+An initial state without bound progress cannot advertise continuation request
+eligibility; observing exact bound progress is a separate admissible step.
+
 Legal next-action classes describe the bounded supervisor proposal/control
 surface. They do not replace normalized concrete proposal admission, exact
 cache-key matching, progress/strategy receipt validation, or final gate checks.

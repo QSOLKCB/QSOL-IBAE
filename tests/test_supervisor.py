@@ -478,3 +478,80 @@ def test_maximum_registry_and_dense_dag_projection_is_bounded_without_clipping()
     assert len(projection.decision_surface["capabilities"]) == 64
     assert len(projection.decision_surface["epistemic"]) == 256
     assert len(projection.canonical_record()["data"]) == MAX_DATA_ITEMS
+
+
+@pytest.mark.parametrize("authority_class", [ToolAuthorityClass.PURE_READ, ToolAuthorityClass.SNAPSHOT_READ])
+@pytest.mark.parametrize("mandatory", [False, True])
+@pytest.mark.parametrize("resolved", [False, True])
+def test_read_projection_matches_mandatory_dependency_class_and_real_admission(authority_class, mandatory, resolved):
+    from ibae.governance import GovernanceRejected
+    from ibae.orchestration import ActionProposal, ProposalBatch, Strategy, StrategySchema, admit_batch
+
+    capability = Capability("read", ReplaySafety.CACHEABLE_READ, "Read",
+                            required_state_keys=("input",) if mandatory else ())
+    schema = StrategySchema("read.strategy", ())
+    epistemic = EpistemicState((EpistemicRecord("input", EpistemicClass.DERIVED, "value")
+                               if resolved else EpistemicRecord("input", EpistemicClass.UNKNOWN),))
+    orchestration = OrchestrationState.create((Obligation("work", "Work"),), capabilities=(capability,),
+                                              epistemic_state=epistemic, strategy_schemas=(schema,))
+    context, _, _ = _context(state=orchestration,
+        permissions=(ToolPermission("read", authority_class, False, True),))
+    expected = (not mandatory if authority_class is ToolAuthorityClass.PURE_READ else resolved)
+    surface = SupervisorProjection(context).decision_surface
+    assert surface["capabilities"][0]["read_proposal_eligible"] is expected
+    assert ("propose_governed_read" in surface["legal_next_action_classes"]) is expected
+    selected_keys = ("input",) if authority_class is ToolAuthorityClass.SNAPSHOT_READ else ()
+    proposal = ActionProposal("read.proposal", "read", {},
+        target_obligation_ids=orchestration.obligations.ready_ids, required_state_keys=selected_keys)
+    admission = admit_batch(orchestration, ProposalBatch("read.batch", Strategy("read.strategy", {}, schema=schema), (proposal,)))
+    decision = admission.receipt.decisions[0]
+    if expected:
+        governed = GovernanceWrapper(context.governance_policy).admit_tool(
+            context.task, context.governance, decision, proposal, capability, authority_class,
+            dependency_state_id=epistemic.dependency_digest(decision.dependency_state_keys),
+            requester=PrincipalAuthority.DETERMINISTIC_ORCHESTRATOR)
+        assert governed.authority_class is authority_class
+    elif resolved and mandatory and authority_class is ToolAuthorityClass.PURE_READ:
+        with pytest.raises(GovernanceRejected):
+            GovernanceWrapper(context.governance_policy).admit_tool(
+                context.task, context.governance, decision, proposal, capability, authority_class,
+                dependency_state_id=epistemic.dependency_digest(decision.dependency_state_keys),
+                requester=PrincipalAuthority.DETERMINISTIC_ORCHESTRATOR)
+
+    # An unrelated existing cache entry cannot make an impossible dependency
+    # class eligible. This read is ordinary fixture data, not an effect.
+    context.runtime_session.execute_read("fixture", {}, _id("cache"), lambda: {"value": 1})
+    rebound = observe_continuation_context(context.continuation_state,
+        runtime_session=context.runtime_session, policy=context.continuation_policy,
+        orchestration_state=orchestration, runtime_snapshot=context.runtime_session.snapshot)
+    cached = SupervisorProjection(replace(context, continuation_state=rebound)).decision_surface
+    assert cached["capabilities"][0]["cache_reuse_proposal_eligible"] is expected
+
+
+def test_snapshot_without_any_selectable_dependency_is_not_advertised():
+    context, _, _ = _context(permissions=(ToolPermission("read", ToolAuthorityClass.SNAPSHOT_READ, False, True),))
+    capability = SupervisorProjection(context).decision_surface["capabilities"][0]
+    assert not capability["runtime_supported"]
+    assert not capability["read_proposal_eligible"]
+    assert not capability["cache_reuse_proposal_eligible"]
+
+
+def test_request_eligibility_requires_current_bound_progress_observation():
+    context, _, _ = _context()
+    assert context.continuation_state.last_progress_id is None
+    surface = SupervisorProjection(context).decision_surface
+    assert surface["continuation"]["request_eligible"] is False
+    assert surface["continuation"]["progress_lease_eligible"] is False
+    assert "observe_bound_progress" in surface["legal_next_action_classes"]
+    with pytest.raises((TypeError, ValueError)):
+        _request(context, None)
+    progress = evaluate_progress(task_id=context.task.task_id, governance_id=context.governance.governance_id,
+        contract=default_obligation_progress_contract(), prior_state=context.orchestration_state,
+        current_state=context.orchestration_state)
+    state = observe_continuation_context(context.continuation_state,
+        runtime_session=context.runtime_session, policy=context.continuation_policy,
+        orchestration_state=context.orchestration_state, runtime_snapshot=context.runtime_session.snapshot,
+        progress=progress)
+    rebound = replace(context, continuation_state=state)
+    assert SupervisorProjection(rebound).decision_surface["continuation"]["request_eligible"] is True
+    assert _request(rebound, progress).progress_id == progress.progress_id

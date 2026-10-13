@@ -334,9 +334,18 @@ def _projection_record(context: SupervisorContext, data: tuple[SupervisorData, .
     for capability in orchestration.capabilities:
         permission = context.governance_policy.permission_for(capability.name)
         unresolved = orchestration.epistemic_state.unresolved_keys(capability.required_state_keys)
-        supported = capability.replay_safety is ReplaySafety.CACHEABLE_READ and permission is not None and permission.authority_class in {
-            ToolAuthorityClass.PURE_READ, ToolAuthorityClass.SNAPSHOT_READ,
-        }
+        # ToolAdmissionReceipt classifies the union of mandatory capability
+        # dependencies and proposal-selected dependencies. A pure read cannot
+        # discard mandatory keys; a snapshot proposal must have at least one
+        # resolved dependency available to select when none are mandatory.
+        dependency_class_possible = permission is not None and (
+            (permission.authority_class is ToolAuthorityClass.PURE_READ
+             and not capability.required_state_keys)
+            or (permission.authority_class is ToolAuthorityClass.SNAPSHOT_READ
+                and (bool(capability.required_state_keys)
+                     or any(record.is_resolved for record in orchestration.epistemic_state.records)))
+        )
+        supported = capability.replay_safety is ReplaySafety.CACHEABLE_READ and dependency_class_possible
         capabilities.append({
             "capability_id": capability.capability_id, "name": capability.name,
             "available": capability.available, "replay_safety": capability.replay_safety.value,
@@ -354,6 +363,7 @@ def _projection_record(context: SupervisorContext, data: tuple[SupervisorData, .
                 and supported and permission.allow_cache_reuse and budgets["requests_remaining"] > 0 and snapshot.cache),
         })
     request_eligible = bool(active and not governance_blocked and not state.has_pending_grant
+        and state.last_progress_id is not None
         and state.progress_state is not ProgressState.COMPLETE and continuation["leases_remaining"] > 0)
     lease_eligible = bool(request_eligible and cycle is None
         and state.last_progress_classification is ProgressClassification.MEASURABLE_PROGRESS
