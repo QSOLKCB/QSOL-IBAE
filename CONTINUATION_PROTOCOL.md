@@ -604,3 +604,14 @@ validates that receipt before evaluator invocation. Live snapshot and committed
 runtime endpoints must be actual exact strings, not merely canonically equal
 serialized text. Lease-index mismatch is a stale-context denial for projection
 purposes. These checks retain all existing fixture identities.
+
+Bound orchestration validation uses each registered record's declared field
+schema, including exact boolean-versus-integer distinctions, enums, optional
+variants, tuple element types and schema-derived collection ceilings. It then
+reconstructs isolated records through their existing semantic constructors and
+requires equality to the stored records. This rechecks numeric/text/identity
+limits, canonical order, uniqueness, DAGs, provenance, dependency consistency
+and cross-record bounds without normalizing live state. Canonical JSON payloads
+remain data inside exact validated CanonicalValue records. The graph traversal
+ceiling derives from all admitted schema maxima and accepts the full 256-record
+all-predecessor epistemic DAG.

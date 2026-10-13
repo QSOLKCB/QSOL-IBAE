@@ -4914,3 +4914,102 @@ def test_review_maximum_epistemic_dag_remains_admitted_for_strategy_validation()
     )
     assert receipt.status is StrategyChangeStatus.ADMITTED
     receipt._validate_bound_material()
+
+
+def _defensive_complete_orchestration_state():
+    from ibae.epistemic import EpistemicRecord, EpistemicState, ObservationProvenance
+    from ibae.orchestration import OccurrenceOwnership
+
+    base, _, _ = _strategy_state()
+    observed = EpistemicRecord(
+        'fact.observed', EpistemicClass.OBSERVED, 1,
+        provenance=ObservationProvenance('read', _id('source'), _id('dependency')),
+    )
+    derived = EpistemicRecord(
+        'fact.derived', EpistemicClass.DERIVED, 2, dependencies=('fact.observed',),
+    )
+    return replace(
+        base, limits=replace(base.limits),
+        epistemic_state=EpistemicState((observed, derived)),
+        occurrence_owners=(OccurrenceOwnership('occurrence', _id('action'), _id('proposal')),),
+    )
+
+
+def _defensive_nested_records(state):
+    observed = next(item for item in state.epistemic_state.records if item.key == 'fact.observed')
+    return {
+        'state': state,
+        'limits': state.limits,
+        'registry': state.obligations,
+        'obligation': state.obligations.obligations[0],
+        'epistemic': state.epistemic_state,
+        'record': observed,
+        'provenance': observed.provenance,
+        'canonical': observed._value,
+        'capability': state.capabilities[0],
+        'occurrence': state.occurrence_owners[0],
+        'schema': state.strategy_schemas[0],
+        'parameter': state.strategy_schemas[0].parameter_specs[0],
+    }
+
+
+@pytest.mark.parametrize('record_name,field_name,value', [
+    ('state', 'logical_tick', True), ('state', 'logical_tick', -1),
+    ('state', 'logical_tick', 1 << 257),
+    ('state', 'history', (1,)), ('state', 'capabilities', (1,)),
+    ('limits', 'max_capabilities', True), ('limits', 'max_capabilities', 65),
+    ('registry', 'max_obligations', True), ('registry', 'max_obligations', 0),
+    ('obligation', 'key', 1), ('obligation', 'status', 'unsatisfied'),
+    ('obligation', 'dependency_ids', (1,)), ('obligation', 'block_reason', 1),
+    ('epistemic', 'max_records', True), ('epistemic', 'max_records', 257),
+    ('record', 'key', False), ('record', 'epistemic_class', 'observed'),
+    ('record', 'provenance', False), ('record', '_value', None),
+    ('record', 'dependencies', ('unknown.fact',)),
+    ('provenance', 'reused', 1), ('provenance', 'source_identity', 'invalid'),
+    ('canonical', 'text', 1), ('canonical', 'text', 'not JSON'),
+    ('capability', 'available', 1), ('capability', 'available', 'yes'),
+    ('capability', 'contract_version', True), ('capability', 'contract_version', 0),
+    ('capability', 'replay_safety', 'cacheable_read'),
+    ('capability', 'semantic_argument_keys', (1,)),
+    ('capability', 'replay_evidence_id', _id('unexpected-proof')),
+    ('occurrence', 'occurrence_key', 1), ('occurrence', 'action_id', 'invalid'),
+    ('schema', 'contract_version', True), ('schema', 'contract_version', 0),
+    ('schema', 'parameter_specs', (1,)),
+    ('parameter', 'required', 1), ('parameter', 'minimum', True),
+    ('parameter', 'value_kind', 'symbol'), ('parameter', 'allowed_symbols', (1,)),
+    ('parameter', 'allowed_symbols', ()),
+])
+def test_review_declared_orchestration_field_schemas(record_name, field_name, value):
+    from ibae.continuation import _validate_orchestration_authority
+
+    state = _defensive_complete_orchestration_state()
+    target = _defensive_nested_records(state)[record_name]
+    object.__setattr__(target, field_name, value)
+    with pytest.raises((TypeError, ValueError)):
+        _validate_orchestration_authority(state)
+    assert getattr(target, field_name) is value
+
+
+def test_review_all_declared_orchestration_record_fields_reject_untyped_values():
+    from ibae.continuation import _orchestration_authority_layouts, _validate_orchestration_authority
+
+    layouts = _orchestration_authority_layouts()
+    for record_name, original in _defensive_nested_records(_defensive_complete_orchestration_state()).items():
+        fields = next(fields for kind, fields in layouts if type(original) is kind)
+        for field_name, _ in fields:
+            state = _defensive_complete_orchestration_state()
+            record = _defensive_nested_records(state)[record_name]
+            object.__setattr__(record, field_name, object())
+            with pytest.raises((TypeError, ValueError)):
+                _validate_orchestration_authority(state)
+
+
+def test_review_semantic_validation_preserves_complete_valid_state():
+    from ibae.continuation import _validate_orchestration_authority
+
+    state = _defensive_complete_orchestration_state()
+    before = state.canonical_record()
+    records = _defensive_nested_records(state)
+    _validate_orchestration_authority(state)
+    assert state.canonical_record() == before
+    assert all(_defensive_nested_records(state)[name] is item for name, item in records.items())

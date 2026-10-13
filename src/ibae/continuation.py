@@ -1430,49 +1430,106 @@ def _exact_text_tuple(name: str, value: Any, limit: int) -> None:
             raise TypeError(f"{name} entries must remain exact strings")
 
 
-def _validate_orchestration_authority(state: OrchestrationState) -> None:
-    """Check a bounded closed record graph before deriving strategy facts.
-
-    No value method, iterator, equality, or serialization runs until that
-    value's exact built-in or registered record type has been admitted.
-    """
-    layouts = (
-        (OrchestrationState, ("obligations", "epistemic_state", "capabilities", "limits", "logical_tick", "history", "occurrence_owners", "strategy_schemas")),
-        (OrchestrationLimits, ("max_obligations", "max_epistemic_records", "max_capabilities", "max_batch_proposals", "max_history", "max_occurrence_owners", "max_strategy_schemas")),
-        (ObligationRegistry, ("obligations", "max_obligations")),
-        (Obligation, ("key", "description", "dependency_ids", "status", "block_reason")),
-        (EpistemicState, ("records", "max_records")),
-        (EpistemicRecord, ("key", "epistemic_class", "dependencies", "provenance", "_value")),
-        (ObservationProvenance, ("source", "source_identity", "dependency_identity", "reused")),
-        (CanonicalValue, ("text",)),
-        (Capability, ("name", "replay_safety", "description", "available", "contract_version", "required_state_keys", "semantic_argument_keys", "replay_evidence_id")),
-        (OccurrenceOwnership, ("occurrence_key", "action_id", "proposal_id")),
-        (StrategySchema, ("strategy_key", "parameter_specs", "contract_version")),
-        (StrategyParameterSpec, ("name", "value_kind", "required", "minimum", "maximum", "allowed_symbols")),
+def _orchestration_authority_layouts() -> tuple:
+    """Closed declared field schemas; tuple rules include element type and cap."""
+    optional_text = (str, type(None))
+    return (
+        (OrchestrationState, (
+            ("obligations", ObligationRegistry), ("epistemic_state", EpistemicState),
+            ("capabilities", (tuple, Capability, MAX_CAPABILITIES)),
+            ("limits", OrchestrationLimits), ("logical_tick", int),
+            ("history", (tuple, str, MAX_HISTORY_EVENTS)),
+            ("occurrence_owners", (tuple, OccurrenceOwnership, MAX_OCCURRENCE_OWNERS)),
+            ("strategy_schemas", (tuple, StrategySchema, MAX_STRATEGY_SCHEMAS)),
+        )),
+        (OrchestrationLimits, tuple((name, int) for name in (
+            "max_obligations", "max_epistemic_records", "max_capabilities",
+            "max_batch_proposals", "max_history", "max_occurrence_owners", "max_strategy_schemas",
+        ))),
+        (ObligationRegistry, (("obligations", (tuple, Obligation, MAX_OBLIGATIONS)), ("max_obligations", int))),
+        (Obligation, (
+            ("key", str), ("description", str),
+            ("dependency_ids", (tuple, str, MAX_OBLIGATION_DEPENDENCIES)),
+            ("status", ObligationStatus), ("block_reason", optional_text),
+        )),
+        (EpistemicState, (("records", (tuple, EpistemicRecord, MAX_EPISTEMIC_RECORDS)), ("max_records", int))),
+        (EpistemicRecord, (
+            ("key", str), ("epistemic_class", EpistemicClass),
+            ("dependencies", (tuple, str, MAX_EPISTEMIC_DEPENDENCIES)),
+            ("provenance", (ObservationProvenance, type(None))),
+            ("_value", (CanonicalValue, type(None))),
+        )),
+        (ObservationProvenance, (
+            ("source", str), ("source_identity", str), ("dependency_identity", str), ("reused", bool),
+        )),
+        (CanonicalValue, (("text", str),)),
+        (Capability, (
+            ("name", str), ("replay_safety", ReplaySafety), ("description", str),
+            ("available", bool), ("contract_version", int),
+            ("required_state_keys", (tuple, str, MAX_STATE_KEYS_PER_DECLARATION)),
+            ("semantic_argument_keys", (tuple, str, MAX_CAPABILITY_ARGUMENTS)),
+            ("replay_evidence_id", optional_text),
+        )),
+        (OccurrenceOwnership, (("occurrence_key", str), ("action_id", str), ("proposal_id", str))),
+        (StrategySchema, (
+            ("strategy_key", str), ("parameter_specs", (tuple, StrategyParameterSpec, MAX_STRATEGY_PARAMETERS)),
+            ("contract_version", int),
+        )),
+        (StrategyParameterSpec, (
+            ("name", str), ("value_kind", StrategyValueKind), ("required", bool),
+            ("minimum", (int, type(None))), ("maximum", (int, type(None))),
+            ("allowed_symbols", (tuple, str, MAX_STRATEGY_SYMBOL_LIST_ITEMS)),
+        )),
     )
-    if type(state) is not OrchestrationState:
-        raise TypeError("bound orchestration state must remain exact")
-    pending = [(state, 0)]
-    visited = 0
-    while pending:
-        value, depth = pending.pop()
-        visited += 1
-        if visited > MAX_ORCHESTRATION_AUTHORITY_NODES or depth > 32:
-            raise ValueError("bound orchestration graph exceeds authority bounds")
-        kind = type(value)
-        if value is None or kind is str or kind is bool or kind is int:
-            continue
-        if any(kind is admitted for admitted in (ObligationStatus, EpistemicClass, ReplaySafety, StrategyValueKind)):
-            continue
-        if kind is tuple:
-            if len(value) > 4096:
+
+
+def _copy_orchestration_authority(value: Any, expected: Any, layouts: tuple, remaining: list[int]) -> Any:
+    """Validate exact declared shapes, then reconstruct isolated semantic records."""
+    remaining[0] -= 1
+    if remaining[0] < 0:
+        raise ValueError("bound orchestration graph exceeds authority bounds")
+    if type(expected) is tuple:
+        if expected[0] is tuple:
+            if type(value) is not tuple:
+                raise TypeError("bound orchestration fields must retain exact inert types")
+            if len(value) > expected[2]:
                 raise ValueError("bound orchestration tuple exceeds authority bounds")
-            pending.extend((item, depth + 1) for item in value)
-            continue
-        names = next((names for admitted, names in layouts if kind is admitted), None)
-        if names is None:
-            raise TypeError("bound orchestration fields must retain exact inert types")
-        pending.extend((getattr(value, name), depth + 1) for name in names)
+            return tuple(_copy_orchestration_authority(item, expected[1], layouts, remaining) for item in value)
+        expected = next((kind for kind in expected if type(value) is kind), None)
+        if expected is None:
+            raise TypeError("bound orchestration optional field has an invalid declared type")
+    if type(value) is not expected:
+        raise TypeError("bound orchestration fields must retain exact inert types")
+    layout = next((fields for kind, fields in layouts if expected is kind), None)
+    if layout is None:
+        # Only exact scalars/enums admitted by a declared field reach here.
+        return value
+    fields = {
+        name: _copy_orchestration_authority(getattr(value, name), rule, layouts, remaining)
+        for name, rule in layout
+    }
+    if expected is EpistemicRecord:
+        payload = fields.pop("_value")
+        if payload is None:
+            copied = EpistemicRecord(**fields)
+        else:
+            copied = EpistemicRecord(value=payload.to_value(), **fields)
+    else:
+        copied = expected(**fields)
+    # Constructors independently check symbols/fingerprints, numeric limits,
+    # canonical values/order, uniqueness, enum semantics, DAG consistency,
+    # provenance, dependencies and cross-record bounds. Never normalize the
+    # live record: reject if the reconstructed canonical form differs.
+    if copied != value:
+        raise ValueError("bound orchestration record must retain its canonical form")
+    return copied
+
+
+def _validate_orchestration_authority(state: OrchestrationState) -> None:
+    _copy_orchestration_authority(
+        state, OrchestrationState, _orchestration_authority_layouts(),
+        [MAX_ORCHESTRATION_AUTHORITY_NODES],
+    )
 
 
 def _validate_strategy_authority(strategy: Strategy) -> None:
