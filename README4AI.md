@@ -10,7 +10,7 @@ Merged v0.1 deterministic kernel and architecture contract, the accepted
 **v0.2 deterministic Python orchestration reference**, the accepted **v0.3 Rust
 deterministic runtime**, the accepted **v0.4 deterministic governance/compact
 evidence implementation**, and the **v0.5 objective-progress/bounded-
-continuation implementation candidate**.
+continuation implementation**, followed by the current **v0.6A supervisor/recovery candidate**.
 
 v0.2 implements canonical obligations/DAG readiness, proposal/admission separation, replay-safe-only batch deduplication, persistent bounded effect occurrence ownership, explicit independent-versus-declared batch ordering, explicit epistemic state classes with reuse-path- and unadmitted-proposal-neutral correctness identity, admitted typed strategy-specific parameter allowlists, capability-owned semantic argument allowlists with non-correctness observational metadata, bounded model-facing collections/text/integers and canonical payload traversal, canonical state/receipt identities, structured rejection/recovery records, and `IBAE-LOGICAL-CLOCK-V1` reference semantics.
 
@@ -116,6 +116,18 @@ unchanged.
 No OpenAI SDK integration, effect execution, durable cross-process runtime
 reconstruction, GPU execution, distributed runtime, or local-worker
 integration is claimed.
+
+## v0.6A candidate and accepted baseline
+
+PR #7 accepted the defensive v0.5 baseline at `54c5abf01d909555dda999c77bd8ae8c899dd087`.
+Its exact reviewed head was `9c0d8893d3e3ae52fcd79c10fd80df9aeeb85774`;
+review/CI/fixture evidence is retained in https://github.com/QSOLKCB/QSOL-IBAE/pull/7.
+
+The v0.6A candidate adds separately versioned bounded supervisor/recovery
+observations, native one-way authority-epoch revocation and assurance/calibration
+contracts. See `RECOVERY_PROTOCOL.md`. A handoff cannot reconstruct native
+authority; a graph cannot authenticate evidence or replace finalization.
+Synthetic end-to-end wiring, live transport and effects remain later phases.
 
 ## ARCHITECTURAL AUTHORITY
 

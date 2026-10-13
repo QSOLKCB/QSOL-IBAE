@@ -1,6 +1,6 @@
 # QSOL-IBAE Roadmap
 
-Status: v0.4 governance, identity receipts, and Compact Evidence Plane accepted and merged. The current implementation frontier is v0.5 Progress and Bounded Continuation.
+Status: v0.1-v0.5 accepted and integrated. The current implementation frontier is the v0.6A supervisor/recovery contract candidate.
 
 Current accepted main lineage:
 
@@ -9,7 +9,12 @@ Current accepted main lineage:
 - PR #3: v0.2 Deterministic Python Orchestration Reference
 - PR #4: v0.3 Rust Deterministic Runtime
 - PR #5: v0.4 Governance Wrapper, Identity Receipts, and Compact Evidence Plane
-- Current accepted `main` merge commit after PR #5: `849b188fcc826184e3afa2617dd1362b475a4cd3`
+- PR #6: v0.5 Progress and Bounded Continuation, followed by prerequisite defensive corrections in PR #7
+- Current accepted baseline after PR #7: `54c5abf01d909555dda999c77bd8ae8c899dd087`
+- Exact approved corrective head: `9c0d8893d3e3ae52fcd79c10fd80df9aeeb85774`
+- Approval and preserved fixture evidence: https://github.com/QSOLKCB/QSOL-IBAE/pull/7
+
+The v0.6A candidate implements the versioned supervisor/recovery boundary described in `RECOVERY_PROTOCOL.md`. Its own CI/review acceptance is separate; no subsequent phase is accepted by this baseline correction.
 
 QSOL-IBAE is intentionally developed invariant-first. Each authority-bearing phase is blocked on the acceptance gate of the preceding phase. The project is not intended to become a generic multi-provider agent framework. It is an OpenAI-exclusive governed execution substrate whose purpose is to reduce redundant work, make continuation finite and auditable, preserve deterministic execution semantics, minimize unnecessary context and evidence transport, and move deterministic bookkeeping out of the model's cognitive workload.
 

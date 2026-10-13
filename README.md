@@ -6,13 +6,21 @@ An experimental, OpenAI-exclusive execution substrate for deterministic, bounded
 
 > Independent project. Not affiliated with, endorsed by, or maintained by OpenAI.
 
+## Current frontier
+
+The v0.5 defensive baseline is accepted at PR #7 merge
+`54c5abf01d909555dda999c77bd8ae8c899dd087`. The current candidate is v0.6A:
+bounded supervisor projections, fresh-context/recovery records, native authority
+revocation, and machine-readable assurance/calibration contracts.
+See `RECOVERY_PROTOCOL.md`; no live provider or effect is activated.
+
 ## Mission
 
 QSOL-IBAE explores whether strong execution invariants can reduce redundant tool work, detect loops early, preserve useful execution state, and increase the amount of useful work an OpenAI supervisor can complete per model turn.
 
 The v0.x line starts intentionally small. The first objective is not to build another general agent framework. It is to prove a compact execution kernel with measurable behavior.
 
-## v0.5 scope
+## Accepted v0.1-v0.5 scope
 
 The v0.1 kernel provides:
 
@@ -89,7 +97,7 @@ known-admission accounting and continuity, but cannot cover an authorized read
 on their own. Volatile reads and mutations are classified and fail closed by
 governance, but no effect-execution command is invented in this phase.
 
-The v0.5 implementation candidate adds objective progress and finite governed
+The accepted v0.5 implementation adds objective progress and finite governed
 continuation without changing those frozen v0.2-v0.4 records:
 
 - a versioned integer progress-measure contract over canonical obligation state
@@ -237,13 +245,11 @@ External code contributions are not currently accepted without a separate writte
 
 ## Status
 
-Experimental v0.5 pre-release implementation candidate. PR #5 merged the exact
-reviewed v0.4 governance/compact-evidence head, so v0.1-v0.4 are accepted. The
-v0.5 branch adds objective progress, material strategy-change admission,
-precommitted continuation policies, governance grant/deny receipts, exact Rust
-lease application, structural in-process checkpoint/resume, compact
-continuation evidence, and semantic partial finalization. Live OpenAI
-integration, mutation execution, durable cross-process resume, accelerators,
+Experimental pre-release substrate. v0.1-v0.5 are accepted, including the
+PR #7 defensive correction at `54c5abf01d909555dda999c77bd8ae8c899dd087`.
+The current v0.6A candidate adds supervisor and recovery contracts described in
+`RECOVERY_PROTOCOL.md` and `ASSURANCE_PROTOCOL.md`. Every subsequent phase has
+its own exact-head review, CI and conformance gate. Live OpenAI integration,
+mutation execution, durable cross-process native resume, accelerators,
 distributed execution, and local workers remain later gated phases. No
-production, authentication, universal-calibration, or performance claim is
-made.
+production, authentication, universal-calibration, or performance claim is made.

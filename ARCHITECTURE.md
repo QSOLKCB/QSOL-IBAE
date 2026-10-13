@@ -2,7 +2,8 @@
 
 Status: frozen architecture contract with accepted v0.2 Python orchestration,
 accepted v0.3 Rust runtime, accepted v0.4 governance/compact evidence, and a
-v0.5 objective-progress/bounded-continuation implementation candidate.
+accepted v0.5 objective-progress/bounded-continuation implementation and a
+v0.6A supervisor/recovery candidate.
 
 QSOL-IBAE is a small OpenAI-exclusive governed execution substrate, not a general-purpose proprietary multi-provider agent framework.
 
@@ -689,7 +690,7 @@ wrapper may classify effect permissions, but v0.4 does not execute a mutation
 or volatile read. It does not authenticate a producer or call a model. The
 exact v0.2 and v0.3 fixtures remain frozen compatibility evidence.
 
-The v0.5 candidate implements an exact objective-progress contract, structured
+The accepted v0.5 implementation provides an exact objective-progress contract, structured
 material strategy changes, period-1-to-3 cycle-bound recovery, finite
 precommitted continuation policies, a single task/session continuation ledger,
 governance grant/deny receipts, and opt-in exact Rust lease application. The
@@ -712,7 +713,7 @@ decision/progress semantics, the one-shot terminal-ceiling denial marker, and
 the live strategy identity, while each measurable progress identity is
 single-use for progress-based admission. The same one-shot terminal marker and
 normal partial path apply when the request cap is exhausted before every
-scheduled lease is granted. The candidate implements
+scheduled lease is granted. The implementation provides
 endpoint-checked fixed-shape continuation evidence,
 request-and-schedule-aware compact AI recovery state, exact structural
 in-process checkpoint/resume,
@@ -727,5 +728,18 @@ remains unchanged.
 Live OpenAI integration, mutation/effect execution, durable cross-process
 runtime reconstruction, authority authentication, GPU paths, distributed
 execution, and local workers remain **later architecture targets, not current
-implementation claims**. They remain blocked until the exact v0.5 head passes
-CI, determinism, fresh package verification, and fresh review.
+implementation claims**. They remain blocked by the respective v0.6A/B/C/D phase-specific gates.
+The accepted v0.5 baseline is PR #7 merge `54c5abf01d909555dda999c77bd8ae8c899dd087`.
+
+## 15. v0.6A supervisor/recovery candidate
+
+`RECOVERY_PROTOCOL.md` defines the new bounded observation and fresh-context
+contracts; none of their serialized records reconstructs native execution
+state. Native supervisor capability possession remains separate from tool
+availability and from observation data. One-way authority revocation retires
+outstanding request and unapplied-grant seals without creating new budget.
+
+`ASSURANCE_PROTOCOL.md` defines a closed support graph and profile binding.
+Graph integrity is not evidence authenticity, and support is not sufficiency.
+The existing source-bound governance finalizer remains authoritative. Research
+claims and benchmark data cannot silently recalibrate operational policy.

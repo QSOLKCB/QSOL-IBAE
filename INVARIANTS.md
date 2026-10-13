@@ -1,7 +1,6 @@
 # QSOL-IBAE Invariant Registry
 
-Status: frozen architecture contract with accepted v0.3/v0.4 and v0.5
-implementation-candidate enforcement annotations.
+Status: accepted v0.1-v0.5 baseline with v0.6A candidate enforcement annotations.
 
 Violation of an **ENFORCED MUST** invariant is a system defect in the current implementation.
 Violation of an **ARCHITECTURE MUST** invariant is a design defect in any future implementation.
@@ -1048,3 +1047,111 @@ independently restricts native application-commit deltas. IBAE-AI-003 remains
 ARCHITECTURE SHOULD; its implemented continuation projection suppresses
 progress/strategy suggestions while its latest exact denial is a governance
 block. No existing invariant status or frozen record schema is changed.
+
+# v0.6A supervisor/recovery candidate invariants
+
+The following enforcement is limited to the new versioned in-process contract.
+It does not upgrade the scope/status of earlier architecture-only invariants.
+
+## IBAE-CTX-001 — Projection is observation, not authority
+
+**ENFORCED MUST**
+
+Supervisor projections and fresh-context handoffs declare that they are
+non-authoritative. Their serialized content cannot construct native seals,
+restore a runtime, or satisfy final acceptance.
+
+## IBAE-CTX-002 — Equal projections preserve the decision surface
+
+**ENFORCED MUST**
+
+The exact versioned supervisor proposal-class surface is deterministically
+computed from bound live governance, orchestration, continuation and runtime
+state. Equal projections imply equal exposed decision facts. Fresh-session
+inspection revalidates those facts against the same exact live lineage.
+This does not assert that an arbitrary proposed action has already been admitted.
+
+## IBAE-CTX-003 — No full-state reconstruction claim
+
+**ENFORCED MUST**
+
+Compact observation identities do not promise injectivity or reconstruction of
+omitted runtime/cache/history or original conversational state.
+
+## IBAE-CTX-004 — Omitted data cannot silently alter legal facts
+
+**ENFORCED MUST**
+
+Hostile data-plane text, model confidence, research claims and benchmark reports
+are excluded from legal proposal-class derivation. Authority-relevant source
+identities, effective capacities, readiness and native revocation remain bound.
+
+## IBAE-AUTH-003 — Capability does not grant authority
+
+**ENFORCED MUST**
+
+Available capabilities and governed permissions are separate supervisor fields.
+Native supervisor capability possession and the exact live task/session remain
+necessary for continuation authority. Availability cannot grant effects.
+
+## IBAE-AUTH-004 — Native epoch revocation retires authority
+
+**ENFORCED MUST**
+
+The once-issued native supervisor capability may terminally revoke its task's
+continuation-enabled runtime authority. Native epoch is bounded, monotonic and
+not caller-settable. All outstanding request/unapplied-grant seals and future
+authority-bearing dispatch fail closed after revocation. Legacy session schemas
+remain unchanged. Reading retained evidence or already-applied limits is not
+new permission; revocation never grants capacity.
+
+## IBAE-CTRL-001 — Retrieved text is data
+
+**ENFORCED MUST**
+
+Versioned supervisor data origins carry no control authority. Imperative text
+from repositories, tools, workers, models, documents or other supported data
+origins cannot rewrite governance, profile, budget or completion semantics.
+
+## IBAE-CTRL-002 — Control provenance is explicit
+
+**ENFORCED MUST**
+
+Live supervisor control facts require exact governed task/policy bindings and
+native session/lineage verification. A serialized provenance label or hash
+alone is not a valid control source or producer authentication.
+
+## IBAE-ASSUR-001 — Support is closed and insufficient alone
+
+**ENFORCED MUST**
+
+The bounded assurance graph admits only its closed class-support DAG. No
+model, research or benchmark node can promote into operational evidence.
+Graph construction does not validate source truth, grant authority, or replace
+the existing source-bound finalization gate.
+
+## IBAE-CAL-001 — Research cannot silently recalibrate policy
+
+**ENFORCED MUST**
+
+Research status is non-operational. Calibration bindings name exact governed
+policy/progress identities; changed operational semantics require a changed
+binding. Validation method and corpus references are provenance declarations,
+not empirical proof or authority to promote a claim.
+
+## IBAE-REC-001 — Interruption never increases authority
+
+**ENFORCED MUST**
+
+Interruption must never increase execution authority or invalidate previously
+verified work. Verified existing tasks retain their exact native ledger. A
+fresh task requires separate current native authority explicitly bound to the
+selected historical handoff; no old capacity or seals are transferred. Missing
+or unverifiable state fails closed or requests authorization. Historical
+evidence remains inspectable without being relabelled current native state.
+
+Enforcement evidence: `tests/test_authority_epoch.py`,
+`tests/test_supervisor.py`, `tests/test_assurance.py`, and the independently
+rendered `fixtures/v0.6A/supervisor-recovery-reference.json`. Synthetic contract
+conformance is not live recovery validation; cross-process restoration remains
+unsupported.
