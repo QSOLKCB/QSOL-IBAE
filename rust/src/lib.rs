@@ -6,6 +6,8 @@
 //! leaking implementation helpers across the Python/Rust boundary. It has no
 //! network, model-provider, async-runtime, or wall-clock integration.
 
+mod effects;
+
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::sync::GILOnceCell;
@@ -1369,6 +1371,7 @@ struct ContinuationAuthorityBinding {
     committer_integrity: Arc<PythonFunctionIntegrity>,
     live_lineage: Mutex<LiveContinuationLineageState>,
     authority_epoch: Mutex<AuthorityEpochState>,
+    effect_session_attached: Mutex<bool>,
 }
 
 /// Exact, bounded and terminal native revocation state. There is no public
@@ -5572,6 +5575,7 @@ impl NativeRuntimeSession {
                     committer_integrity: Arc::clone(&engine.committer_integrity),
                     live_lineage: Mutex::new(LiveContinuationLineageState::Uninitialized),
                     authority_epoch: Mutex::new(AuthorityEpochState::default()),
+                    effect_session_attached: Mutex::new(false),
                 }))
             }
         };
@@ -5581,6 +5585,17 @@ impl NativeRuntimeSession {
             supervisor_authority_issued: false,
             initial_state_authority_issued: false,
         })
+    }
+
+    #[pyo3(signature = (authority, canonical_spec, enabled=false))]
+    fn create_effect_session(
+        &self,
+        py: Python<'_>,
+        authority: PyRef<'_, NativeContinuationSupervisorAuthority>,
+        canonical_spec: &str,
+        enabled: bool,
+    ) -> PyResult<Py<effects::NativeEffectSession>> {
+        effects::create(self, py, authority, canonical_spec, enabled)
     }
 
     #[pyo3(signature = (state, orchestration_state, progress=None, strategy=None))]
@@ -6215,6 +6230,7 @@ fn _register_continuation_engine(
 
 #[pymodule]
 fn _runtime(module: &Bound<'_, PyModule>) -> PyResult<()> {
+    effects::register(module)?;
     module.add_class::<NativeRuntimeSession>()?;
     module.add_class::<NativeRuntimeReceiptSeal>()?;
     module.add_class::<NativeLeaseGrantSeal>()?;

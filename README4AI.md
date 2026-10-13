@@ -11,7 +11,7 @@ Merged v0.1 deterministic kernel and architecture contract, the accepted
 deterministic runtime**, the accepted **v0.4 deterministic governance/compact
 evidence implementation**, and the **v0.5 objective-progress/bounded-
 continuation implementation**, followed by accepted **v0.6A supervisor/recovery contracts** and the current
-accepted **v0.6B offline synthetic conformance** and current **v0.6C official OpenAI/read-only transport candidate**.
+accepted **v0.6B offline synthetic conformance** and **v0.6C official OpenAI/read-only transport implementation**. Current frontier: **v0.6D synthetic/default-disabled governed effects candidate**. C live verification remains BLOCKED.
 
 PR #8 merged exact reviewed head `6affcd765632a999d868c5efc15f91e15a0c7f52`
 at `735be520825aed8fe383bcf4092a26dd3ee15aa1`. Authenticated exact-head
@@ -369,3 +369,14 @@ current remote freshness. Capture candidates in model context require full typed
 host admission before any GET. Failed capture admissions retain their next-state
 binding and spent capacity across rollback. Genuine live verification is BLOCKED.
 See `OPENAI_TRANSPORT_PROTOCOL.md` for activation, rollback and limitations.
+
+## v0.6D SYNTHETIC EFFECT CANDIDATE
+
+`EFFECT_PROTOCOL.md` defines the separate native effect family. Commit the full
+profile before original task admission, then attach once using the matching
+native supervisor capability. Explicit enabled configuration authorizes only
+closed synthetic set/increment operations. Every dispatch still requires an
+exact one-shot native approval. Fixed independent counters and occurrence
+journals govern retry/reconciliation; existing continuation leases cannot
+replenish them. Diagnostic manifest completion is not global task acceptance.
+No live effect executor or durable native-authority reconstruction is provided.

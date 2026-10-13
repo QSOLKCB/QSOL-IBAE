@@ -1342,6 +1342,19 @@ class RustRuntimeSession:
         authority = session.__native.take_continuation_request_authority()
         return session, authority
 
+    def _create_effect_session(
+        self, supervisor_authority: Any, canonical_spec: str, *, enabled: bool = False
+    ) -> Any:
+        """Attach the separate, default-disabled native synthetic effect ledger."""
+
+        if type(self) is not RustRuntimeSession:
+            raise TypeError("effects require exact RustRuntimeSession")
+        if type(canonical_spec) is not str or type(enabled) is not bool:
+            raise TypeError("effect specification and enable flag must be exact types")
+        return self.__native.create_effect_session(
+            supervisor_authority, canonical_spec, enabled
+        )
+
     def _seal_initial_continuation_state(
         self,
         state: Any,

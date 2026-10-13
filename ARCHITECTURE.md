@@ -759,7 +759,7 @@ Any multi-segment summary identifies the exact scope of its real manifest-bound
 final/partial receipts. It is not a replacement global finalizer or a native
 authority reconstruction. Live operations remain deferred.
 
-## 17. v0.6C official transport candidate
+## 17. Accepted v0.6C transport implementation
 
 `OPENAI_TRANSPORT_PROTOCOL.md` adds a default-disabled official Responses
 transport and fixed-route selected read-only observations above the unchanged
@@ -783,3 +783,13 @@ cannot establish a live gate. A permanently separate simulation controller uses
 only inert adapters and retains simulation-only observations; production SDK and
 HTTPS paths reject it before credential resolution or dispatch. This separation
 allows offline end-to-end stage testing without granting live deployment authority.
+
+## 18. v0.6D synthetic effect candidate
+
+`EFFECT_PROTOCOL.md` defines a separate closed native effect family. Original
+task/profile commitment and one-shot native attachment prevent late authority
+expansion. Exact native approvals bind ordered occurrences and the independent
+finite D state; shared revocation terminates execution. Set/increment operations
+use checked scalar preconditions and an occurrence journal for lost-acknowledgement
+reconciliation. No legacy read command, continuation resource vector or finalizer
+acquires effect authority. No external effect backend is implemented.

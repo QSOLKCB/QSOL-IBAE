@@ -81,3 +81,9 @@ jobs:
           PYTHONHASHSEED=8675309 python tools/render_v0_6c_fixture.py > /tmp/transport-b.json
           cmp /tmp/transport-a.json /tmp/transport-b.json
           cmp fixtures/v0.6C/openai-readonly-reference.json /tmp/transport-a.json
+
+      - name: Replay v0.6D native synthetic effects across hash seeds
+        run: |
+          PYTHONHASHSEED=1 python tools/render_v0_6d_fixture.py --input fixtures/v0.6D/effect-inputs.json --verify fixtures/v0.6D/governed-effects-reference.json > /tmp/effects-a.json
+          PYTHONHASHSEED=8675309 python tools/render_v0_6d_fixture.py --input fixtures/v0.6D/effect-inputs.json --verify fixtures/v0.6D/governed-effects-reference.json > /tmp/effects-b.json
+          cmp /tmp/effects-a.json /tmp/effects-b.json

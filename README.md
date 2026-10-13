@@ -13,10 +13,19 @@ merge `4a6e75d703e85e21a549c39c4509d15ac564d1e3`, following v0.6A and
 the defensive v0.5 correction. Eight normalized control streams and 48 recovery
 scenarios exercise real governance, native accounting and bounded evidence.
 
-The current v0.6C candidate adds an optional official OpenAI Responses transport,
+The accepted v0.6C implementation adds an optional official OpenAI Responses transport,
 opaque credentials, staged activation and selected read-only observation
 adapters. Live stages are disabled by default and not verified by offline tests.
-See `OPENAI_TRANSPORT_PROTOCOL.md`; no live effect is activated.
+PR #10 integrated exact approved head `e549d363387801aff385f1c2b7b2fef488c4925f`
+at merge `88e3de74a7c8ee10be81c669aaaa8b6bebd933ff`. Live verification remains
+BLOCKED without operator credentials and genuine stage evidence. See
+`OPENAI_TRANSPORT_PROTOCOL.md`; the TLS provenance boundary assumes a trusted host
+and is not remote attestation.
+
+The current v0.6D candidate introduces a separate, default-disabled native
+synthetic effect profile. Original-task commitments, exact approvals, finite
+limits and occurrence journals govern closed in-memory effects and recovery.
+See `EFFECT_PROTOCOL.md`. No live effect executor is provided.
 
 ## Mission
 
