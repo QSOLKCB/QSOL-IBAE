@@ -2,8 +2,8 @@
 
 Status: frozen architecture contract with accepted v0.2 Python orchestration,
 accepted v0.3 Rust runtime, accepted v0.4 governance/compact evidence, and a
-accepted v0.5 objective-progress/bounded-continuation implementation and a
-v0.6A supervisor/recovery candidate.
+accepted v0.5 objective-progress/bounded-continuation implementation, accepted
+v0.6A supervisor/recovery contracts, and a v0.6B synthetic conformance candidate.
 
 QSOL-IBAE is a small OpenAI-exclusive governed execution substrate, not a general-purpose proprietary multi-provider agent framework.
 
@@ -731,7 +731,7 @@ execution, and local workers remain **later architecture targets, not current
 implementation claims**. They remain blocked by the respective v0.6A/B/C/D phase-specific gates.
 The accepted v0.5 baseline is PR #7 merge `54c5abf01d909555dda999c77bd8ae8c899dd087`.
 
-## 15. v0.6A supervisor/recovery candidate
+## 15. Accepted v0.6A supervisor/recovery contracts
 
 `RECOVERY_PROTOCOL.md` defines the new bounded observation and fresh-context
 contracts; none of their serialized records reconstructs native execution
@@ -743,3 +743,18 @@ outstanding request and unapplied-grant seals without creating new budget.
 Graph integrity is not evidence authenticity, and support is not sufficiency.
 The existing source-bound governance finalizer remains authoritative. Research
 claims and benchmark data cannot silently recalibrate operational policy.
+
+Accepted v0.6A integration: PR #8 merge `735be520825aed8fe383bcf4092a26dd3ee15aa1`,
+exact approved source `6affcd765632a999d868c5efc15f91e15a0c7f52`.
+
+## 16. v0.6B offline synthetic candidate
+
+`SYNTHETIC_PROTOCOL.md` defines the normalized proposal and closed frozen
+adapter boundary. External data is synthetic; governance, orchestration,
+objective progress, native continuation/accounting and evidence gates remain
+real. Transport success does not supply authority. Golden inputs are replayed
+through fresh native sessions for deterministic evidence comparison.
+
+Any multi-segment summary identifies the exact scope of its real manifest-bound
+final/partial receipts. It is not a replacement global finalizer or a native
+authority reconstruction. Live operations remain deferred.

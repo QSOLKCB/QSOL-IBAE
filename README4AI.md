@@ -10,7 +10,14 @@ Merged v0.1 deterministic kernel and architecture contract, the accepted
 **v0.2 deterministic Python orchestration reference**, the accepted **v0.3 Rust
 deterministic runtime**, the accepted **v0.4 deterministic governance/compact
 evidence implementation**, and the **v0.5 objective-progress/bounded-
-continuation implementation**, followed by the current **v0.6A supervisor/recovery candidate**.
+continuation implementation**, followed by accepted **v0.6A supervisor/recovery contracts** and the current
+**v0.6B offline synthetic end-to-end candidate**.
+
+PR #8 merged exact reviewed head `6affcd765632a999d868c5efc15f91e15a0c7f52`
+at `735be520825aed8fe383bcf4092a26dd3ee15aa1`. Authenticated exact-head
+Codex Code approval, CI/determinism, 803 Python and 39 Rust tests passed.
+Optional Security review was on the initial candidate only, not the final
+head; it was not a mandatory merge gate. Evidence: https://github.com/QSOLKCB/QSOL-IBAE/pull/8.
 
 v0.2 implements canonical obligations/DAG readiness, proposal/admission separation, replay-safe-only batch deduplication, persistent bounded effect occurrence ownership, explicit independent-versus-declared batch ordering, explicit epistemic state classes with reuse-path- and unadmitted-proposal-neutral correctness identity, admitted typed strategy-specific parameter allowlists, capability-owned semantic argument allowlists with non-correctness observational metadata, bounded model-facing collections/text/integers and canonical payload traversal, canonical state/receipt identities, structured rejection/recovery records, and `IBAE-LOGICAL-CLOCK-V1` reference semantics.
 
@@ -117,17 +124,17 @@ No OpenAI SDK integration, effect execution, durable cross-process runtime
 reconstruction, GPU execution, distributed runtime, or local-worker
 integration is claimed.
 
-## v0.6A candidate and accepted baseline
+## Accepted v0.6A and prerequisite baseline
 
 PR #7 accepted the defensive v0.5 baseline at `54c5abf01d909555dda999c77bd8ae8c899dd087`.
 Its exact reviewed head was `9c0d8893d3e3ae52fcd79c10fd80df9aeeb85774`;
 review/CI/fixture evidence is retained in https://github.com/QSOLKCB/QSOL-IBAE/pull/7.
 
-The v0.6A candidate adds separately versioned bounded supervisor/recovery
+Accepted v0.6A adds separately versioned bounded supervisor/recovery
 observations, native one-way authority-epoch revocation and assurance/calibration
 contracts. See `RECOVERY_PROTOCOL.md`. A handoff cannot reconstruct native
 authority; a graph cannot authenticate evidence or replace finalization.
-Synthetic end-to-end wiring, live transport and effects remain later phases.
+Synthetic end-to-end wiring is the current v0.6B candidate; live transport and effects remain later phases.
 
 ## ARCHITECTURAL AUTHORITY
 
@@ -321,3 +328,21 @@ Before modifying architecture or runtime behavior:
 7. document any semantic contract change;
 8. do not implement v0.6 or another later roadmap phase before the exact v0.5
    gate is accepted.
+
+## v0.6B CANDIDATE BOUNDARY
+
+The synthetic adapter layer proposes through `IBAE-NORMALIZED-SUPERVISOR-PROPOSAL-V1`.
+Eight control streams and 48 bounded recovery scenarios exercise actual
+governance/orchestration/native/evidence APIs with frozen external data.
+Golden inputs are independently replayed; outputs are conformance diagnostics,
+not routine model context or serialized native authority. ChatGPT/Work/Codex
+interfaces explicitly report unavailable; their interruption histories are
+frozen recovery observations. No actual secret resolution or effects exist.
+
+Each segment retains exact native compact evidence. Actual final acceptance
+requires a single manifest proving every declared acceptance rule; incomplete
+segments remain partial. Long segmented completion is separately labelled
+objective verification through a replayable compact-proof/partial-receipt chain,
+not global v0.4 acceptance. Adapters receive only detached inert projection
+records; live runtime and lineage witnesses remain inside the trusted runner.
+See `SYNTHETIC_PROTOCOL.md`; all later live/effect gates remain separate.

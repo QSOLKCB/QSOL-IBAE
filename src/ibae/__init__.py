@@ -199,7 +199,24 @@ from .supervisor import (
     fresh_session_surface,
 )
 
+from .synthetic_protocol import (
+    NORMALIZED_PROPOSAL_VERSION, AdapterInterface, AdapterResult, AdapterStatus,
+    FakeCredentialBroker, FakeEffectTool, FakeFilesystem, FakeGitHub, FakeReadTool,
+    FakeReadUniverse, FakeSupervisor, FakeWeb, FakeWorker, NormalizedProposal,
+    ProposalKind, SyntheticReadFixture, synthetic_interface_manifest,
+)
+from .synthetic_runner import (
+    SYNTHETIC_CONTROL_VERSION, SyntheticRunResult, reference_synthetic_transcripts,
+    replay_synthetic_run, run_synthetic_transcript,
+)
+
 __all__ = [
+    "NORMALIZED_PROPOSAL_VERSION", "SYNTHETIC_CONTROL_VERSION",
+    "AdapterInterface", "AdapterResult", "AdapterStatus", "FakeCredentialBroker",
+    "FakeEffectTool", "FakeFilesystem", "FakeGitHub", "FakeReadTool", "FakeReadUniverse",
+    "FakeSupervisor", "FakeWeb", "FakeWorker", "NormalizedProposal", "ProposalKind",
+    "SyntheticReadFixture", "SyntheticRunResult", "reference_synthetic_transcripts",
+    "replay_synthetic_run", "run_synthetic_transcript", "synthetic_interface_manifest",
     "SUPERVISOR_PROJECTION_VERSION",
     "FRESH_CONTEXT_VERSION",
     "RECOVERY_VERSION",

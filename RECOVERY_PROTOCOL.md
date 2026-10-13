@@ -1,6 +1,7 @@
 # Supervisor projection and recovery protocol (v0.6A)
 
-Status: offline implementation candidate. No live model, network transport,
+Status: accepted offline v0.6A implementation, PR #8 merge
+`735be520825aed8fe383bcf4092a26dd3ee15aa1`. No live model, network transport,
 effectful execution, durable native resume, authentication, or final acceptance
 is introduced by this protocol.
 
