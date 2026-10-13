@@ -9,7 +9,7 @@
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::sync::GILOnceCell;
-use pyo3::types::{PyAny, PyBool, PyDict, PyModule, PyTuple, PyType};
+use pyo3::types::{PyAny, PyBool, PyDict, PyModule, PyString, PyTuple, PyType};
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -1256,6 +1256,35 @@ fn validate_context_observation_authority(
     Ok(())
 }
 
+fn validate_application_commit_authority(
+    prior_lineage: &str,
+    committed_lineage: &str,
+    live_runtime_state: &str,
+) -> Result<(), ()> {
+    let prior = parse_runtime_canonical(prior_lineage).map_err(|_| ())?;
+    let committed = parse_runtime_canonical(committed_lineage).map_err(|_| ())?;
+    let mut prior = prior.as_object().ok_or(())?.clone();
+    let mut committed = committed.as_object().ok_or(())?.clone();
+    for name in ["pending_grant_id", "pending_grant_receipt_id"] {
+        if prior
+            .remove(name)
+            .and_then(|v| v.as_str().map(str::to_owned))
+            .is_none()
+            || committed.remove(name) != Some(Value::Null)
+        {
+            return Err(());
+        }
+    }
+    if prior.remove("runtime_state_id").is_none()
+        || committed.remove("runtime_state_id")
+            != Some(Value::String(live_runtime_state.to_owned()))
+        || prior != committed
+    {
+        return Err(());
+    }
+    Ok(())
+}
+
 /// Non-constructible in-process proof that the exact live native session
 /// admitted one exact governance grant for application. It is not producer
 /// authentication, a signature, or durable remote attestation.
@@ -1314,6 +1343,9 @@ struct ContinuationAuthorityBinding {
     orchestration_state_type: Py<PyAny>,
     progress_record_type: Py<PyAny>,
     strategy_materialization_type: Py<PyAny>,
+    cycle_evidence_type: Py<PyAny>,
+    lease_grant_type: Py<PyAny>,
+    strategy_change_type: Py<PyAny>,
     evaluator: Py<PyAny>,
     observer: Py<PyAny>,
     committer: Py<PyAny>,
@@ -1360,6 +1392,9 @@ struct ContinuationEngine {
     orchestration_state_type: Py<PyAny>,
     progress_record_type: Py<PyAny>,
     strategy_materialization_type: Py<PyAny>,
+    cycle_evidence_type: Py<PyAny>,
+    lease_grant_type: Py<PyAny>,
+    strategy_change_type: Py<PyAny>,
     evaluator_integrity: Arc<PythonFunctionIntegrity>,
     observer_integrity: Arc<PythonFunctionIntegrity>,
     committer_integrity: Arc<PythonFunctionIntegrity>,
@@ -2052,6 +2087,31 @@ impl NativeContinuationRequestSeal {
             ));
         }
         self.binding.evaluator_integrity.validate(py)?;
+        if let Some(value) = strategy_change {
+            if !value
+                .get_type()
+                .is(self.binding.strategy_change_type.bind(py))
+            {
+                return Err(PyValueError::new_err(
+                    "strategy change must have the exact trusted type",
+                ));
+            }
+            value.call_method0("_validate_authority_fields")?;
+            value.call_method0("_validate_bound_material")?;
+            self.binding.evaluator_integrity.validate(py)?;
+        }
+        if let Some(value) = cycle_evidence {
+            if !value
+                .get_type()
+                .is(self.binding.cycle_evidence_type.bind(py))
+            {
+                return Err(PyValueError::new_err(
+                    "cycle evidence must have the exact trusted type",
+                ));
+            }
+            value.call_method0("_validate_authority_fields")?;
+            self.binding.evaluator_integrity.validate(py)?;
+        }
         request.call_method0("_validate_authority_fields")?;
         progress.call_method0("_validate_authority_fields")?;
         self.binding.evaluator_integrity.validate(py)?;
@@ -2112,6 +2172,8 @@ impl NativeContinuationRequestSeal {
         // object.__setattr__, and their field operations can execute Python.
         // Validate the entire pinned graph before inspecting the evaluator's
         // output or issuing a native grant seal.
+        self.binding.evaluator_integrity.validate(py)?;
+        lineage.require_current_lineage(py, state)?;
         self.binding.evaluator_integrity.validate(py)?;
         let next_state = raw.getattr("next_state")?;
         let receipt = raw.getattr("receipt")?;
@@ -2279,6 +2341,8 @@ impl NativeContinuationStateSeal {
                     "continuation strategy must have the exact trusted type",
                 ));
             }
+            value.call_method0("_validate_authority_fields")?;
+            self.binding.observer_integrity.validate(py)?;
         }
         {
             let native: PyRef<'_, NativeRuntimeSession> = native_session.extract()?;
@@ -2354,6 +2418,13 @@ impl NativeContinuationStateSeal {
         runtime_snapshot: &Bound<'_, PyAny>,
     ) -> PyResult<Py<PyAny>> {
         self.binding.committer_integrity.validate(py)?;
+        if !grant.get_type().is(self.binding.lease_grant_type.bind(py)) {
+            return Err(PyValueError::new_err(
+                "lease grant must have the exact trusted type",
+            ));
+        }
+        grant.call_method0("_validate_authority_fields")?;
+        self.binding.committer_integrity.validate(py)?;
         self.require_current_lineage(py, state)?;
         self.binding.committer_integrity.validate(py)?;
         {
@@ -2378,10 +2449,36 @@ impl NativeContinuationStateSeal {
                 "continuation committer returned an invalid state type",
             ));
         }
+        if !committed
+            .getattr("runtime_state_id")?
+            .get_type()
+            .is(&py.get_type_bound::<PyString>())
+        {
+            return Err(PyValueError::new_err(
+                "committed runtime endpoint must be an exact string",
+            ));
+        }
         let canonical_lineage: String = committed
             .call_method0("_decision_lineage_text")?
             .extract()?;
         self.binding.committer_integrity.validate(py)?;
+        self.require_current_lineage(py, state)?;
+        self.binding.committer_integrity.validate(py)?;
+        let live_runtime_state = {
+            let native: PyRef<'_, NativeRuntimeSession> = native_session.extract()?;
+            native
+                .core
+                .state_id()
+                .map_err(|_| PyValueError::new_err("invalid live runtime state"))?
+        };
+        validate_application_commit_authority(
+            self.canonical_lineage.as_ref(),
+            &canonical_lineage,
+            &live_runtime_state,
+        )
+        .map_err(|_| {
+            PyValueError::new_err("continuation committer changed non-application authority")
+        })?;
         let canonical_lineage: Arc<str> = Arc::from(canonical_lineage);
         let lineage_seal = Py::new(
             py,
@@ -5277,6 +5374,9 @@ impl NativeRuntimeSession {
                     strategy_materialization_type: engine
                         .strategy_materialization_type
                         .clone_ref(py),
+                    cycle_evidence_type: engine.cycle_evidence_type.clone_ref(py),
+                    lease_grant_type: engine.lease_grant_type.clone_ref(py),
+                    strategy_change_type: engine.strategy_change_type.clone_ref(py),
                     evaluator: engine.evaluator.clone_ref(py),
                     observer: engine.observer.clone_ref(py),
                     committer: engine.committer.clone_ref(py),
@@ -5678,6 +5778,17 @@ impl NativeRuntimeSession {
                 "runtime snapshot must have the exact trusted type",
             ));
         }
+        for name in ["state_id", "session_id"] {
+            if !runtime_snapshot
+                .getattr(name)?
+                .get_type()
+                .is(&py.get_type_bound::<PyString>())
+            {
+                return Err(PyValueError::new_err(
+                    "runtime snapshot endpoints must be exact strings",
+                ));
+            }
+        }
         let supplied: String = runtime_snapshot
             .call_method0("_canonical_text")?
             .extract()?;
@@ -5807,6 +5918,9 @@ fn _register_continuation_engine(
     orchestration_state_type: Py<PyAny>,
     progress_record_type: Py<PyAny>,
     strategy_materialization_type: Py<PyAny>,
+    cycle_evidence_type: Py<PyAny>,
+    lease_grant_type: Py<PyAny>,
+    strategy_change_type: Py<PyAny>,
 ) -> PyResult<()> {
     if !evaluator.bind(py).is_callable()
         || !observer.bind(py).is_callable()
@@ -5817,6 +5931,9 @@ fn _register_continuation_engine(
         || !orchestration_state_type.bind(py).is_callable()
         || !progress_record_type.bind(py).is_callable()
         || !strategy_materialization_type.bind(py).is_callable()
+        || !cycle_evidence_type.bind(py).is_callable()
+        || !lease_grant_type.bind(py).is_callable()
+        || !strategy_change_type.bind(py).is_callable()
     {
         return Err(PyValueError::new_err(
             "continuation engine bindings must be callable",
@@ -5838,6 +5955,9 @@ fn _register_continuation_engine(
                 orchestration_state_type,
                 progress_record_type,
                 strategy_materialization_type,
+                cycle_evidence_type,
+                lease_grant_type,
+                strategy_change_type,
                 evaluator_integrity,
                 observer_integrity,
                 committer_integrity,
@@ -5885,6 +6005,42 @@ mod tests {
             .unwrap(),
         )
         .unwrap()
+    }
+
+    #[test]
+    fn application_commit_allows_only_exact_runtime_and_pending_delta() {
+        let prior = json!({
+            "pending_grant_id": "grant", "pending_grant_receipt_id": "receipt",
+            "runtime_state_id": "old", "last_consumed_progress_id": "progress",
+            "strategy_recoveries": 1, "progress_event_count": 2,
+        });
+        let mut committed = prior.clone();
+        committed["pending_grant_id"] = Value::Null;
+        committed["pending_grant_receipt_id"] = Value::Null;
+        committed["runtime_state_id"] = json!("live");
+        let prior_text = canonical_value(&prior).unwrap();
+        assert!(validate_application_commit_authority(
+            &prior_text,
+            &canonical_value(&committed).unwrap(),
+            "live"
+        )
+        .is_ok());
+        for (field, value) in [
+            ("last_consumed_progress_id", Value::Null),
+            ("strategy_recoveries", json!(0)),
+            ("progress_event_count", json!(0)),
+            ("runtime_state_id", json!("wrong")),
+            ("pending_grant_id", json!("grant")),
+        ] {
+            let mut invalid = committed.clone();
+            invalid[field] = value;
+            assert!(validate_application_commit_authority(
+                &prior_text,
+                &canonical_value(&invalid).unwrap(),
+                "live"
+            )
+            .is_err());
+        }
     }
 
     fn continuation_identity(byte: char) -> String {

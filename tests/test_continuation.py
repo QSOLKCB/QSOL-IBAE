@@ -4620,3 +4620,396 @@ def test_round6_request_cap_exhaustion_binds_a_normal_partial_outcome():
         repeated.next_state.terminal_ceiling_receipt_id
         == terminal.receipt.receipt_id
     )
+
+
+@pytest.mark.parametrize('field_name', [
+    'capability_frontier', 'target_obligation_ids', 'dependency_path',
+    'initial_transition_pattern',
+])
+def test_defensive_strategy_requires_exact_stored_tuple_shapes(field_name):
+    _, material, _ = _strategy_state()
+    object.__setattr__(material, field_name, list(getattr(material, field_name)))
+    with pytest.raises(TypeError, match='exact tuple'):
+        material._validate_authority_fields()
+
+
+def test_defensive_strategy_validates_nested_schema_and_canonical_parameters():
+    _, material, _ = _strategy_state()
+    object.__setattr__(material.strategy.schema, 'parameter_specs', [])
+    with pytest.raises(TypeError, match='exact tuple'):
+        material._validate_authority_fields()
+    _, material, _ = _strategy_state()
+    object.__setattr__(material.strategy._parameters, 'text', 1)
+    with pytest.raises(TypeError, match='exact canonical text'):
+        material._validate_authority_fields()
+
+
+@pytest.mark.parametrize('field_name,value', [
+    ('runtime_session_id', 1), ('runtime_state_id', 1),
+    ('period', True), ('transition_pattern', []),
+    ('transition_pattern', (1,)),
+])
+def test_defensive_cycle_requires_exact_field_shapes(field_name, value):
+    cycle = CycleEvidence(_id('session'), _id('state'), 1, (_id('transition'),))
+    object.__setattr__(cycle, field_name, value)
+    with pytest.raises((TypeError, ValueError)):
+        cycle._validate_authority_fields()
+
+
+@pytest.mark.parametrize('field_name,value', [
+    ('task_id', 1), ('strategy_change_id', 1), ('lease_index', True),
+    ('decision_logical_tick', True), ('granted_resources', {}),
+])
+def test_defensive_grant_requires_exact_field_shapes(field_name, value):
+    policy, _, _, _, binding, runtime, _, _, progress, state = _state_and_progress()
+    _, decision = _request_and_decide(policy, binding, runtime, progress, state)
+    grant = decision.receipt
+    object.__setattr__(grant, field_name, value)
+    with pytest.raises((TypeError, ValueError)):
+        grant._validate_authority_fields()
+
+
+def test_defensive_native_observer_rejects_malformed_strategy_without_state_change():
+    policy, _, _, _, _, runtime, _, current, _, state = _state_and_progress()
+    _, material, _ = _strategy_state()
+    object.__setattr__(material, 'capability_frontier', [])
+    before = state.canonical_record()
+    snapshot = runtime.snapshot.canonical_record()
+    with pytest.raises(TypeError, match='exact tuple'):
+        observe_continuation_context(
+            state, runtime_session=runtime, policy=policy,
+            orchestration_state=current, runtime_snapshot=runtime.snapshot,
+            strategy=material,
+        )
+    assert state.canonical_record() == before
+    assert runtime.snapshot.canonical_record() == snapshot
+    # Rejection does not retire the valid live lineage.
+    observed = observe_continuation_context(
+        state, runtime_session=runtime, policy=policy,
+        orchestration_state=current, runtime_snapshot=runtime.snapshot,
+    )
+    assert observed.progress_event_count == state.progress_event_count
+
+
+def test_defensive_governance_block_suppresses_recovery_until_exact_request_clears():
+    policy, _, _, _, binding, runtime, _, current, progress, state = _state_and_progress('standard')
+    request = ContinuationRequest.from_state(
+        state, progress=progress, requested_resources=policy.lease_schedule[0],
+        requester=PrincipalAuthority.OPENAI_SUPERVISOR, requester_authority=_authority(runtime),
+    )
+    blocked = evaluate_continuation(
+        state, request, runtime_session=runtime, policy=policy,
+        policy_receipt=binding, progress=progress,
+        blocking_governance_violation_id=_id('active-block'),
+    ).next_state
+    projection = blocked.compact_projection(policy)
+    assert projection['legal_recovery_actions'] == []
+    assert projection['material_strategy_change_admissible'] is False
+    observed = observe_continuation_context(
+        blocked, runtime_session=runtime, policy=policy,
+        orchestration_state=current, runtime_snapshot=runtime.snapshot,
+    )
+    assert observed.compact_projection(policy)['legal_recovery_actions'] == []
+    _, cleared = _request_and_decide(policy, binding, runtime, progress, observed)
+    assert cleared.granted
+    assert cleared.next_state.compact_projection(policy)['legal_recovery_actions'] == ['apply_pending_lease']
+
+
+def test_defensive_passive_scalar_and_tuple_subclasses_are_not_authority_data():
+    class Text(str):
+        pass
+
+    class Items(tuple):
+        pass
+
+    _, strategy, _ = _strategy_state()
+    object.__setattr__(strategy, 'capability_frontier', Items(strategy.capability_frontier))
+    with pytest.raises(TypeError, match='exact tuple'):
+        strategy._validate_authority_fields()
+    cycle = CycleEvidence(_id('session'), _id('state'), 1, (_id('transition'),))
+    object.__setattr__(cycle, 'transition_pattern', Items(cycle.transition_pattern))
+    with pytest.raises(TypeError, match='exact tuple'):
+        cycle._validate_authority_fields()
+    policy, _, _, _, binding, runtime, _, _, progress, state = _state_and_progress()
+    _, decision = _request_and_decide(policy, binding, runtime, progress, state)
+    object.__setattr__(decision.receipt, 'task_id', Text(decision.receipt.task_id))
+    with pytest.raises(TypeError, match='exact strings'):
+        decision.receipt._validate_authority_fields()
+
+
+def test_defensive_native_cycle_shape_rejection_preserves_lineage():
+    policy, _, _, _, binding, runtime, _, _, progress, state = _state_and_progress()
+    cycle = CycleEvidence(runtime.snapshot.session_id, runtime.snapshot.state_id, 1, (_id('transition'),))
+    object.__setattr__(cycle, 'transition_pattern', [])
+    with pytest.raises(TypeError, match='exact tuple'):
+        _request_and_decide(policy, binding, runtime, progress, state, cycle_evidence=cycle)
+    _, valid = _request_and_decide(policy, binding, runtime, progress, state)
+    assert valid.granted
+
+
+def test_defensive_native_committer_shape_rejection_preserves_pending_lineage():
+    policy, _, _, _, binding, runtime, _, _, progress, state = _state_and_progress()
+    _, decision = _request_and_decide(policy, binding, runtime, progress, state)
+    grant = decision.receipt
+    application = runtime.apply_lease(grant)
+    task_id = grant.task_id
+    object.__setattr__(grant, 'task_id', 1)
+    with pytest.raises(TypeError, match='exact strings'):
+        commit_lease_application(
+            decision.next_state, runtime_session=runtime, policy=policy,
+            grant=grant, application=application, runtime_snapshot=runtime.snapshot,
+        )
+    object.__setattr__(grant, 'task_id', task_id)
+    committed = commit_lease_application(
+        decision.next_state, runtime_session=runtime, policy=policy,
+        grant=grant, application=application, runtime_snapshot=runtime.snapshot,
+    )
+    assert committed.last_consumed_progress_id == progress.progress_id
+    assert committed.progress_event_count == decision.next_state.progress_event_count
+    assert committed.strategy_recoveries == decision.next_state.strategy_recoveries
+    assert committed.pending_grant_id is None
+
+
+@pytest.mark.parametrize('field_name', ['capability_frontier', 'target_obligation_ids', 'dependency_path'])
+def test_defensive_strategy_rejects_duplicate_stored_members(field_name):
+    _, material, _ = _strategy_state()
+    original = getattr(material, field_name)
+    object.__setattr__(material, field_name, original + original)
+    with pytest.raises(ValueError, match='unique'):
+        material._validate_authority_fields()
+
+
+@pytest.mark.parametrize('retain_block', [False, True])
+def test_defensive_stale_request_cannot_reopen_blocked_recovery(retain_block):
+    policy, _, _, _, binding, runtime, _, _, progress, state = _state_and_progress('standard')
+    request = ContinuationRequest.from_state(
+        state, progress=progress, requested_resources=policy.lease_schedule[0],
+        requester=PrincipalAuthority.OPENAI_SUPERVISOR, requester_authority=_authority(runtime),
+    )
+    blocked = evaluate_continuation(
+        state, request, runtime_session=runtime, policy=policy,
+        policy_receipt=binding, progress=progress,
+        blocking_governance_violation_id=_id('active-block'),
+    ).next_state
+    stale = evaluate_continuation(
+        blocked, request, runtime_session=runtime, policy=policy,
+        policy_receipt=binding, progress=progress,
+        blocking_governance_violation_id=_id('active-block') if retain_block else None,
+    ).next_state
+    assert stale.last_denial_reason is LeaseDenialReason.STALE_CONTINUATION_STATE
+    assert stale.compact_projection(policy)['legal_recovery_actions'] == []
+    assert not stale.compact_projection(policy)['material_strategy_change_admissible']
+
+
+@pytest.mark.parametrize('location', ['schemas', 'capabilities', 'obligations', 'capability_name'])
+def test_review_bound_strategy_orchestration_requires_inert_nested_types(location):
+    class Items(tuple):
+        pass
+
+    class Text(str):
+        pass
+
+    _, _, task, governance, _, _, *_ = _state_and_progress()
+    state, prior, alternate = _strategy_state()
+    receipt = evaluate_strategy_change(
+        task_id=task.task_id, governance_id=governance.governance_id,
+        orchestration_state=state, prior_strategy=prior, proposed_strategy=alternate,
+    )
+    if location == 'schemas':
+        object.__setattr__(state, 'strategy_schemas', Items(state.strategy_schemas))
+    elif location == 'capabilities':
+        object.__setattr__(state, 'capabilities', Items(state.capabilities))
+    elif location == 'obligations':
+        object.__setattr__(state.obligations, 'obligations', Items(state.obligations.obligations))
+    else:
+        item = state.capabilities[0]
+        object.__setattr__(item, 'name', Text(item.name))
+    with pytest.raises(TypeError, match='exact inert types'):
+        receipt._validate_bound_material()
+
+
+def test_review_native_snapshot_rejects_nonexact_endpoint_before_commit():
+    class Text(str):
+        pass
+
+    policy, _, _, _, binding, runtime, _, _, progress, state = _state_and_progress()
+    _, decision = _request_and_decide(policy, binding, runtime, progress, state)
+    application = runtime.apply_lease(decision.receipt)
+    snapshot = runtime.snapshot
+    object.__setattr__(snapshot, 'state_id', Text(snapshot.state_id))
+    with pytest.raises(ValueError, match='endpoints must be exact strings'):
+        commit_lease_application(
+            decision.next_state, runtime_session=runtime, policy=policy,
+            grant=decision.receipt, application=application, runtime_snapshot=snapshot,
+        )
+    committed = commit_lease_application(
+        decision.next_state, runtime_session=runtime, policy=policy,
+        grant=decision.receipt, application=application, runtime_snapshot=runtime.snapshot,
+    )
+    assert type(committed.runtime_state_id) is str
+
+
+def test_review_lease_index_denial_does_not_advertise_strategy_or_progress():
+    policy, _, _, _, binding, runtime, _, _, progress, state = _state_and_progress('standard')
+    request = ContinuationRequest.from_state(
+        state, progress=progress, requested_resources=policy.lease_schedule[0],
+        requester=PrincipalAuthority.OPENAI_SUPERVISOR,
+    )
+    request = replace(request, lease_index=2)._with_request_authority(_authority(runtime))
+    denied = evaluate_continuation(
+        state, request, runtime_session=runtime, policy=policy,
+        policy_receipt=binding, progress=progress,
+    ).next_state
+    assert denied.last_denial_reason is LeaseDenialReason.LEASE_INDEX_MISMATCH
+    assert denied.compact_projection(policy)['legal_recovery_actions'] == []
+    assert not denied.compact_projection(policy)['material_strategy_change_admissible']
+
+
+def test_review_native_request_rejects_unregistered_strategy_record():
+    policy, _, _, _, binding, runtime, _, _, progress, state = _state_and_progress()
+    request = ContinuationRequest.from_state(
+        state, progress=progress, requested_resources=policy.lease_schedule[0],
+        requester=PrincipalAuthority.OPENAI_SUPERVISOR, requester_authority=_authority(runtime),
+    )
+    with pytest.raises(ValueError, match='strategy change must have the exact trusted type'):
+        evaluate_continuation(
+            state, request, runtime_session=runtime, policy=policy,
+            policy_receipt=binding, progress=progress, strategy_change={},
+        )
+    _, valid = _request_and_decide(policy, binding, runtime, progress, state)
+    assert valid.granted
+
+
+def test_review_bound_orchestration_validation_is_bounded_and_nonmutating():
+    from ibae.continuation import _validate_orchestration_authority
+
+    state, _, _ = _strategy_state()
+    before = state.canonical_record()
+    _validate_orchestration_authority(state)
+    assert state.canonical_record() == before
+    object.__setattr__(state, 'history', ((),) * 4097)
+    with pytest.raises(ValueError, match='tuple exceeds authority bounds'):
+        _validate_orchestration_authority(state)
+
+
+def test_review_maximum_epistemic_dag_remains_admitted_for_strategy_validation():
+    from ibae.continuation import _validate_orchestration_authority
+    from ibae.epistemic import EpistemicRecord, EpistemicState, MAX_EPISTEMIC_RECORDS
+
+    records = tuple(
+        EpistemicRecord(
+            f'fact.{index:03}', EpistemicClass.DERIVED, index,
+            dependencies=tuple(f'fact.{prior:03}' for prior in range(index)),
+        )
+        for index in range(MAX_EPISTEMIC_RECORDS)
+    )
+    assert sum(len(record.dependencies) for record in records) == 32640
+    base, prior, alternate = _strategy_state()
+    state = replace(base, epistemic_state=EpistemicState(records))
+    _validate_orchestration_authority(state)
+    _, _, task, governance, _, _, *_ = _state_and_progress()
+    receipt = evaluate_strategy_change(
+        task_id=task.task_id, governance_id=governance.governance_id,
+        orchestration_state=state, prior_strategy=prior, proposed_strategy=alternate,
+    )
+    assert receipt.status is StrategyChangeStatus.ADMITTED
+    receipt._validate_bound_material()
+
+
+def _defensive_complete_orchestration_state():
+    from ibae.epistemic import EpistemicRecord, EpistemicState, ObservationProvenance
+    from ibae.orchestration import OccurrenceOwnership
+
+    base, _, _ = _strategy_state()
+    observed = EpistemicRecord(
+        'fact.observed', EpistemicClass.OBSERVED, 1,
+        provenance=ObservationProvenance('read', _id('source'), _id('dependency')),
+    )
+    derived = EpistemicRecord(
+        'fact.derived', EpistemicClass.DERIVED, 2, dependencies=('fact.observed',),
+    )
+    return replace(
+        base, limits=replace(base.limits),
+        epistemic_state=EpistemicState((observed, derived)),
+        occurrence_owners=(OccurrenceOwnership('occurrence', _id('action'), _id('proposal')),),
+    )
+
+
+def _defensive_nested_records(state):
+    observed = next(item for item in state.epistemic_state.records if item.key == 'fact.observed')
+    return {
+        'state': state,
+        'limits': state.limits,
+        'registry': state.obligations,
+        'obligation': state.obligations.obligations[0],
+        'epistemic': state.epistemic_state,
+        'record': observed,
+        'provenance': observed.provenance,
+        'canonical': observed._value,
+        'capability': state.capabilities[0],
+        'occurrence': state.occurrence_owners[0],
+        'schema': state.strategy_schemas[0],
+        'parameter': state.strategy_schemas[0].parameter_specs[0],
+    }
+
+
+@pytest.mark.parametrize('record_name,field_name,value', [
+    ('state', 'logical_tick', True), ('state', 'logical_tick', -1),
+    ('state', 'logical_tick', 1 << 257),
+    ('state', 'history', (1,)), ('state', 'capabilities', (1,)),
+    ('limits', 'max_capabilities', True), ('limits', 'max_capabilities', 65),
+    ('registry', 'max_obligations', True), ('registry', 'max_obligations', 0),
+    ('obligation', 'key', 1), ('obligation', 'status', 'unsatisfied'),
+    ('obligation', 'dependency_ids', (1,)), ('obligation', 'block_reason', 1),
+    ('epistemic', 'max_records', True), ('epistemic', 'max_records', 257),
+    ('record', 'key', False), ('record', 'epistemic_class', 'observed'),
+    ('record', 'provenance', False), ('record', '_value', None),
+    ('record', 'dependencies', ('unknown.fact',)),
+    ('provenance', 'reused', 1), ('provenance', 'source_identity', 'invalid'),
+    ('canonical', 'text', 1), ('canonical', 'text', 'not JSON'),
+    ('capability', 'available', 1), ('capability', 'available', 'yes'),
+    ('capability', 'contract_version', True), ('capability', 'contract_version', 0),
+    ('capability', 'replay_safety', 'cacheable_read'),
+    ('capability', 'semantic_argument_keys', (1,)),
+    ('capability', 'replay_evidence_id', _id('unexpected-proof')),
+    ('occurrence', 'occurrence_key', 1), ('occurrence', 'action_id', 'invalid'),
+    ('schema', 'contract_version', True), ('schema', 'contract_version', 0),
+    ('schema', 'parameter_specs', (1,)),
+    ('parameter', 'required', 1), ('parameter', 'minimum', True),
+    ('parameter', 'value_kind', 'symbol'), ('parameter', 'allowed_symbols', (1,)),
+    ('parameter', 'allowed_symbols', ()),
+])
+def test_review_declared_orchestration_field_schemas(record_name, field_name, value):
+    from ibae.continuation import _validate_orchestration_authority
+
+    state = _defensive_complete_orchestration_state()
+    target = _defensive_nested_records(state)[record_name]
+    object.__setattr__(target, field_name, value)
+    with pytest.raises((TypeError, ValueError)):
+        _validate_orchestration_authority(state)
+    assert getattr(target, field_name) is value
+
+
+def test_review_all_declared_orchestration_record_fields_reject_untyped_values():
+    from ibae.continuation import _orchestration_authority_layouts, _validate_orchestration_authority
+
+    layouts = _orchestration_authority_layouts()
+    for record_name, original in _defensive_nested_records(_defensive_complete_orchestration_state()).items():
+        fields = next(fields for kind, fields in layouts if type(original) is kind)
+        for field_name, _ in fields:
+            state = _defensive_complete_orchestration_state()
+            record = _defensive_nested_records(state)[record_name]
+            object.__setattr__(record, field_name, object())
+            with pytest.raises((TypeError, ValueError)):
+                _validate_orchestration_authority(state)
+
+
+def test_review_semantic_validation_preserves_complete_valid_state():
+    from ibae.continuation import _validate_orchestration_authority
+
+    state = _defensive_complete_orchestration_state()
+    before = state.canonical_record()
+    records = _defensive_nested_records(state)
+    _validate_orchestration_authority(state)
+    assert state.canonical_record() == before
+    assert all(_defensive_nested_records(state)[name] is item for name, item in records.items())

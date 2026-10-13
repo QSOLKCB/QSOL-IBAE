@@ -1037,3 +1037,14 @@ Each new implementation PR must state:
 3. which tests prove the affected invariants;
 4. whether any identity-bearing fields changed;
 5. whether any benchmark-only field was accidentally promoted into correctness state.
+
+
+## v0.5 defensive acceptance correction
+
+Additional enforcement of existing IBAE-BND-006, IBAE-PROG-002,
+IBAE-PROG-004, IBAE-RT-003 and IBAE-ID-007 validates nested strategy/cycle/grant
+fields before authority comparisons, rechecks evaluated prior lineage, and
+independently restricts native application-commit deltas. IBAE-AI-003 remains
+ARCHITECTURE SHOULD; its implemented continuation projection suppresses
+progress/strategy suggestions while its latest exact denial is a governance
+block. No existing invariant status or frozen record schema is changed.

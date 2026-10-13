@@ -28,7 +28,10 @@ from ._records import (
     require_text,
 )
 from .canonical import canonical_fingerprint, canonical_json, domain_fingerprint
-from .epistemic import EpistemicClass
+from .epistemic import (
+    EpistemicClass, EpistemicRecord, EpistemicState, ObservationProvenance,
+    MAX_EPISTEMIC_RECORDS, MAX_EPISTEMIC_DEPENDENCIES,
+)
 from .governance import (
     GovernancePolicy,
     GovernanceReceipt,
@@ -36,8 +39,17 @@ from .governance import (
     ToolAdmissionReceipt,
     ToolAuthorityClass,
 )
-from .obligations import ObligationStatus
-from .orchestration import OrchestrationState, Strategy
+from .obligations import (
+    ObligationStatus, Obligation, ObligationRegistry,
+    MAX_OBLIGATIONS, MAX_OBLIGATION_DEPENDENCIES,
+)
+from .orchestration import (
+    OrchestrationState, OrchestrationLimits, Capability, OccurrenceOwnership, ReplaySafety,
+    Strategy, StrategySchema, StrategyParameterSpec,
+    StrategyValueKind, MAX_STRATEGY_PARAMETERS, MAX_STRATEGY_SYMBOL_LIST_ITEMS,
+    MAX_CAPABILITIES, MAX_CAPABILITY_ARGUMENTS, MAX_STATE_KEYS_PER_DECLARATION,
+    MAX_HISTORY_EVENTS, MAX_OCCURRENCE_OWNERS, MAX_STRATEGY_SCHEMAS,
+)
 from .runtime import (
     MAX_RUNTIME_EXECUTIONS,
     MAX_RUNTIME_HISTORY,
@@ -111,6 +123,24 @@ MAX_DEPENDENCY_PATH: Final = 128
 MAX_TRANSITION_PATTERN: Final = 12
 MIN_CYCLE_HISTORY: Final = 6
 MAX_CONTINUATION_EVIDENCE_BYTES: Final = 4_096
+
+# Conservative traversal ceiling from every admitted orchestration collection.
+# Per-record allowances include the record, fixed fields, container nodes and
+# optional provenance/value wrappers; shared scalars are intentionally counted
+# at every occurrence. This is a defensive traversal bound, not a policy budget.
+MAX_ORCHESTRATION_AUTHORITY_NODES: Final = (
+    32  # root, limits, registry wrappers and fixed scalar fields
+    + MAX_OBLIGATIONS * (16 + MAX_OBLIGATION_DEPENDENCIES)
+    + MAX_EPISTEMIC_RECORDS * (32 + MAX_EPISTEMIC_DEPENDENCIES)
+    + MAX_CAPABILITIES * (
+        16 + MAX_STATE_KEYS_PER_DECLARATION + MAX_CAPABILITY_ARGUMENTS
+    )
+    + MAX_HISTORY_EVENTS
+    + MAX_OCCURRENCE_OWNERS * 8
+    + MAX_STRATEGY_SCHEMAS * (
+        8 + MAX_STRATEGY_PARAMETERS * (16 + MAX_STRATEGY_SYMBOL_LIST_ITEMS)
+    )
+)
 
 
 def _u64(name: str, value: Any) -> int:
@@ -1389,6 +1419,165 @@ def evaluate_progress(
     )
 
 
+def _exact_text_tuple(name: str, value: Any, limit: int) -> None:
+    """Validate stored authority data before iteration or comparison."""
+    if type(value) is not tuple:
+        raise TypeError(f"{name} must remain an exact tuple")
+    if len(value) > limit:
+        raise ValueError(f"{name} exceeds its bound")
+    for item in value:
+        if type(item) is not str:
+            raise TypeError(f"{name} entries must remain exact strings")
+
+
+def _orchestration_authority_layouts() -> tuple:
+    """Closed declared field schemas; tuple rules include element type and cap."""
+    optional_text = (str, type(None))
+    return (
+        (OrchestrationState, (
+            ("obligations", ObligationRegistry), ("epistemic_state", EpistemicState),
+            ("capabilities", (tuple, Capability, MAX_CAPABILITIES)),
+            ("limits", OrchestrationLimits), ("logical_tick", int),
+            ("history", (tuple, str, MAX_HISTORY_EVENTS)),
+            ("occurrence_owners", (tuple, OccurrenceOwnership, MAX_OCCURRENCE_OWNERS)),
+            ("strategy_schemas", (tuple, StrategySchema, MAX_STRATEGY_SCHEMAS)),
+        )),
+        (OrchestrationLimits, tuple((name, int) for name in (
+            "max_obligations", "max_epistemic_records", "max_capabilities",
+            "max_batch_proposals", "max_history", "max_occurrence_owners", "max_strategy_schemas",
+        ))),
+        (ObligationRegistry, (("obligations", (tuple, Obligation, MAX_OBLIGATIONS)), ("max_obligations", int))),
+        (Obligation, (
+            ("key", str), ("description", str),
+            ("dependency_ids", (tuple, str, MAX_OBLIGATION_DEPENDENCIES)),
+            ("status", ObligationStatus), ("block_reason", optional_text),
+        )),
+        (EpistemicState, (("records", (tuple, EpistemicRecord, MAX_EPISTEMIC_RECORDS)), ("max_records", int))),
+        (EpistemicRecord, (
+            ("key", str), ("epistemic_class", EpistemicClass),
+            ("dependencies", (tuple, str, MAX_EPISTEMIC_DEPENDENCIES)),
+            ("provenance", (ObservationProvenance, type(None))),
+            ("_value", (CanonicalValue, type(None))),
+        )),
+        (ObservationProvenance, (
+            ("source", str), ("source_identity", str), ("dependency_identity", str), ("reused", bool),
+        )),
+        (CanonicalValue, (("text", str),)),
+        (Capability, (
+            ("name", str), ("replay_safety", ReplaySafety), ("description", str),
+            ("available", bool), ("contract_version", int),
+            ("required_state_keys", (tuple, str, MAX_STATE_KEYS_PER_DECLARATION)),
+            ("semantic_argument_keys", (tuple, str, MAX_CAPABILITY_ARGUMENTS)),
+            ("replay_evidence_id", optional_text),
+        )),
+        (OccurrenceOwnership, (("occurrence_key", str), ("action_id", str), ("proposal_id", str))),
+        (StrategySchema, (
+            ("strategy_key", str), ("parameter_specs", (tuple, StrategyParameterSpec, MAX_STRATEGY_PARAMETERS)),
+            ("contract_version", int),
+        )),
+        (StrategyParameterSpec, (
+            ("name", str), ("value_kind", StrategyValueKind), ("required", bool),
+            ("minimum", (int, type(None))), ("maximum", (int, type(None))),
+            ("allowed_symbols", (tuple, str, MAX_STRATEGY_SYMBOL_LIST_ITEMS)),
+        )),
+    )
+
+
+def _copy_orchestration_authority(value: Any, expected: Any, layouts: tuple, remaining: list[int]) -> Any:
+    """Validate exact declared shapes, then reconstruct isolated semantic records."""
+    remaining[0] -= 1
+    if remaining[0] < 0:
+        raise ValueError("bound orchestration graph exceeds authority bounds")
+    if type(expected) is tuple:
+        if expected[0] is tuple:
+            if type(value) is not tuple:
+                raise TypeError("bound orchestration fields must retain exact inert types")
+            if len(value) > expected[2]:
+                raise ValueError("bound orchestration tuple exceeds authority bounds")
+            return tuple(_copy_orchestration_authority(item, expected[1], layouts, remaining) for item in value)
+        expected = next((kind for kind in expected if type(value) is kind), None)
+        if expected is None:
+            raise TypeError("bound orchestration optional field has an invalid declared type")
+    if type(value) is not expected:
+        raise TypeError("bound orchestration fields must retain exact inert types")
+    layout = next((fields for kind, fields in layouts if expected is kind), None)
+    if layout is None:
+        # Only exact scalars/enums admitted by a declared field reach here.
+        return value
+    fields = {
+        name: _copy_orchestration_authority(getattr(value, name), rule, layouts, remaining)
+        for name, rule in layout
+    }
+    if expected is EpistemicRecord:
+        payload = fields.pop("_value")
+        if payload is None:
+            copied = EpistemicRecord(**fields)
+        else:
+            copied = EpistemicRecord(value=payload.to_value(), **fields)
+    else:
+        copied = expected(**fields)
+    # Constructors independently check symbols/fingerprints, numeric limits,
+    # canonical values/order, uniqueness, enum semantics, DAG consistency,
+    # provenance, dependencies and cross-record bounds. Never normalize the
+    # live record: reject if the reconstructed canonical form differs.
+    if copied != value:
+        raise ValueError("bound orchestration record must retain its canonical form")
+    return copied
+
+
+def _validate_orchestration_authority(state: OrchestrationState) -> None:
+    _copy_orchestration_authority(
+        state, OrchestrationState, _orchestration_authority_layouts(),
+        [MAX_ORCHESTRATION_AUTHORITY_NODES],
+    )
+
+
+def _validate_strategy_authority(strategy: Strategy) -> None:
+    if type(strategy) is not Strategy:
+        raise TypeError("strategy must remain an exact Strategy")
+    if type(strategy.key) is not str or type(strategy.schema) is not StrategySchema:
+        raise TypeError("strategy key/schema must remain exact")
+    schema = strategy.schema
+    if type(schema.strategy_key) is not str or type(schema.contract_version) is not int:
+        raise TypeError("strategy schema fields must remain exact")
+    if type(schema.parameter_specs) is not tuple:
+        raise TypeError("strategy parameter specs must remain an exact tuple")
+    if len(schema.parameter_specs) > MAX_STRATEGY_PARAMETERS:
+        raise ValueError("strategy parameter specs exceed their bound")
+    for spec in schema.parameter_specs:
+        if type(spec) is not StrategyParameterSpec:
+            raise TypeError("strategy parameter spec must remain exact")
+        if type(spec.name) is not str or type(spec.value_kind) is not StrategyValueKind:
+            raise TypeError("strategy parameter name/kind must remain exact")
+        if type(spec.required) is not bool:
+            raise TypeError("strategy parameter required flag must remain exact")
+        for bound in (spec.minimum, spec.maximum):
+            if bound is not None and type(bound) is not int:
+                raise TypeError("strategy parameter bounds must remain exact")
+        _exact_text_tuple("strategy symbols", spec.allowed_symbols, MAX_STRATEGY_SYMBOL_LIST_ITEMS)
+    if type(strategy._parameters) is not CanonicalValue or type(strategy._parameters.text) is not str:
+        raise TypeError("strategy parameters must remain exact canonical text")
+    # Only after the complete structure is inert may semantic validators run.
+    for spec in schema.parameter_specs:
+        expected = StrategyParameterSpec(
+            spec.name, spec.value_kind, spec.required, spec.minimum,
+            spec.maximum, spec.allowed_symbols,
+        )
+        if expected != spec:
+            raise ValueError("strategy parameter spec must retain canonical order")
+    expected_schema = StrategySchema(
+        schema.strategy_key, schema.parameter_specs, schema.contract_version,
+    )
+    if expected_schema != schema:
+        raise ValueError("strategy schema must retain canonical order")
+    CanonicalValue(strategy._parameters.text)
+    require_symbol("strategy key", strategy.key)
+    if schema.strategy_key != strategy.key:
+        raise ValueError("strategy key must match its schema")
+    if schema.normalize_parameters(strategy.parameters) != strategy.parameters:
+        raise ValueError("strategy parameters must retain their admitted form")
+
+
 @dataclass(frozen=True, slots=True)
 class CycleEvidence:
     runtime_session_id: str
@@ -1411,6 +1600,19 @@ class CycleEvidence:
         if len(pattern) != self.period:
             raise ValueError("cycle pattern length must equal its period")
         object.__setattr__(self, "transition_pattern", pattern)
+
+    def _validate_authority_fields(self) -> None:
+        for value in (self.runtime_session_id, self.runtime_state_id):
+            if type(value) is not str:
+                raise TypeError("cycle identities must remain exact strings")
+            require_fingerprint("cycle identity", value)
+        if type(self.period) is not int or self.period not in {1, 2, 3}:
+            raise ValueError("cycle period must remain an exact supported integer")
+        _exact_text_tuple("cycle transition pattern", self.transition_pattern, 3)
+        if len(self.transition_pattern) != self.period:
+            raise ValueError("cycle pattern length must equal its period")
+        for item in self.transition_pattern:
+            require_fingerprint("cycle transition", item)
 
     @classmethod
     def from_snapshot(cls, snapshot: RuntimeSnapshot) -> CycleEvidence | None:
@@ -1435,6 +1637,7 @@ class CycleEvidence:
         return domain_fingerprint(CYCLE_EVIDENCE_ID_DOMAIN, self.canonical_record())
 
     def canonical_record(self) -> dict[str, Any]:
+        self._validate_authority_fields()
         return {
             "period": self.period,
             "protocol_version": CYCLE_EVIDENCE_PROTOCOL_VERSION,
@@ -1519,6 +1722,32 @@ class StrategyMaterialization:
         object.__setattr__(self, "initial_transition_pattern", pattern)
         object.__setattr__(self, "description", description)
 
+    def _validate_authority_fields(self) -> None:
+        _validate_strategy_authority(self.strategy)
+        for name, value, limit in (
+            ("capability frontier", self.capability_frontier, MAX_STRATEGY_FRONTIER),
+            ("target obligations", self.target_obligation_ids, MAX_STRATEGY_TARGETS),
+            ("dependency path", self.dependency_path, MAX_DEPENDENCY_PATH),
+            ("initial pattern", self.initial_transition_pattern, MAX_TRANSITION_PATTERN),
+        ):
+            _exact_text_tuple(name, value, limit)
+        if type(self.recovery_mode) is not str or type(self.description) is not str:
+            raise TypeError("strategy text fields must remain exact strings")
+        require_symbol("strategy recovery mode", self.recovery_mode)
+        require_text("strategy description", self.description)
+        if not self.target_obligation_ids:
+            raise ValueError("recovery strategy requires a target")
+        for items in (self.capability_frontier, self.target_obligation_ids):
+            if tuple(sorted(set(items))) != items:
+                raise ValueError("strategy sets must retain sorted unique form")
+        if len(set(self.dependency_path)) != len(self.dependency_path):
+            raise ValueError("strategy dependency path must remain unique")
+        for item in self.capability_frontier:
+            require_symbol("strategy capability", item)
+        for items in (self.target_obligation_ids, self.dependency_path, self.initial_transition_pattern):
+            for item in items:
+                require_fingerprint("strategy identity", item)
+
     @property
     def strategy_material_id(self) -> str:
         return domain_fingerprint(
@@ -1526,6 +1755,7 @@ class StrategyMaterialization:
         )
 
     def semantic_difference_record(self) -> dict[str, Any]:
+        self._validate_authority_fields()
         return {
             "capability_frontier": list(self.capability_frontier),
             "dependency_path": list(self.dependency_path),
@@ -1655,6 +1885,11 @@ class StrategyChangeReceipt:
             self._cycle_evidence
         ) is not CycleEvidence:
             raise TypeError("strategy receipt requires exact cycle evidence or None")
+        _validate_orchestration_authority(self._orchestration_state)
+        self._prior_strategy._validate_authority_fields()
+        self._proposed_strategy._validate_authority_fields()
+        if self._cycle_evidence is not None:
+            self._cycle_evidence._validate_authority_fields()
         expected_reason = _derive_strategy_change_reason(
             self._orchestration_state,
             self._prior_strategy,
@@ -1730,6 +1965,11 @@ def evaluate_strategy_change(
     if cycle_evidence is not None and type(cycle_evidence) is not CycleEvidence:
         raise TypeError("cycle_evidence must be exact CycleEvidence or None")
 
+    _validate_orchestration_authority(orchestration_state)
+    prior_strategy._validate_authority_fields()
+    proposed_strategy._validate_authority_fields()
+    if cycle_evidence is not None:
+        cycle_evidence._validate_authority_fields()
     reason = _derive_strategy_change_reason(
         orchestration_state, prior_strategy, proposed_strategy, cycle_evidence
     )
@@ -2255,7 +2495,19 @@ class ContinuationState:
             self.current_strategy_material_id is not None
             and self.strategy_recoveries < policy.max_strategy_recoveries
         )
-        if request_decisions_remaining == 0 or schedule_slots_remaining == 0:
+        governance_blocked = (
+            self.last_denial_reason in {
+                LeaseDenialReason.BLOCKING_GOVERNANCE_VIOLATION,
+                LeaseDenialReason.UNAUTHORIZED_REQUESTER,
+                LeaseDenialReason.STALE_CONTINUATION_STATE,
+                LeaseDenialReason.STALE_GOVERNANCE,
+                LeaseDenialReason.STALE_ORCHESTRATION_STATE,
+                LeaseDenialReason.STALE_RUNTIME_STATE,
+                LeaseDenialReason.STALE_PROGRESS,
+                LeaseDenialReason.LEASE_INDEX_MISMATCH,
+            }
+        )
+        if governance_blocked or request_decisions_remaining == 0 or schedule_slots_remaining == 0:
             recovery_actions = []
         elif self.progress_state is ProgressState.STALLED:
             if progress_observations_remaining > 0:
@@ -2294,7 +2546,8 @@ class ContinuationState:
             "leases_used": self.leases_granted,
             "legal_recovery_actions": recovery_actions,
             "material_strategy_change_admissible": (
-                request_decisions_remaining > 0
+                not governance_blocked
+                and request_decisions_remaining > 0
                 and schedule_slots_remaining > 0
                 and not self.has_pending_grant
                 and self.current_strategy_material_id is not None
@@ -2584,6 +2837,7 @@ def _commit_lease_application(
     state._require_policy(policy)
     if type(grant) is not LeaseGrantReceipt:
         raise TypeError("grant must be an exact LeaseGrantReceipt")
+    grant._validate_authority_fields()
     if type(application) is not RuntimeLeaseApplicationReceipt:
         raise TypeError("application must be an exact runtime lease receipt")
     if not isinstance(runtime_snapshot, RuntimeSnapshot):
@@ -2943,7 +3197,36 @@ class LeaseGrantReceipt:
             ):
                 raise ValueError("native lease grant seal does not match its receipt")
 
+    def _validate_authority_fields(self) -> None:
+        for value in (
+            self.task_id, self.governance_id, self.governance_receipt_id,
+            self.continuation_policy_id, self.continuation_policy_receipt_id,
+            self.continuation_request_id, self.prior_continuation_state_id,
+            self.orchestration_state_id, self.runtime_session_id,
+            self.prior_runtime_state_id, self.progress_id,
+        ):
+            if type(value) is not str:
+                raise TypeError("lease grant identities must remain exact strings")
+            require_fingerprint("lease grant identity", value)
+        if self.strategy_change_id is not None:
+            if type(self.strategy_change_id) is not str:
+                raise TypeError("lease strategy identity must remain exact")
+            require_fingerprint("lease strategy identity", self.strategy_change_id)
+        _u64("lease index", self.lease_index)
+        _u64("lease decision logical tick", self.decision_logical_tick)
+        for value in (self.granted_resources, self.cumulative_granted, self.total_ceiling):
+            if type(value) is not BudgetVector:
+                raise TypeError("lease resources must remain exact BudgetVector records")
+            value._validate_authority_fields()
+        if self.lease_index == 0:
+            raise ValueError("lease index must be positive")
+        if self.granted_resources.is_zero or self.granted_resources.mutation_delta != 0:
+            raise ValueError("lease grant must carry nonempty mutation-free resources")
+        if not self.cumulative_granted.is_within(self.total_ceiling):
+            raise ValueError("cumulative lease resources exceed the total ceiling")
+
     def _grant_body(self) -> dict[str, Any]:
+        self._validate_authority_fields()
         return {
             "authority_layer": "governance",
             "continuation_policy_id": self.continuation_policy_id,
@@ -3273,6 +3556,10 @@ def _evaluate_continuation(
     request._validate_authority_fields()
     progress._validate_authority_fields()
     progress._validate_bound_claims()
+    if cycle_evidence is not None:
+        if type(cycle_evidence) is not CycleEvidence:
+            raise TypeError("cycle evidence must be exact")
+        cycle_evidence._validate_authority_fields()
     if strategy_change is not None:
         strategy_change._validate_authority_fields()
         strategy_change._validate_bound_material()
@@ -4313,6 +4600,9 @@ _native_runtime._register_continuation_engine(
     OrchestrationState,
     ProgressRecord,
     StrategyMaterialization,
+    CycleEvidence,
+    LeaseGrantReceipt,
+    StrategyChangeReceipt,
 )
 delattr(_native_runtime, "_register_continuation_engine")
 del _native_runtime
