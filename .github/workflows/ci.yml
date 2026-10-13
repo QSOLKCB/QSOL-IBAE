@@ -56,6 +56,10 @@ jobs:
         run: |
           python tools/render_budget_profile_benchmark.py > /tmp/v0.5-budget-profile-benchmark.json
           cmp fixtures/v0.5/budget-profile-benchmark.json /tmp/v0.5-budget-profile-benchmark.json
+      - name: Verify v0.6A supervisor/recovery conformance fixture
+        run: |
+          python tools/render_v0_6a_fixture.py > /tmp/v0.6a-supervisor-recovery.json
+          cmp fixtures/v0.6A/supervisor-recovery-reference.json /tmp/v0.6a-supervisor-recovery.json
       - run: python benchmarks/basic.py
       - name: Build wheel from fresh source
         run: python -m pip wheel . --no-deps --wheel-dir /tmp/qsol-wheel
@@ -74,12 +78,17 @@ jobs:
               v0_5_reference_fixture,
           )
 
-          assert importlib.metadata.version("qsol-ibae") == "0.5.0a0"
+          assert importlib.metadata.version("qsol-ibae") == "0.6.0a1"
           assert ibae.RUNTIME_PROTOCOL_VERSION == "IBAE-RUNTIME-PROTOCOL-V1"
           assert ibae.GOVERNANCE_PROTOCOL_VERSION == "IBAE-GOVERNANCE-PROTOCOL-V1"
           assert ibae.EVIDENCE_PROTOCOL_VERSION == "IBAE-COMPACT-EVIDENCE-V1"
           assert ibae.CONTINUATION_PROTOCOL_VERSION == "IBAE-CONTINUATION-LEASE-V1"
           assert ibae.PROGRESS_PROTOCOL_VERSION == "IBAE-OBJECTIVE-PROGRESS-V1"
+          from ibae.supervisor_conformance import v0_6a_reference_fixture
+          supervisor_fixture = v0_6a_reference_fixture()
+          assert supervisor_fixture["fresh_session_equivalent"] is True
+          assert supervisor_fixture["rejection_state_neutral"] is True
+          assert supervisor_fixture["live_recovery_verified"] is False
           legacy_fixture = v0_4_reference_fixture()
           assert legacy_fixture["finalization"]["acceptance"]["status"] == "accepted"
           assert legacy_fixture["compact_evidence"]["source_bound"] is True
@@ -94,7 +103,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: v0.5-build-evidence
+          name: v0.6a-build-evidence
           if-no-files-found: warn
           path: |
             rust/Cargo.lock
@@ -104,4 +113,5 @@ jobs:
             /tmp/v0.4-compact-evidence-stress.json
             /tmp/v0.5-progress-continuation.json
             /tmp/v0.5-budget-profile-benchmark.json
+            /tmp/v0.6a-supervisor-recovery.json
             /tmp/qsol-wheel/*.whl

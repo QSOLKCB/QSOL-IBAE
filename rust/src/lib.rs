@@ -21,6 +21,9 @@ const RECEIPT_DOMAIN: &str = "ibae.runtime-receipt-id.v1";
 const SESSION_DOMAIN: &str = "ibae.runtime-session-id.v1";
 const STATE_DOMAIN: &str = "ibae.runtime-state-id.v1";
 
+const AUTHORITY_EPOCH_PROTOCOL_VERSION: &str = "IBAE-AUTHORITY-EPOCH-V1";
+const AUTHORITY_EPOCH_STATUS_ID_DOMAIN: &str = "ibae.authority-epoch-status-id.v1";
+
 const CONTINUATION_PROTOCOL_VERSION: &str = "IBAE-CONTINUATION-LEASE-V1";
 const CONTINUATION_POLICY_RECEIPT_VERSION: &str = "IBAE-CONTINUATION-POLICY-RECEIPT-V1";
 const PROGRESS_PROTOCOL_VERSION: &str = "IBAE-OBJECTIVE-PROGRESS-V1";
@@ -1295,12 +1298,14 @@ struct NativeLeaseGrantSeal {
     prior_runtime_state_id: String,
     runtime_session_id: String,
     continuation_authority: Option<Arc<ContinuationAuthorityBinding>>,
+    authority_epoch: u64,
 }
 
 impl NativeLeaseGrantSeal {
     fn from_grant(
         grant: &LeaseGrant,
         continuation_authority: Option<Arc<ContinuationAuthorityBinding>>,
+        authority_epoch: u64,
     ) -> Self {
         Self {
             canonical_grant: Arc::clone(&grant.canonical_receipt),
@@ -1308,11 +1313,21 @@ impl NativeLeaseGrantSeal {
             prior_runtime_state_id: grant.prior_runtime_state_id.clone(),
             runtime_session_id: grant.runtime_session_id.clone(),
             continuation_authority,
+            authority_epoch,
+        }
+    }
+
+    fn epoch_is_current(&self) -> bool {
+        match &self.continuation_authority {
+            Some(binding) => binding.epoch_is_current(self.authority_epoch),
+            // Pure Rust conformance tests have no Python engine binding.
+            None => cfg!(test),
         }
     }
 
     fn matches(&self, grant: &LeaseGrant, prior_state_id: &str, session_id: &str) -> bool {
-        self.canonical_grant.as_ref() == grant.canonical_receipt.as_ref()
+        self.epoch_is_current()
+            && self.canonical_grant.as_ref() == grant.canonical_receipt.as_ref()
             && self.lease_grant_id == grant.lease_grant_id
             && self.prior_runtime_state_id == prior_state_id
             && self.runtime_session_id == session_id
@@ -1322,7 +1337,7 @@ impl NativeLeaseGrantSeal {
 #[pymethods]
 impl NativeLeaseGrantSeal {
     fn validates(&self, canonical_grant: &str) -> bool {
-        self.canonical_grant.as_ref() == canonical_grant
+        self.epoch_is_current() && self.canonical_grant.as_ref() == canonical_grant
     }
 }
 
@@ -1353,6 +1368,33 @@ struct ContinuationAuthorityBinding {
     observer_integrity: Arc<PythonFunctionIntegrity>,
     committer_integrity: Arc<PythonFunctionIntegrity>,
     live_lineage: Mutex<LiveContinuationLineageState>,
+    authority_epoch: Mutex<AuthorityEpochState>,
+}
+
+/// Exact, bounded and terminal native revocation state. There is no public
+/// setter, epoch advance, regrant or record-to-authority constructor.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct AuthorityEpochState {
+    epoch: u64,
+    revoked: bool,
+}
+
+impl AuthorityEpochState {
+    fn is_current(self, epoch: u64) -> bool {
+        !self.revoked && self.epoch == epoch
+    }
+
+    fn revoke(&mut self) -> Result<(), &'static str> {
+        if !self.revoked {
+            let next = self
+                .epoch
+                .checked_add(1)
+                .ok_or("authority epoch is exhausted")?;
+            self.epoch = next;
+            self.revoked = true;
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone)]
@@ -1374,6 +1416,7 @@ struct ContinuationLineageTransition<'a> {
     binding: &'a ContinuationAuthorityBinding,
     prior: Option<LiveContinuationLineage>,
     next_generation: u64,
+    authority_epoch: u64,
     finished: bool,
 }
 
@@ -1403,7 +1446,64 @@ struct ContinuationEngine {
 static CONTINUATION_ENGINE: GILOnceCell<ContinuationEngine> = GILOnceCell::new();
 
 impl ContinuationAuthorityBinding {
+    fn epoch_state(&self) -> PyResult<AuthorityEpochState> {
+        self.authority_epoch
+            .lock()
+            .map(|state| *state)
+            .map_err(|_| PyValueError::new_err("native authority epoch lock failed"))
+    }
+
+    fn epoch_is_current(&self, epoch: u64) -> bool {
+        self.authority_epoch
+            .lock()
+            .is_ok_and(|state| state.is_current(epoch))
+    }
+
+    fn require_epoch(&self, epoch: u64) -> PyResult<()> {
+        if !self.epoch_state()?.is_current(epoch) {
+            return Err(PyValueError::new_err(
+                "continuation authority is revoked or stale",
+            ));
+        }
+        Ok(())
+    }
+
+    fn active_epoch(&self) -> PyResult<u64> {
+        let state = self.epoch_state()?;
+        self.require_epoch(state.epoch)?;
+        Ok(state.epoch)
+    }
+
+    fn authority_epoch_status(&self) -> PyResult<String> {
+        let state = self.epoch_state()?;
+        let mut status = json!({
+            "authority_epoch": state.epoch,
+            "continuation_policy_id": self.continuation_policy_id,
+            "governance_id": self.governance_id,
+            "protocol_version": AUTHORITY_EPOCH_PROTOCOL_VERSION,
+            "revoked": state.revoked,
+            "runtime_session_id": self.runtime_session_id,
+            "task_id": self.task_id,
+        });
+        let body = canonical_runtime_value(&status)
+            .map_err(|_| PyValueError::new_err("invalid authority epoch status"))?;
+        status["authority_epoch_status_id"] =
+            json!(domain_fingerprint(AUTHORITY_EPOCH_STATUS_ID_DOMAIN, &body));
+        canonical_runtime_value(&status)
+            .map_err(|_| PyValueError::new_err("invalid authority epoch status"))
+    }
+
+    fn revoke_all(&self) -> PyResult<String> {
+        self.authority_epoch
+            .lock()
+            .map_err(|_| PyValueError::new_err("native authority epoch lock failed"))?
+            .revoke()
+            .map_err(PyValueError::new_err)?;
+        self.authority_epoch_status()
+    }
+
     fn begin_initial_lineage(&self) -> PyResult<ContinuationLineageTransition<'_>> {
+        let authority_epoch = self.active_epoch()?;
         let mut live = self
             .live_lineage
             .lock()
@@ -1421,6 +1521,7 @@ impl ContinuationAuthorityBinding {
             binding: self,
             prior: None,
             next_generation: 0,
+            authority_epoch,
             finished: false,
         })
     }
@@ -1430,6 +1531,7 @@ impl ContinuationAuthorityBinding {
         generation: u64,
         canonical: &str,
     ) -> PyResult<ContinuationLineageTransition<'_>> {
+        let authority_epoch = self.active_epoch()?;
         let mut live = self
             .live_lineage
             .lock()
@@ -1462,6 +1564,7 @@ impl ContinuationAuthorityBinding {
             binding: self,
             prior: Some(prior),
             next_generation,
+            authority_epoch,
             finished: false,
         })
     }
@@ -1493,6 +1596,7 @@ impl ContinuationLineageTransition<'_> {
     }
 
     fn commit(mut self, canonical: Arc<str>) -> PyResult<()> {
+        self.binding.require_epoch(self.authority_epoch)?;
         let mut live = self
             .binding
             .live_lineage
@@ -1984,11 +2088,30 @@ struct NativeContinuationSupervisorAuthority {
 
 #[pymethods]
 impl NativeContinuationSupervisorAuthority {
+    #[getter]
+    fn authority_epoch(&self) -> PyResult<u64> {
+        Ok(self.binding.epoch_state()?.epoch)
+    }
+
+    #[getter]
+    fn revoked(&self) -> PyResult<bool> {
+        Ok(self.binding.epoch_state()?.revoked)
+    }
+
+    fn authority_epoch_status(&self) -> PyResult<String> {
+        self.binding.authority_epoch_status()
+    }
+
+    fn revoke_all(&self) -> PyResult<String> {
+        self.binding.revoke_all()
+    }
+
     fn authorize_request(
         &self,
         py: Python<'_>,
         canonical_request: &str,
     ) -> PyResult<Py<NativeContinuationRequestSeal>> {
+        let authority_epoch = self.binding.active_epoch()?;
         let continuation_request_id = self
             .binding
             .authorize_request(canonical_request)
@@ -1999,6 +2122,7 @@ impl NativeContinuationSupervisorAuthority {
                 binding: Arc::clone(&self.binding),
                 canonical_request: Arc::from(canonical_request),
                 continuation_request_id,
+                authority_epoch,
                 evaluator: self.binding.evaluator.clone_ref(py),
                 observer: self.binding.observer.clone_ref(py),
                 committer: self.binding.committer.clone_ref(py),
@@ -2019,6 +2143,7 @@ struct NativeContinuationRequestSeal {
     binding: Arc<ContinuationAuthorityBinding>,
     canonical_request: Arc<str>,
     continuation_request_id: String,
+    authority_epoch: u64,
     evaluator: Py<PyAny>,
     observer: Py<PyAny>,
     committer: Py<PyAny>,
@@ -2027,7 +2152,8 @@ struct NativeContinuationRequestSeal {
 #[pymethods]
 impl NativeContinuationRequestSeal {
     fn validates(&self, canonical_request: &str) -> bool {
-        self.canonical_request.as_ref() == canonical_request
+        self.binding.epoch_is_current(self.authority_epoch)
+            && self.canonical_request.as_ref() == canonical_request
     }
 
     #[pyo3(signature = (
@@ -2059,6 +2185,7 @@ impl NativeContinuationRequestSeal {
         blocking_governance_violation_id: Option<&str>,
         benchmark_observation: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Py<PyAny>> {
+        self.binding.require_epoch(self.authority_epoch)?;
         // Benchmark data is deliberately outside correctness authority.  Do
         // not call into it or expose it to the pinned governance evaluator.
         let _ = benchmark_observation;
@@ -2086,7 +2213,9 @@ impl NativeContinuationRequestSeal {
                 "continuation progress must have the exact trusted type",
             ));
         }
+        self.binding.require_epoch(self.authority_epoch)?;
         self.binding.evaluator_integrity.validate(py)?;
+        self.binding.require_epoch(self.authority_epoch)?;
         if let Some(value) = strategy_change {
             if !value
                 .get_type()
@@ -2098,7 +2227,9 @@ impl NativeContinuationRequestSeal {
             }
             value.call_method0("_validate_authority_fields")?;
             value.call_method0("_validate_bound_material")?;
+            self.binding.require_epoch(self.authority_epoch)?;
             self.binding.evaluator_integrity.validate(py)?;
+            self.binding.require_epoch(self.authority_epoch)?;
         }
         if let Some(value) = cycle_evidence {
             if !value
@@ -2110,13 +2241,19 @@ impl NativeContinuationRequestSeal {
                 ));
             }
             value.call_method0("_validate_authority_fields")?;
+            self.binding.require_epoch(self.authority_epoch)?;
             self.binding.evaluator_integrity.validate(py)?;
+            self.binding.require_epoch(self.authority_epoch)?;
         }
         request.call_method0("_validate_authority_fields")?;
         progress.call_method0("_validate_authority_fields")?;
+        self.binding.require_epoch(self.authority_epoch)?;
         self.binding.evaluator_integrity.validate(py)?;
+        self.binding.require_epoch(self.authority_epoch)?;
         let canonical_request: String = request.call_method0("_canonical_text")?.extract()?;
+        self.binding.require_epoch(self.authority_epoch)?;
         self.binding.evaluator_integrity.validate(py)?;
+        self.binding.require_epoch(self.authority_epoch)?;
         if canonical_request != self.canonical_request.as_ref() {
             return Err(PyValueError::new_err(
                 "continuation request seal does not match request",
@@ -2131,7 +2268,9 @@ impl NativeContinuationRequestSeal {
             }
         }
         let lineage = state.call_method0("_native_lineage_seal")?;
+        self.binding.require_epoch(self.authority_epoch)?;
         self.binding.evaluator_integrity.validate(py)?;
+        self.binding.require_epoch(self.authority_epoch)?;
         if lineage.is_none() {
             return Err(PyValueError::new_err(
                 "continuation state lacks native lineage",
@@ -2144,7 +2283,9 @@ impl NativeContinuationRequestSeal {
             ));
         }
         lineage.require_current_lineage(py, state)?;
+        self.binding.require_epoch(self.authority_epoch)?;
         self.binding.evaluator_integrity.validate(py)?;
+        self.binding.require_epoch(self.authority_epoch)?;
         let transition = self
             .binding
             .begin_lineage_transition(lineage.generation, lineage.canonical_lineage.as_ref())?;
@@ -2172,9 +2313,13 @@ impl NativeContinuationRequestSeal {
         // object.__setattr__, and their field operations can execute Python.
         // Validate the entire pinned graph before inspecting the evaluator's
         // output or issuing a native grant seal.
+        self.binding.require_epoch(self.authority_epoch)?;
         self.binding.evaluator_integrity.validate(py)?;
+        self.binding.require_epoch(self.authority_epoch)?;
         lineage.require_current_lineage(py, state)?;
+        self.binding.require_epoch(self.authority_epoch)?;
         self.binding.evaluator_integrity.validate(py)?;
+        self.binding.require_epoch(self.authority_epoch)?;
         let next_state = raw.getattr("next_state")?;
         let receipt = raw.getattr("receipt")?;
         let granted: bool = raw.getattr("granted")?.extract()?;
@@ -2189,9 +2334,13 @@ impl NativeContinuationRequestSeal {
                 Some(value) => Some(value.call_method0("_canonical_text")?.extract()?),
                 None => None,
             };
+            self.binding.require_epoch(self.authority_epoch)?;
             self.binding.evaluator_integrity.validate(py)?;
+            self.binding.require_epoch(self.authority_epoch)?;
             let canonical_grant: String = receipt.call_method0("_canonical_text")?.extract()?;
+            self.binding.require_epoch(self.authority_epoch)?;
             self.binding.evaluator_integrity.validate(py)?;
+            self.binding.require_epoch(self.authority_epoch)?;
             let native_seal = {
                 let native: PyRef<'_, NativeRuntimeSession> = native_session.extract()?;
                 native.issue_evaluated_lease_grant(
@@ -2200,6 +2349,7 @@ impl NativeContinuationRequestSeal {
                     canonical_strategy_change.as_deref(),
                     &self.binding,
                     &self.continuation_request_id,
+                    self.authority_epoch,
                 )?
             };
             let native_seal = Py::new(py, native_seal)?;
@@ -2218,13 +2368,16 @@ impl NativeContinuationRequestSeal {
         }
         if next_state.is(state) {
             let finalized = raw.call_method1("_finalize", (next_state, sealed_receipt))?;
+            self.binding.require_epoch(self.authority_epoch)?;
             transition.restore()?;
             Ok(finalized.unbind())
         } else {
             let canonical_lineage: String = next_state
                 .call_method0("_decision_lineage_text")?
                 .extract()?;
+            self.binding.require_epoch(self.authority_epoch)?;
             self.binding.evaluator_integrity.validate(py)?;
+            self.binding.require_epoch(self.authority_epoch)?;
             let canonical_lineage: Arc<str> = Arc::from(canonical_lineage);
             let lineage_seal = Py::new(
                 py,
@@ -2308,9 +2461,14 @@ impl NativeContinuationStateSeal {
         progress: Option<&Bound<'_, PyAny>>,
         strategy: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Py<PyAny>> {
+        let authority_epoch = self.binding.active_epoch()?;
+        self.binding.require_epoch(authority_epoch)?;
         self.binding.observer_integrity.validate(py)?;
+        self.binding.require_epoch(authority_epoch)?;
         self.require_current_lineage(py, state)?;
+        self.binding.require_epoch(authority_epoch)?;
         self.binding.observer_integrity.validate(py)?;
+        self.binding.require_epoch(authority_epoch)?;
         if !orchestration_state
             .get_type()
             .is(self.binding.orchestration_state_type.bind(py))
@@ -2330,7 +2488,9 @@ impl NativeContinuationStateSeal {
             }
             value.call_method0("_validate_authority_fields")?;
             value.call_method0("_validate_bound_claims")?;
+            self.binding.require_epoch(authority_epoch)?;
             self.binding.observer_integrity.validate(py)?;
+            self.binding.require_epoch(authority_epoch)?;
         }
         if let Some(value) = strategy {
             if !value
@@ -2342,13 +2502,17 @@ impl NativeContinuationStateSeal {
                 ));
             }
             value.call_method0("_validate_authority_fields")?;
+            self.binding.require_epoch(authority_epoch)?;
             self.binding.observer_integrity.validate(py)?;
+            self.binding.require_epoch(authority_epoch)?;
         }
         {
             let native: PyRef<'_, NativeRuntimeSession> = native_session.extract()?;
             native.require_live_continuation_snapshot(py, runtime_snapshot, &self.binding)?;
         }
+        self.binding.require_epoch(authority_epoch)?;
         self.binding.observer_integrity.validate(py)?;
+        self.binding.require_epoch(authority_epoch)?;
         let transition = self
             .binding
             .begin_lineage_transition(self.generation, self.canonical_lineage.as_ref())?;
@@ -2363,7 +2527,9 @@ impl NativeContinuationStateSeal {
             kwargs.set_item("strategy", value)?;
         }
         let observed = self.observer.bind(py).call((state,), Some(&kwargs))?;
+        self.binding.require_epoch(authority_epoch)?;
         self.binding.observer_integrity.validate(py)?;
+        self.binding.require_epoch(authority_epoch)?;
         if !observed
             .get_type()
             .is(self.binding.continuation_state_type.bind(py))
@@ -2374,7 +2540,9 @@ impl NativeContinuationStateSeal {
         }
         let canonical_lineage: String =
             observed.call_method0("_decision_lineage_text")?.extract()?;
+        self.binding.require_epoch(authority_epoch)?;
         self.binding.observer_integrity.validate(py)?;
+        self.binding.require_epoch(authority_epoch)?;
         validate_context_observation_authority(self.canonical_lineage.as_ref(), &canonical_lineage)
             .map_err(|_| {
                 PyValueError::new_err("continuation observer changed non-observation authority")
@@ -2393,7 +2561,9 @@ impl NativeContinuationStateSeal {
         let sealed = observed
             .call_method1("_with_native_lineage", (lineage_seal,))?
             .unbind();
+        self.binding.require_epoch(authority_epoch)?;
         self.binding.observer_integrity.validate(py)?;
+        self.binding.require_epoch(authority_epoch)?;
         transition.commit(canonical_lineage)?;
         Ok(sealed)
     }
@@ -2417,21 +2587,30 @@ impl NativeContinuationStateSeal {
         application: &Bound<'_, PyAny>,
         runtime_snapshot: &Bound<'_, PyAny>,
     ) -> PyResult<Py<PyAny>> {
+        let authority_epoch = self.binding.active_epoch()?;
+        self.binding.require_epoch(authority_epoch)?;
         self.binding.committer_integrity.validate(py)?;
+        self.binding.require_epoch(authority_epoch)?;
         if !grant.get_type().is(self.binding.lease_grant_type.bind(py)) {
             return Err(PyValueError::new_err(
                 "lease grant must have the exact trusted type",
             ));
         }
         grant.call_method0("_validate_authority_fields")?;
+        self.binding.require_epoch(authority_epoch)?;
         self.binding.committer_integrity.validate(py)?;
+        self.binding.require_epoch(authority_epoch)?;
         self.require_current_lineage(py, state)?;
+        self.binding.require_epoch(authority_epoch)?;
         self.binding.committer_integrity.validate(py)?;
+        self.binding.require_epoch(authority_epoch)?;
         {
             let native: PyRef<'_, NativeRuntimeSession> = native_session.extract()?;
             native.require_live_continuation_snapshot(py, runtime_snapshot, &self.binding)?;
         }
+        self.binding.require_epoch(authority_epoch)?;
         self.binding.committer_integrity.validate(py)?;
+        self.binding.require_epoch(authority_epoch)?;
         let transition = self
             .binding
             .begin_lineage_transition(self.generation, self.canonical_lineage.as_ref())?;
@@ -2441,6 +2620,9 @@ impl NativeContinuationStateSeal {
         kwargs.set_item("application", application)?;
         kwargs.set_item("runtime_snapshot", runtime_snapshot)?;
         let committed = self.committer.bind(py).call((state,), Some(&kwargs))?;
+        self.binding.require_epoch(authority_epoch)?;
+        self.binding.committer_integrity.validate(py)?;
+        self.binding.require_epoch(authority_epoch)?;
         if !committed
             .get_type()
             .is(self.binding.continuation_state_type.bind(py))
@@ -2461,9 +2643,13 @@ impl NativeContinuationStateSeal {
         let canonical_lineage: String = committed
             .call_method0("_decision_lineage_text")?
             .extract()?;
+        self.binding.require_epoch(authority_epoch)?;
         self.binding.committer_integrity.validate(py)?;
+        self.binding.require_epoch(authority_epoch)?;
         self.require_current_lineage(py, state)?;
+        self.binding.require_epoch(authority_epoch)?;
         self.binding.committer_integrity.validate(py)?;
+        self.binding.require_epoch(authority_epoch)?;
         let live_runtime_state = {
             let native: PyRef<'_, NativeRuntimeSession> = native_session.extract()?;
             native
@@ -3292,6 +3478,7 @@ impl RuntimeCore {
         }
     }
 
+    #[cfg(test)]
     fn dispatch<F>(
         &mut self,
         command_json: &str,
@@ -5384,6 +5571,7 @@ impl NativeRuntimeSession {
                     observer_integrity: Arc::clone(&engine.observer_integrity),
                     committer_integrity: Arc::clone(&engine.committer_integrity),
                     live_lineage: Mutex::new(LiveContinuationLineageState::Uninitialized),
+                    authority_epoch: Mutex::new(AuthorityEpochState::default()),
                 }))
             }
         };
@@ -5409,6 +5597,7 @@ impl NativeRuntimeSession {
             .as_ref()
             .cloned()
             .ok_or_else(|| PyValueError::new_err("native runtime has no continuation authority"))?;
+        binding.active_epoch()?;
         if self.initial_state_authority_issued {
             return Err(PyValueError::new_err(
                 "initial continuation state authority was already issued",
@@ -5704,6 +5893,47 @@ impl NativeRuntimeSession {
         )
     }
 
+    fn authority_epoch_status(&self) -> PyResult<String> {
+        self.continuation_authority
+            .as_ref()
+            .ok_or_else(|| PyValueError::new_err("native runtime has no continuation authority"))?
+            .authority_epoch_status()
+    }
+
+    fn continuation_authority_status(
+        &self,
+        py: Python<'_>,
+        authority: PyRef<'_, NativeContinuationSupervisorAuthority>,
+        state: &Bound<'_, PyAny>,
+    ) -> PyResult<String> {
+        if !self.matches_continuation_authority(&authority.binding) {
+            return Err(PyValueError::new_err(
+                "authority does not bind native session",
+            ));
+        }
+        let binding = &authority.binding;
+        binding.observer_integrity.validate(py)?;
+        if !state
+            .get_type()
+            .is(binding.continuation_state_type.bind(py))
+        {
+            return Err(PyValueError::new_err(
+                "continuation state must have the exact trusted type",
+            ));
+        }
+        let lineage = state.call_method0("_native_lineage_seal")?;
+        binding.observer_integrity.validate(py)?;
+        let lineage: PyRef<'_, NativeContinuationStateSeal> = lineage.extract()?;
+        if !lineage.matches_continuation_authority(binding) {
+            return Err(PyValueError::new_err(
+                "continuation state lineage does not bind native session",
+            ));
+        }
+        lineage.require_current_lineage(py, state)?;
+        binding.observer_integrity.validate(py)?;
+        binding.authority_epoch_status()
+    }
+
     #[pyo3(signature = (command_json, operation=None, lease_grant_seal=None))]
     fn dispatch(
         &mut self,
@@ -5712,12 +5942,20 @@ impl NativeRuntimeSession {
         operation: Option<Py<PyAny>>,
         lease_grant_seal: Option<PyRef<'_, NativeLeaseGrantSeal>>,
     ) -> PyResult<(String, Option<Py<NativeRuntimeReceiptSeal>>)> {
+        let authority_epoch = self
+            .continuation_authority
+            .as_ref()
+            .map(|binding| binding.active_epoch())
+            .transpose()?;
         let trusted_lease_grant_seal = lease_grant_seal
             .as_deref()
             .filter(|seal| self.matches_lease_grant_authority(seal));
-        let outcome = self
-            .core
-            .dispatch(command_json, trusted_lease_grant_seal, || {
+        // Stage the complete transition before invoking a read operation. A
+        // revocation at the return boundary invalidates the entire candidate;
+        // no counters, limits, history, cache or receipt become authoritative.
+        let mut candidate = self.core.clone();
+        let outcome = candidate
+            .dispatch_in_place(command_json, trusted_lease_grant_seal, || {
                 let Some(callback) = operation else {
                     return Invocation::OperationFailed;
                 };
@@ -5738,6 +5976,10 @@ impl NativeRuntimeSession {
             Ok(seal) => Some(Py::new(py, seal)?),
             Err(_) => None,
         };
+        if let (Some(binding), Some(epoch)) = (&self.continuation_authority, authority_epoch) {
+            binding.require_epoch(epoch)?;
+        }
+        self.core = candidate;
         Ok((outcome, seal))
     }
 
@@ -5810,7 +6052,9 @@ impl NativeRuntimeSession {
             self.continuation_authority.as_ref(),
             seal.continuation_authority.as_ref(),
         ) {
-            (Some(active), Some(supplied)) => Arc::ptr_eq(active, supplied),
+            (Some(active), Some(supplied)) => {
+                Arc::ptr_eq(active, supplied) && active.epoch_is_current(seal.authority_epoch)
+            }
             _ => false,
         }
     }
@@ -5822,7 +6066,9 @@ impl NativeRuntimeSession {
         canonical_strategy_change: Option<&str>,
         supplied_authority: &Arc<ContinuationAuthorityBinding>,
         continuation_request_id: &str,
+        authority_epoch: u64,
     ) -> PyResult<NativeLeaseGrantSeal> {
+        supplied_authority.require_epoch(authority_epoch)?;
         if !self.matches_continuation_authority(supplied_authority) {
             return Err(PyValueError::new_err(
                 "native lease grant authority does not bind this session",
@@ -5893,6 +6139,7 @@ impl NativeRuntimeSession {
         Ok(NativeLeaseGrantSeal::from_grant(
             &grant,
             Some(Arc::clone(supplied_authority)),
+            authority_epoch,
         ))
     }
 }
@@ -6005,6 +6252,44 @@ mod tests {
             .unwrap(),
         )
         .unwrap()
+    }
+
+    #[test]
+    fn authority_epoch_revocation_is_terminal_exact_and_idempotent() {
+        let mut state = AuthorityEpochState::default();
+        assert!(state.is_current(0));
+        assert!(!state.is_current(1));
+        state.revoke().unwrap();
+        assert_eq!(
+            state,
+            AuthorityEpochState {
+                epoch: 1,
+                revoked: true
+            }
+        );
+        assert!(!state.is_current(0));
+        assert!(!state.is_current(1));
+        let revoked = state;
+        state.revoke().unwrap();
+        assert_eq!(state, revoked);
+    }
+
+    #[test]
+    fn authority_epoch_overflow_rejects_without_mutation_or_wraparound() {
+        let mut state = AuthorityEpochState {
+            epoch: u64::MAX,
+            revoked: false,
+        };
+        let before = state;
+        assert_eq!(state.revoke(), Err("authority epoch is exhausted"));
+        assert_eq!(state, before);
+        assert!(state.is_current(u64::MAX));
+        state.epoch = u64::MAX - 1;
+        state.revoke().unwrap();
+        assert_eq!(state.epoch, u64::MAX);
+        assert!(state.revoked);
+        state.revoke().unwrap();
+        assert_eq!(state.epoch, u64::MAX);
     }
 
     #[test]
@@ -6206,7 +6491,7 @@ mod tests {
     {
         let value = parse_runtime_canonical(command).unwrap();
         let grant = LeaseGrant::parse(&value["grant_receipt"]).unwrap();
-        let seal = NativeLeaseGrantSeal::from_grant(&grant, None);
+        let seal = NativeLeaseGrantSeal::from_grant(&grant, None, 0);
         runtime.dispatch(command, Some(&seal), invoke).unwrap()
     }
 

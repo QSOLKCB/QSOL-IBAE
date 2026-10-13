@@ -189,3 +189,15 @@ All notable changes to QSOL-IBAE will be documented here.
 - OpenAI-only remote proprietary-provider policy.
 - source-available research license with reserved productization rights for QSOL-IMC and OpenAI Parties.
 - unit tests, CI, and deterministic micro-benchmark.
+
+### v0.6A supervisor/recovery candidate
+
+- Add bounded versioned supervisor projections and fresh-context/recovery
+  records, without serialized native-authority reconstruction.
+- Add task/session native authority epoch and one-way revocation of outstanding
+  request and unapplied-grant seals.
+- Add closed machine-readable assurance support graphs and explicit
+  research-versus-operational calibration bindings.
+- Record accepted v0.5 corrective baseline PR #7 and preserve historical
+  v0.2-v0.5 fixture bytes and protocol identity domains.
+- Live transport, synthetic end-to-end phase and effects remain gated.

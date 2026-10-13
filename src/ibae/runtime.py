@@ -1435,6 +1435,25 @@ class RustRuntimeSession:
             runtime_snapshot,
         )
 
+    def continuation_authority_status(self, authority: Any | None, state: Any) -> dict[str, Any]:
+        """Observe native epoch status; a missing capability confers no authority.
+
+        Both paths validate this exact native session and live state lineage.
+        A supplied capability must additionally bind that same native instance.
+        Revoked status remains inspectable for fail-closed recovery decisions.
+        """
+
+        from .continuation import ContinuationState
+
+        if type(self) is not RustRuntimeSession or type(state) is not ContinuationState:
+            raise TypeError("authority status requires exact runtime and continuation state")
+        self._validate_continuation_checkpoint_snapshot(state._native_lineage_seal(), state, self.snapshot)
+        if authority is None:
+            canonical = self.__native.authority_epoch_status()
+        else:
+            canonical = self.__native.continuation_authority_status(authority, state)
+        return CanonicalRuntimeRecord(canonical).to_value()
+
     def _commit_continuation_lease_application(
         self,
         lineage: Any,

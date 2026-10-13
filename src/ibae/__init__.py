@@ -1,5 +1,17 @@
 """QSOL-IBAE deterministic execution kernel."""
 
+from .assurance import (
+    ASSURANCE_GRAPH_VERSION,
+    CALIBRATION_PROFILE_VERSION,
+    AssuranceClass,
+    AssuranceEdge,
+    AssuranceGraph,
+    AssuranceNode,
+    CalibrationBinding,
+    ResearchClaim,
+    ResearchClaimStatus,
+    assurance_support_contract,
+)
 from ._records import MAX_IDENTITY_INTEGER_BITS, MAX_RECORD_TEXT_BYTES
 from .canonical import (
     canonical_fingerprint,
@@ -170,7 +182,50 @@ from .runtime import (
     rust_canonical_json,
 )
 
+from .supervisor import (
+    SUPERVISOR_PROJECTION_VERSION,
+    FRESH_CONTEXT_VERSION,
+    RECOVERY_VERSION,
+    MAX_SUPERVISOR_PROJECTION_BYTES,
+    MAX_FRESH_CONTEXT_BYTES,
+    DataOrigin,
+    FreshContextHandoff,
+    RecoveryClass,
+    RecoveryDecision,
+    SupervisorContext,
+    SupervisorData,
+    SupervisorProjection,
+    classify_recovery,
+    fresh_session_surface,
+)
+
 __all__ = [
+    "SUPERVISOR_PROJECTION_VERSION",
+    "FRESH_CONTEXT_VERSION",
+    "RECOVERY_VERSION",
+    "MAX_SUPERVISOR_PROJECTION_BYTES",
+    "MAX_FRESH_CONTEXT_BYTES",
+    "DataOrigin",
+    "FreshContextHandoff",
+    "RecoveryClass",
+    "RecoveryDecision",
+    "SupervisorContext",
+    "SupervisorData",
+    "SupervisorProjection",
+    "classify_recovery",
+    "fresh_session_surface",
+
+    "ASSURANCE_GRAPH_VERSION",
+    "CALIBRATION_PROFILE_VERSION",
+    "AssuranceClass",
+    "AssuranceEdge",
+    "AssuranceGraph",
+    "AssuranceNode",
+    "CalibrationBinding",
+    "ResearchClaim",
+    "ResearchClaimStatus",
+    "assurance_support_contract",
+
     "AGENT_PROTOCOL",
     "BUDGET_BENCHMARK_VERSION",
     "COMPACT_EVIDENCE_GATE_KEY",
