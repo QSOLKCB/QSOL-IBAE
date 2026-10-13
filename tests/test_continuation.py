@@ -4890,3 +4890,27 @@ def test_review_bound_orchestration_validation_is_bounded_and_nonmutating():
     object.__setattr__(state, 'history', ((),) * 4097)
     with pytest.raises(ValueError, match='tuple exceeds authority bounds'):
         _validate_orchestration_authority(state)
+
+
+def test_review_maximum_epistemic_dag_remains_admitted_for_strategy_validation():
+    from ibae.continuation import _validate_orchestration_authority
+    from ibae.epistemic import EpistemicRecord, EpistemicState, MAX_EPISTEMIC_RECORDS
+
+    records = tuple(
+        EpistemicRecord(
+            f'fact.{index:03}', EpistemicClass.DERIVED, index,
+            dependencies=tuple(f'fact.{prior:03}' for prior in range(index)),
+        )
+        for index in range(MAX_EPISTEMIC_RECORDS)
+    )
+    assert sum(len(record.dependencies) for record in records) == 32640
+    base, prior, alternate = _strategy_state()
+    state = replace(base, epistemic_state=EpistemicState(records))
+    _validate_orchestration_authority(state)
+    _, _, task, governance, _, _, *_ = _state_and_progress()
+    receipt = evaluate_strategy_change(
+        task_id=task.task_id, governance_id=governance.governance_id,
+        orchestration_state=state, prior_strategy=prior, proposed_strategy=alternate,
+    )
+    assert receipt.status is StrategyChangeStatus.ADMITTED
+    receipt._validate_bound_material()

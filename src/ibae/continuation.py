@@ -28,7 +28,10 @@ from ._records import (
     require_text,
 )
 from .canonical import canonical_fingerprint, canonical_json, domain_fingerprint
-from .epistemic import EpistemicClass, EpistemicRecord, EpistemicState, ObservationProvenance
+from .epistemic import (
+    EpistemicClass, EpistemicRecord, EpistemicState, ObservationProvenance,
+    MAX_EPISTEMIC_RECORDS, MAX_EPISTEMIC_DEPENDENCIES,
+)
 from .governance import (
     GovernancePolicy,
     GovernanceReceipt,
@@ -36,11 +39,16 @@ from .governance import (
     ToolAdmissionReceipt,
     ToolAuthorityClass,
 )
-from .obligations import ObligationStatus, Obligation, ObligationRegistry
+from .obligations import (
+    ObligationStatus, Obligation, ObligationRegistry,
+    MAX_OBLIGATIONS, MAX_OBLIGATION_DEPENDENCIES,
+)
 from .orchestration import (
     OrchestrationState, OrchestrationLimits, Capability, OccurrenceOwnership, ReplaySafety,
     Strategy, StrategySchema, StrategyParameterSpec,
     StrategyValueKind, MAX_STRATEGY_PARAMETERS, MAX_STRATEGY_SYMBOL_LIST_ITEMS,
+    MAX_CAPABILITIES, MAX_CAPABILITY_ARGUMENTS, MAX_STATE_KEYS_PER_DECLARATION,
+    MAX_HISTORY_EVENTS, MAX_OCCURRENCE_OWNERS, MAX_STRATEGY_SCHEMAS,
 )
 from .runtime import (
     MAX_RUNTIME_EXECUTIONS,
@@ -115,6 +123,24 @@ MAX_DEPENDENCY_PATH: Final = 128
 MAX_TRANSITION_PATTERN: Final = 12
 MIN_CYCLE_HISTORY: Final = 6
 MAX_CONTINUATION_EVIDENCE_BYTES: Final = 4_096
+
+# Conservative traversal ceiling from every admitted orchestration collection.
+# Per-record allowances include the record, fixed fields, container nodes and
+# optional provenance/value wrappers; shared scalars are intentionally counted
+# at every occurrence. This is a defensive traversal bound, not a policy budget.
+MAX_ORCHESTRATION_AUTHORITY_NODES: Final = (
+    32  # root, limits, registry wrappers and fixed scalar fields
+    + MAX_OBLIGATIONS * (16 + MAX_OBLIGATION_DEPENDENCIES)
+    + MAX_EPISTEMIC_RECORDS * (32 + MAX_EPISTEMIC_DEPENDENCIES)
+    + MAX_CAPABILITIES * (
+        16 + MAX_STATE_KEYS_PER_DECLARATION + MAX_CAPABILITY_ARGUMENTS
+    )
+    + MAX_HISTORY_EVENTS
+    + MAX_OCCURRENCE_OWNERS * 8
+    + MAX_STRATEGY_SCHEMAS * (
+        8 + MAX_STRATEGY_PARAMETERS * (16 + MAX_STRATEGY_SYMBOL_LIST_ITEMS)
+    )
+)
 
 
 def _u64(name: str, value: Any) -> int:
@@ -1431,7 +1457,7 @@ def _validate_orchestration_authority(state: OrchestrationState) -> None:
     while pending:
         value, depth = pending.pop()
         visited += 1
-        if visited > 32768 or depth > 32:
+        if visited > MAX_ORCHESTRATION_AUTHORITY_NODES or depth > 32:
             raise ValueError("bound orchestration graph exceeds authority bounds")
         kind = type(value)
         if value is None or kind is str or kind is bool or kind is int:
