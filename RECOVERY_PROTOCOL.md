@@ -88,11 +88,42 @@ available tool owns a matching cache entry. Cache content is committed by the
 bound runtime-state identity. A permission forbidding reuse does not prohibit
 an otherwise permitted cold read.
 
+Both read branches share the structural admission prerequisites: an admitted
+strategy schema, a representable next logical tick, a ready target, an available
+cacheable capability, resolved mandatory dependencies, an owned compatible
+permission, active supervisor control, and remaining request budget. Valid
+strategy parameter schemas have inhabited domains; exact parameter values,
+arguments, target selections, dependency digests, ordering, batch bounds and
+receipt identities still pass the unchanged concrete admission gates. Full
+registries and rolling histories do not themselves exhaust read capacity.
+
 Read eligibility follows the actual governed dependency class: mandatory
 capability dependencies rule out PURE_READ, while SNAPSHOT_READ requires a
 mandatory dependency or a resolved record available for proposal selection.
 An initial state without bound progress cannot advertise continuation request
 eligibility; observing exact bound progress is a separate admissible step.
+
+Admission-parity boundary (checked by ordinary contract witnesses):
+
+| Existing admission predicate | Projection treatment |
+| --- | --- |
+| Admitted strategy key and exact schema | At least one admitted schema; concrete key, schema and typed parameters checked on proposal |
+| Batch count and deduplication | A singleton fits every valid positive batch limit and has no batch-local duplicate |
+| Capability lookup, availability and argument allowlist | Registry membership and availability required; concrete arguments checked on proposal (empty mapping is valid) |
+| Cacheable replay and ordering | Only cacheable reads advertised; effect/volatile ordering and occurrence registries are outside this surface |
+| Known ready targets | At least one ready target required; every selected target still validated |
+| Mandatory and selected dependencies | Mandatory resolution and possible read class required; selected keys and exact digest still validated |
+| Logical clock advance | One next tick must fit the existing identity integer bound |
+| Governance permission and requester | Owned compatible permission required; deterministic requester, identities and receipt binding checked at admission |
+| Native execution resources | Requests required for both branches; executions for cold reads; reuse permission and candidate cache for cache branch |
+| Native lineage and supervisor control | Exact bound source, active authority, no governance block, no pending grant and incomplete state required |
+
+Exhausted retry/continuation/observation/recovery capacity, full rolling history,
+full record registries, and cycle evidence do not independently invalidate an
+otherwise admissible read. Concrete invalid arguments, extra unresolved selected
+dependencies, an occurrence key, oversized batches, mixed invalid targets, or
+mismatched strategy/receipt identity remain rejected even when the existential
+proposal class is available. No projection field is an admission receipt.
 
 Legal next-action classes describe the bounded supervisor proposal/control
 surface. They do not replace normalized concrete proposal admission, exact

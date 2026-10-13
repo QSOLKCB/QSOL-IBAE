@@ -18,7 +18,7 @@ from .governance import (
     ToolAuthorityClass, ToolPermission,
 )
 from .obligations import Obligation, ObligationStatus
-from .orchestration import Capability, OrchestrationState, ReplaySafety
+from .orchestration import Capability, OrchestrationState, ReplaySafety, StrategySchema
 from .runtime import RustRuntimeSession
 from .supervisor import (
     DataOrigin, FreshContextHandoff, RecoveryClass, SupervisorContext, SupervisorData,
@@ -41,9 +41,10 @@ def reference_supervisor_context(key: str, acceptance: dict | None = None):
                    Obligation("second", "Second acceptance condition"))
     capabilities = (Capability("read.allowed", ReplaySafety.CACHEABLE_READ, "Governed read"),
                     Capability("read.ungranted", ReplaySafety.CACHEABLE_READ, "Available without permission"))
-    prior = OrchestrationState.create(obligations, capabilities=capabilities)
+    schemas = (StrategySchema("read.strategy", ()),)
+    prior = OrchestrationState.create(obligations, capabilities=capabilities, strategy_schemas=schemas)
     current = OrchestrationState.create((obligations[0].with_status(ObligationStatus.SATISFIED),
-                                         obligations[1]), capabilities=capabilities)
+                                         obligations[1]), capabilities=capabilities, strategy_schemas=schemas)
     contract = default_obligation_progress_contract()
     continuation = experimental_continuation_profile("tiny", progress_contract=contract)
     receipt = ContinuationPolicyReceipt(continuation, policy, governance)

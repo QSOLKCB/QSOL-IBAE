@@ -17,7 +17,7 @@ from ibae.governance import (
     SUPPORTED_REQUIRED_GATE_KEYS, ToolAuthorityClass, ToolPermission,
 )
 from ibae.obligations import Obligation, ObligationStatus
-from ibae.orchestration import Capability, OrchestrationState, ReplaySafety
+from ibae.orchestration import Capability, OrchestrationState, ReplaySafety, StrategySchema
 from ibae.runtime import RustRuntimeSession
 from ibae.supervisor import (
     MAX_DATA_ITEMS, MAX_FRESH_CONTEXT_BYTES, MAX_SUPERVISOR_PROJECTION_BYTES,
@@ -46,7 +46,8 @@ def _context(*, session="supervisor", contract=None, permissions=None, capabilit
     runtime, authority = RustRuntimeSession.create_continuation(
         session, continuation_policy=policy, continuation_policy_receipt=receipt,
     )
-    prior = state or OrchestrationState.create((Obligation("first", "First"), Obligation("second", "Second")), capabilities=capabilities)
+    prior = state or OrchestrationState.create((Obligation("first", "First"), Obligation("second", "Second")), capabilities=capabilities,
+        strategy_schemas=(StrategySchema("read.strategy", ()),))
     progress = None
     if progressed or complete:
         current = replace(prior, obligations=prior.obligations.with_status(prior.obligations.known_ids[0], ObligationStatus.SATISFIED))
@@ -555,3 +556,21 @@ def test_request_eligibility_requires_current_bound_progress_observation():
     rebound = replace(context, continuation_state=state)
     assert SupervisorProjection(rebound).decision_surface["continuation"]["request_eligible"] is True
     assert _request(rebound, progress).progress_id == progress.progress_id
+
+
+@pytest.mark.parametrize("admitted_schema", [False, True])
+def test_cache_candidate_also_requires_an_admitted_strategy_schema(admitted_schema):
+    capability = Capability("read", ReplaySafety.CACHEABLE_READ, "Read")
+    orchestration = OrchestrationState.create((Obligation("work", "Work"),),
+        capabilities=(capability,),
+        strategy_schemas=(StrategySchema("read.strategy", ()),) if admitted_schema else ())
+    context, _, _ = _context(state=orchestration)
+    context.runtime_session.execute_read("read", {}, _id("cache.schema"), lambda: {"value": 1})
+    state = observe_continuation_context(context.continuation_state,
+        runtime_session=context.runtime_session, policy=context.continuation_policy,
+        orchestration_state=orchestration, runtime_snapshot=context.runtime_session.snapshot)
+    surface = SupervisorProjection(replace(context, continuation_state=state)).decision_surface
+    assert surface["capabilities"][0]["read_proposal_eligible"] is admitted_schema
+    assert surface["capabilities"][0]["cache_reuse_proposal_eligible"] is admitted_schema
+    assert ("propose_governed_read" in surface["legal_next_action_classes"]) is admitted_schema
+    assert ("propose_cache_reuse_subject_to_exact_key_match" in surface["legal_next_action_classes"]) is admitted_schema

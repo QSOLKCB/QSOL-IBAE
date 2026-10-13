@@ -13,7 +13,9 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Final
 
-from ._records import CanonicalValue, bounded_utf8_length, require_fingerprint, require_symbol
+from ._records import (
+    MAX_IDENTITY_INTEGER_BITS, CanonicalValue, bounded_utf8_length, require_fingerprint, require_symbol,
+)
 from .assurance import CalibrationBinding
 from .canonical import canonical_json, domain_fingerprint
 from .continuation import (
@@ -330,6 +332,12 @@ def _projection_record(context: SupervisorContext, data: tuple[SupervisorData, .
         })
     ready = list(orchestration.obligations.ready_ids)
     can_propose = active and not governance_blocked and not state.has_pending_grant and state.progress_state is not ProgressState.COMPLETE
+    # Every one-proposal admission needs an admitted strategy schema and a
+    # representable next logical tick. Valid schema parameter domains are
+    # inhabited; exact strategy/arguments/targets remain admission checks.
+    batch_possible = bool(orchestration.strategy_schemas) and (
+        orchestration.logical_tick < (1 << MAX_IDENTITY_INTEGER_BITS) - 1
+    )
     capabilities = []
     for capability in orchestration.capabilities:
         permission = context.governance_policy.permission_for(capability.name)
@@ -346,6 +354,9 @@ def _projection_record(context: SupervisorContext, data: tuple[SupervisorData, .
                      or any(record.is_resolved for record in orchestration.epistemic_state.records)))
         )
         supported = capability.replay_safety is ReplaySafety.CACHEABLE_READ and dependency_class_possible
+        read_possible = bool(can_propose and batch_possible and ready
+            and capability.available and not unresolved and supported
+            and budgets["requests_remaining"] > 0)
         capabilities.append({
             "capability_id": capability.capability_id, "name": capability.name,
             "available": capability.available, "replay_safety": capability.replay_safety.value,
@@ -357,10 +368,8 @@ def _projection_record(context: SupervisorContext, data: tuple[SupervisorData, .
             "granted_authority_class": None if permission is None else permission.authority_class.value,
             "cache_reuse_granted": permission is not None and permission.allow_cache_reuse,
             "runtime_supported": supported,
-            "read_proposal_eligible": bool(can_propose and ready and capability.available and not unresolved
-                and supported and budgets["requests_remaining"] > 0 and budgets["executions_remaining"] > 0),
-            "cache_reuse_proposal_eligible": bool(can_propose and ready and capability.available and not unresolved
-                and supported and permission.allow_cache_reuse and budgets["requests_remaining"] > 0 and snapshot.cache),
+            "read_proposal_eligible": bool(read_possible and budgets["executions_remaining"] > 0),
+            "cache_reuse_proposal_eligible": bool(read_possible and permission.allow_cache_reuse and snapshot.cache),
         })
     request_eligible = bool(active and not governance_blocked and not state.has_pending_grant
         and state.last_progress_id is not None
