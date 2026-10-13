@@ -5,7 +5,7 @@ from pathlib import Path
 
 from ibae.canonical import canonical_json
 from ibae.synthetic_conformance import (
-    MAX_SYNTHETIC_INPUT_BYTES, replay_synthetic_fixture, synthetic_input_fixture,
+    MAX_SYNTHETIC_INPUT_BYTES, MAX_SYNTHETIC_OUTPUT_BYTES, replay_synthetic_fixture, synthetic_input_fixture,
 )
 
 
@@ -27,8 +27,11 @@ def main():
             raise ValueError("golden input file must use exact canonical bytes")
     result = source if args.inputs_only else replay_synthetic_fixture(source)
     rendered = canonical_json(result) + "\n"
-    if args.verify is not None and args.verify.read_text() != rendered:
-        raise ValueError("independent synthetic replay did not match expected evidence")
+    if args.verify is not None:
+        with args.verify.open("rb") as stream:
+            expected = stream.read(MAX_SYNTHETIC_OUTPUT_BYTES + 1)
+        if len(expected) > MAX_SYNTHETIC_OUTPUT_BYTES or expected != rendered.encode("utf-8"):
+            raise ValueError("independent synthetic replay did not match bounded expected evidence")
     print(rendered, end="")
 
 

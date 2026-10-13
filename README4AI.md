@@ -124,17 +124,17 @@ No OpenAI SDK integration, effect execution, durable cross-process runtime
 reconstruction, GPU execution, distributed runtime, or local-worker
 integration is claimed.
 
-## v0.6A candidate and accepted baseline
+## Accepted v0.6A and prerequisite baseline
 
 PR #7 accepted the defensive v0.5 baseline at `54c5abf01d909555dda999c77bd8ae8c899dd087`.
 Its exact reviewed head was `9c0d8893d3e3ae52fcd79c10fd80df9aeeb85774`;
 review/CI/fixture evidence is retained in https://github.com/QSOLKCB/QSOL-IBAE/pull/7.
 
-The v0.6A candidate adds separately versioned bounded supervisor/recovery
+Accepted v0.6A adds separately versioned bounded supervisor/recovery
 observations, native one-way authority-epoch revocation and assurance/calibration
 contracts. See `RECOVERY_PROTOCOL.md`. A handoff cannot reconstruct native
 authority; a graph cannot authenticate evidence or replace finalization.
-Synthetic end-to-end wiring, live transport and effects remain later phases.
+Synthetic end-to-end wiring is the current v0.6B candidate; live transport and effects remain later phases.
 
 ## ARCHITECTURAL AUTHORITY
 
@@ -328,3 +328,19 @@ Before modifying architecture or runtime behavior:
 7. document any semantic contract change;
 8. do not implement v0.6 or another later roadmap phase before the exact v0.5
    gate is accepted.
+
+## v0.6B CANDIDATE BOUNDARY
+
+The synthetic adapter layer proposes through `IBAE-NORMALIZED-SUPERVISOR-PROPOSAL-V1`.
+Eight control streams and 48 bounded recovery scenarios exercise actual
+governance/orchestration/native/evidence APIs with frozen external data.
+Golden inputs are independently replayed; outputs are conformance diagnostics,
+not routine model context or serialized native authority. ChatGPT/Work/Codex
+interfaces explicitly report unavailable; their interruption histories are
+frozen recovery observations. No actual secret resolution or effects exist.
+
+Each accepted segment receipt retains its one-manifest scope. Only a single
+manifest covering every declared acceptance rule may appear as the full-task
+final receipt. Long segmented completion is separately labelled objective
+verification through a replayable receipt chain, not global v0.4 acceptance.
+See `SYNTHETIC_PROTOCOL.md`; all later live/effect gates remain separate.

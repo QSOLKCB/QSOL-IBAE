@@ -13,7 +13,7 @@ from dataclasses import dataclass, fields, replace
 
 from ._records import CanonicalValue, bounded_utf8_length, require_symbol
 from .assurance import AssuranceClass, AssuranceEdge, AssuranceGraph, AssuranceNode
-from .canonical import canonical_json, domain_fingerprint
+from .canonical import domain_fingerprint
 from .continuation import (
     BudgetVector, ContinuationCheckpoint, ContinuationPartialReason,
     ContinuationPartialReceipt, ContinuationPolicyReceipt, ContinuationRequest,
@@ -43,7 +43,9 @@ from .supervisor import (
     SupervisorProjection, classify_recovery, fresh_session_surface,
 )
 from .supervisor_conformance import reference_supervisor_context
-from .synthetic_protocol import FakeEffectTool, NormalizedProposal, ProposalKind, _copy_json
+from .synthetic_protocol import (
+    FakeEffectTool, NormalizedProposal, ProposalKind, bounded_synthetic_data,
+)
 
 RECOVERY_CORPUS_VERSION = "IBAE-SYNTHETIC-RECOVERY-CORPUS-V1"
 MAX_RECOVERY_SCENARIOS = 64
@@ -100,7 +102,7 @@ class RecoveryAssessment:
                 "scenario": scenario.canonical_record(), "observations": observations,
                 "synthetic_only": True, "live_recovery_verified": False,
                 "restores_native_authority": False, "final_acceptance": False}
-        record = CanonicalValue.from_value(_copy_json(body, limit=MAX_RECOVERY_ASSESSMENT_BYTES))
+        record = CanonicalValue.from_value(bounded_synthetic_data(body, max_bytes=MAX_RECOVERY_ASSESSMENT_BYTES))
         bounded_utf8_length("recovery assessment", record.text, limit=MAX_RECOVERY_ASSESSMENT_BYTES)
         object.__setattr__(self, "_record", record)
 
@@ -135,7 +137,8 @@ _CASES = (
     ("forged_lease_receipt", "lease", "A hash-consistent structural grant is not a native-issued grant."),
     ("malformed_receipt", "lease", "Malformed inert scalar fields cannot become authority-bearing receipt fields."),
     ("partial_results", "boundedness", "A no-progress denial yields a checkpoint-bound partial, never acceptance."),
-    ("repeated_failures", "boundedness", "Repeated denials consume finite request capacity without gaining leases."),
+    ("repeated_lease_denials", "boundedness", "Repeated denials consume finite request capacity without gaining leases."),
+    ("repeated_tool_failures", "boundedness", "Frozen failed reads stop at exact native retry, execution and request ceilings."),
     ("request_exhaustion", "boundedness", "Terminal request-limit evidence is idempotent and exposes no recovery capacity."),
     ("lease_exhaustion", "boundedness", "The finite lease schedule ends in an explicit semantic partial."),
     ("period_1_loop", "cycle", "Real native read history detects a period-one cycle."),
@@ -216,7 +219,7 @@ def _observe(context, *, current=None, progress=None):
     return replace(context, continuation_state=state, orchestration_state=current)
 
 
-def _context(key, *, strategy=False, contract=None):
+def _context(key, *, strategy=False, contract=None, failure_budget=None):
     """Independent fixture authority for probes needing an initially stalled task."""
     schema = StrategySchema("recovery", (StrategyParameterSpec("mode", StrategyValueKind.SYMBOL,
         allowed_symbols=("alternate", "primary")),))
@@ -235,13 +238,22 @@ def _context(key, *, strategy=False, contract=None):
         capability_frontier=("read.alternate",), target_obligation_ids=(target,),
         dependency_path=(), recovery_mode="alternate",
         initial_transition_pattern=(_id("alternate"),), description="Inspect alternate fixture")
-    governance_policy = GovernancePolicy("v0.6b.recovery", 1, "standard", 1,
+    task_profile = "standard" if failure_budget is None else "synthetic.failure"
+    governance_policy = GovernancePolicy("v0.6b.recovery", 1, task_profile, 1,
         ProviderAuthority.OPENAI, tuple(ToolPermission(item.name, ToolAuthorityClass.PURE_READ,
         False, True) for item in capabilities), tuple(SUPPORTED_REQUIRED_GATE_KEYS))
     task, governance = GovernanceWrapper(governance_policy).admit_task(key,
         {"claim": "bounded offline recovery probe"}, requester=PrincipalAuthority.OPENAI_SUPERVISOR)
     contract = default_obligation_progress_contract() if contract is None else contract
     policy = experimental_continuation_profile("standard", progress_contract=contract)
+    if failure_budget is not None:
+        # A separate declared fixture profile is bound before creating native
+        # authority. No existing policy or live limit is changed.
+        ceiling = failure_budget
+        for lease in policy.lease_schedule:
+            ceiling = ceiling.add_checked(lease)
+        policy = replace(policy, policy_key="v0.6b.synthetic.failure", task_profile=task_profile,
+            initial_budget=failure_budget, total_ceiling=ceiling)
     policy_receipt = ContinuationPolicyReceipt(policy, governance_policy, governance)
     runtime, authority = RustRuntimeSession.create_continuation(key,
         continuation_policy=policy, continuation_policy_receipt=policy_receipt)
@@ -379,13 +391,17 @@ def _lease_probe(case):
     context, policy_receipt, progress = reference_supervisor_context(f"v0.6b.{case}")
     original_context = context
     original_request = _request(context, progress)
-    context, decision = _decide(context, policy_receipt, progress)
+    decision = evaluate_continuation(context.continuation_state, original_request,
+        runtime_session=context.runtime_session, policy=context.continuation_policy,
+        policy_receipt=policy_receipt, progress=progress)
+    context = replace(context, continuation_state=decision.next_state)
     if not decision.granted:
         raise AssertionError("reference progress did not grant a lease")
     handoff = FreshContextHandoff(SupervisorProjection(context))
     grant = decision.receipt
     original_id = grant.receipt_id
     reads = []
+    typed_scalar_rejection = None
     if case == "duplicate_lease_application":
         context, _ = _apply(context, decision)
     elif case == "stale_lease_replay":
@@ -398,6 +414,15 @@ def _lease_probe(case):
             for field in fields(LeaseGrantReceipt) if field.init and not field.name.startswith("_")})
     elif case == "malformed_receipt":
         # Ordinary malformed record, with no custom behavior or callback.
+        values = {field.name: getattr(grant, field.name)
+                  for field in fields(LeaseGrantReceipt) if field.init and not field.name.startswith("_")}
+        values["lease_index"] = True
+        try:
+            LeaseGrantReceipt(**values)
+        except (TypeError, ValueError) as exc:
+            typed_scalar_rejection = {"type": type(exc).__name__, "reason": str(exc)}
+        else:
+            raise AssertionError("boolean lease counter unexpectedly became a typed grant")
         grant = {"receipt_id": original_id, "lease_index": True}
     before = context.runtime_session.snapshot._canonical_text()
     try:
@@ -418,6 +443,10 @@ def _lease_probe(case):
               "governed_reads": reads}
     if case == "forged_lease_receipt":
         output["structurally_equal_receipt"] = grant.receipt_id == original_id
+    if case == "malformed_receipt":
+        output["typed_scalar_rejection"] = typed_scalar_rejection
+    if case == "duplicate_continuation":
+        output["live_lineage_state_id"] = SupervisorProjection(context).canonical_record()["sources"]["continuation_state_id"]
     if case == "authority_epoch_revocation":
         output["recovery"] = classify_recovery(handoff, source_context=context).canonical_record()
         output["revoked"] = SupervisorProjection(context).decision_surface["authority"]["revoked"]
@@ -425,6 +454,8 @@ def _lease_probe(case):
 
 
 def _boundedness(case):
+    if case == "repeated_tool_failures":
+        return _repeated_tool_failures()
     if case == "lease_exhaustion":
         context, policy_receipt, progress = reference_supervisor_context(f"v0.6b.{case}")
         context, granted = _decide(context, policy_receipt, progress)
@@ -460,6 +491,81 @@ def _boundedness(case):
                        "legal_recovery_actions": surface["continuation"]["legal_recovery_actions"],
                        "lease_requests_remaining": surface["budgets"]["lease_requests_remaining"]})
     return output
+
+
+def _frozen_read_failure():
+    """Closed offline backend fault, following the normal runtime failure API."""
+    raise RuntimeError("synthetic_fixture_unavailable")
+
+
+def _failure_receipt_projection(receipt):
+    record = receipt.canonical_record()
+    return {"receipt_id": receipt.receipt_id, "status": receipt.status,
+            "reason": receipt.rejection_reason, "admission_id": record["admission_id"],
+            "prior_state_id": record["prior_state_id"], "next_state_id": record["resulting_state_id"]}
+
+
+def _repeated_tool_failures():
+    results = []
+    # Each run isolates which precommitted resource first stops the same
+    # repeated failed read. None enlarges or bypasses the other two ceilings.
+    budgets = (
+        ("retry", BudgetVector(8, 4, 2, 0, 8)),
+        ("execution", BudgetVector(8, 2, 4, 0, 8)),
+        ("request", BudgetVector(2, 4, 4, 0, 8)),
+    )
+    for exhausted, budget in budgets:
+        context, policy_receipt, _, _, _ = _context(f"v0.6b.tool-failures.{exhausted}", failure_budget=budget)
+        initial = context.orchestration_state
+        current = initial
+        reads, retries = [], []
+        last_action_id = None
+        terminal = None
+        # An explicit finite attempt bound complements native accounting.
+        for attempt in range(budget.request_delta + 1):
+            if attempt:
+                retry = context.runtime_session.record_retry_transition(admission_id=last_action_id)
+                retries.append(_failure_receipt_projection(retry.receipt))
+                if retry.receipt.status == "rejected":
+                    terminal = retry.receipt
+                    break
+            admission, proposal, capability, tool = _read_admission(
+                replace(context, orchestration_state=current), "unavailable")
+            transition = context.runtime_session.execute_admitted_read(admission.receipt.decisions[0],
+                proposal, capability, tool.dependency_fingerprint, _frozen_read_failure)
+            reads.append({**_failure_receipt_projection(transition.receipt),
+                "governed_tool_receipt_id": tool.receipt_id,
+                "orchestration_admission_receipt_id": admission.receipt.receipt_id})
+            current = admission.next_state
+            last_action_id = tool.action_id
+            if transition.receipt.rejection_reason != "IBAE-RT-REJECT-OPERATION-FAILED":
+                terminal = transition.receipt
+                break
+        if terminal is None:
+            raise AssertionError("repeated fixture failure failed to reach its declared native ceiling")
+        progress = evaluate_progress(task_id=context.task.task_id,
+            governance_id=context.governance.governance_id, contract=default_obligation_progress_contract(),
+            prior_state=initial, current_state=current)
+        context = _observe(context, current=current, progress=progress)
+        context, denial = _decide(context, policy_receipt, progress)
+        checkpoint = _checkpoint(context, progress, reason=ContinuationPartialReason.NO_PROGRESS)
+        partial = ContinuationPartialReceipt(state=context.continuation_state,
+            checkpoint=checkpoint, reason=ContinuationPartialReason.NO_PROGRESS)
+        snapshot = context.runtime_session.snapshot
+        results.append({"exhausted_resource": exhausted, "initial_budget": budget.canonical_record(),
+            "continuation_policy_id": context.continuation_policy.continuation_policy_id,
+            "governance_receipt_id": context.governance.receipt_id,
+            "reads": reads, "retries": retries, "terminal_receipt": terminal.canonical_record(),
+            "final_counters": snapshot.canonical_record()["counters"],
+            "cache_entries": len(snapshot.cache), "history_entries": len(snapshot.history),
+            "progress_id": progress.progress_id, "progress_classification": progress.classification.value,
+            "continuation_denial_receipt_id": denial.receipt.receipt_id,
+            "continuation_denial_reason": denial.receipt.denial_reason.value,
+            "partial_checkpoint_id": checkpoint.checkpoint_id, "partial_status": partial.canonical_record()["status"],
+            "task_complete": partial.canonical_record()["task_complete"],
+            "leases_granted": context.continuation_state.leases_granted})
+    return {"failure_source": "closed_frozen_read_backend", "runs": results,
+            "external_effects_executed": 0}
 
 
 def _cycle(case):

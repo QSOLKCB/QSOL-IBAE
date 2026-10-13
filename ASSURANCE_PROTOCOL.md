@@ -1,6 +1,7 @@
 # v0.6A assurance and calibration contracts
 
-Status: v0.6A implementation candidate. This protocol adds no execution command,
+Status: accepted v0.6A implementation, PR #8 merge
+`735be520825aed8fe383bcf4092a26dd3ee15aa1`. This protocol adds no execution command,
 finalization path, provider connection or effect permission.
 
 ## IBAE-ASSURANCE-GRAPH-V1

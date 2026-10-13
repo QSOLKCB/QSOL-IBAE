@@ -104,8 +104,9 @@ transport labels and model claims cannot substitute for them. A test runner
 must fail on malformed input, changed expected evidence, source drift or an
 unexpected live adapter configuration.
 
-Exact proposal/admission/execution/rejection counts are sufficient for the
-first offline pressure observations. No ratio threshold is operational policy.
+Exact proposal/execution/unresolved-obligation counts and explicitly scoped
+segment diagnostic rejections supply the first offline pressure observations.
+The diagnostic rejection count is not an all-layer denial count. No ratio threshold is operational policy.
 Diversification remains a research candidate; it cannot create obligations or
 extra resources outside the original governed task, and no benchmark result
 in this phase promotes it to authority.
@@ -131,3 +132,11 @@ has tighter local limits. The output binds its full input identity and reports
 source-bound control receipts separately from non-authoritative recovery and
 research observations. These ceilings bound a test corpus, not a new execution
 budget or routine unbounded trace surface.
+
+Run reports retain bounded per-case diagnostics solely for conformance/replay
+(maximum 16 proposals, 8 acceptance rules/actions, 16 source fixtures and 1 MiB
+per control report). They are not the routine model-facing evidence packet.
+The supervisor receives only the bounded projection, and the actual native
+compact-evidence receipt retains its frozen fixed ceiling. Test corpus detail
+never substitutes for a compact source-bound receipt or expands execution
+capacity.

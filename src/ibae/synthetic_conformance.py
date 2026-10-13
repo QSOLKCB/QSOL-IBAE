@@ -58,7 +58,7 @@ def replay_synthetic_fixture(record: dict) -> dict:
             "runtime_requests": result["final_runtime"]["counters"]["requests"],
             "actual_executions": result["final_runtime"]["counters"]["executions"],
             "unresolved_obligations": len(result["summary"]["unresolved_obligation_ids"]),
-            "rejections": sum(len(segment["rejections"]) for segment in result["segments"]),
+            "segment_diagnostic_rejections": sum(len(segment["rejections"]) for segment in result["segments"]),
         } for key, result in results.items()},
     }
     body = {

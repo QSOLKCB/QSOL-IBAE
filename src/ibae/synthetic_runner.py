@@ -169,7 +169,9 @@ def _proposal_batch(proposal: NormalizedProposal, index: int) -> ProposalBatch:
 def _strategy_material(mode: str, description: str, tools: list[str], targets: tuple[str, ...]) -> StrategyMaterialization:
     alternate = tuple(name for name in tools if name.endswith(".alternate"))
     primary = tuple(name for name in tools if not name.endswith(".alternate"))
-    frontier = (alternate or tuple(tools)) if mode == "alternate" else (primary or tuple(tools))
+    if mode == "alternate" and (not alternate or not primary):
+        raise ValueError("alternate recovery requires a distinct declared operational frontier")
+    frontier = alternate if mode == "alternate" else (primary or tuple(tools))
     return StrategyMaterialization(
         Strategy(_RECOVERY_SCHEMA.strategy_key, {"mode": mode}, schema=_RECOVERY_SCHEMA),
         capability_frontier=frontier, target_obligation_ids=targets,
@@ -190,12 +192,16 @@ def _proposed_material(proposal: NormalizedProposal, tools: list[str], targets: 
     if descriptor["key"] != _RECOVERY_SCHEMA.strategy_key or descriptor["schema_id"] != _RECOVERY_SCHEMA.schema_id:
         raise ValueError("strategy change uses an undeclared recovery schema")
     strategy = Strategy(_RECOVERY_SCHEMA.strategy_key, descriptor["parameters"], schema=_RECOVERY_SCHEMA)
-    return StrategyMaterialization(
+    material = StrategyMaterialization(
         strategy, capability_frontier=tuple(payload["capability_names"]),
         target_obligation_ids=tuple(payload["target_obligation_ids"]),
         dependency_path=tuple(payload["dependency_path"]), recovery_mode=payload["recovery_mode"],
         initial_transition_pattern=tuple(payload["initial_transition_pattern"]),
     )
+    expected = _strategy_material(descriptor["parameters"]["mode"], "Declared operational route.", tools, targets)
+    if material.identity_record() != expected.identity_record():
+        raise ValueError("detailed material must match a declared operational route")
+    return material
 
 
 def run_synthetic_transcript(transcript: dict) -> SyntheticRunResult:
@@ -259,6 +265,7 @@ def run_synthetic_transcript(transcript: dict) -> SyntheticRunResult:
     )
     active_strategy = _strategy_material("primary", "Read the primary declared frozen frontier.", tools,
                                          state.obligations.known_ids)
+    initial_strategy = active_strategy
     pending_strategy = None
     strategy_changes = []
     continuation = ContinuationState.create(
@@ -409,7 +416,7 @@ def run_synthetic_transcript(transcript: dict) -> SyntheticRunResult:
                             # deterministic synthetic acceptance problem only.
                             covered = {item[0] for item in candidates}
                             targeted = {target for targets in targets_by_action.values() for target in targets}
-                            satisfied = bool(targeted) and targeted <= covered and not segment["rejections"]
+                            satisfied = compact.source_bound and bool(targeted) and targeted <= covered and not segment["rejections"]
                             gates = (
                                 AcceptanceGateResult(COMPACT_EVIDENCE_GATE_KEY, satisfied, compact.receipt_id),
                                 AcceptanceGateResult(ORCHESTRATION_RECEIPT_GATE_KEY, True, orchestration.receipt_id),
@@ -447,10 +454,10 @@ def run_synthetic_transcript(transcript: dict) -> SyntheticRunResult:
             else:
                 pending_strategy = material
                 strategy_changes.append(change.canonical_record())
-                event["strategy_change_receipt_id"] = change.strategy_change_id
+                event["strategy_change_id"] = change.strategy_change_id
                 event["strategy_status"] = change.status.value
                 event["intervention"] = "retain_strategy_proposal_for_governance"
-        elif (proposal.kind is ProposalKind.CONTINUE and pending_strategy is None
+        elif (proposal.kind is ProposalKind.CONTINUE
               and runtime.snapshot.requests < runtime.snapshot.limits.max_requests
               and runtime.snapshot.executions < runtime.snapshot.limits.max_executions):
             event["intervention"] = "continue_within_existing_budget"
@@ -548,6 +555,9 @@ def run_synthetic_transcript(transcript: dict) -> SyntheticRunResult:
         "cycle": ["DECLARE", "OBSERVE", "CLASSIFY", "INTERVENE", "RECEIPT", "REPLAY"],
         "declaration": {"task": task.canonical_record(), "governance": governance.canonical_record(),
                         "governance_policy": governance_policy.canonical_record(),
+                        "strategy_schemas": [{"schema_id": schema.schema_id, "record": schema.canonical_record()}
+                                             for schema in (_SCHEMA, _RECOVERY_SCHEMA)],
+                        "initial_strategy": initial_strategy.canonical_record(),
                         "continuation_policy": policy.canonical_record(),
                         "continuation_policy_receipt": policy_receipt.canonical_record()},
         "events": events, "segments": segments,
@@ -584,6 +594,7 @@ def replay_synthetic_run(transcript: dict, expected: dict) -> bool:
     """
     if type(expected) is not dict:
         raise TypeError("replay expectation must be an exact record")
+    expected = bounded_synthetic_data(expected, max_bytes=MAX_CONTROL_REPORT_BYTES)
     return canonical_json(run_synthetic_transcript(transcript).canonical_record()) == canonical_json(expected)
 
 

@@ -13,7 +13,8 @@ The v0.6A supervisor/recovery contract is accepted at PR #8 merge
 baseline in PR #7. Bounded supervisor projections, fresh-context/recovery
 records, native revocation, and assurance/calibration contracts are implemented.
 The current candidate is v0.6B offline synthetic end-to-end conformance.
-No live provider or effect is activated.
+See `SYNTHETIC_PROTOCOL.md` for normalized inputs, native receipt scope and
+independent replay. No live provider or effect is activated.
 
 ## Mission
 
@@ -246,9 +247,9 @@ External code contributions are not currently accepted without a separate writte
 
 ## Status
 
-Experimental pre-release substrate. v0.1-v0.5 are accepted, including the
+Experimental pre-release substrate. v0.1-v0.6A are accepted, including the
 PR #7 defensive correction at `54c5abf01d909555dda999c77bd8ae8c899dd087`.
-The current v0.6A candidate adds supervisor and recovery contracts described in
+Accepted v0.6A adds supervisor and recovery contracts described in
 `RECOVERY_PROTOCOL.md` and `ASSURANCE_PROTOCOL.md`. Every subsequent phase has
 its own exact-head review, CI and conformance gate. Live OpenAI integration,
 mutation execution, durable cross-process native resume, accelerators,

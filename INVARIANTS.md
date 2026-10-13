@@ -1048,7 +1048,7 @@ ARCHITECTURE SHOULD; its implemented continuation projection suppresses
 progress/strategy suggestions while its latest exact denial is a governance
 block. No existing invariant status or frozen record schema is changed.
 
-# v0.6A supervisor/recovery candidate invariants
+# Accepted v0.6A supervisor/recovery invariants
 
 The following enforcement is limited to the new versioned in-process contract.
 It does not upgrade the scope/status of earlier architecture-only invariants.

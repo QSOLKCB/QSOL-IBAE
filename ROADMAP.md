@@ -911,6 +911,13 @@ Before any live OpenAI connection:
 
 ## v0.6B - Synthetic End-to-End Supervisor Conformance
 
+Candidate implementation: `SYNTHETIC_PROTOCOL.md`, the `synthetic_*` modules,
+and separate v0.6B golden normalized inputs/replay outputs. Eight control
+transcripts and 48 recovery/adversarial scenarios exercise the current offline
+profile. Exact-count research telemetry is non-authoritative; diversification
+and live transport remain unactivated candidates. This phase still needs its
+own review/CI gate before acceptance.
+
 Goal: execute the complete intended agent control path with fake/frozen external data and real IBAE authority machinery before allowing any live network dependency.
 
 Principle:

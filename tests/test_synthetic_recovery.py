@@ -23,7 +23,7 @@ def observed(corpus):
 
 
 def test_corpus_is_bounded_complete_and_explicitly_not_live_recovery(corpus):
-    assert corpus["scenario_count"] == len(SYNTHETIC_RECOVERY_SCENARIOS) == 46
+    assert corpus["scenario_count"] == len(SYNTHETIC_RECOVERY_SCENARIOS) == 48
     assert corpus["scenario_count"] <= MAX_RECOVERY_SCENARIOS
     assert corpus["offline_only"] is True
     assert corpus["live_recovery_verified"] is False
@@ -129,7 +129,7 @@ def test_second_interruption_cannot_reuse_retired_checkpoint(case, observed):
 
 
 @pytest.mark.parametrize("case", [
-    "duplicate_continuation", "stale_lease_replay", "authority_epoch_revocation",
+    "duplicate_continuation", "duplicate_lease_application", "stale_lease_replay", "authority_epoch_revocation",
     "forged_lease_receipt", "malformed_receipt",
 ])
 def test_invalid_lease_operations_are_source_bound_and_state_neutral(case, observed):
@@ -137,7 +137,12 @@ def test_invalid_lease_operations_are_source_bound_and_state_neutral(case, obser
     assert record["rejection"] in {"ValueError", "TypeError", "RuntimeLeaseRejected"}
     assert record["rejection_reason"]
     assert record["rejection_state_neutral"] is True
-    assert record["leases_applied"] == (1 if case == "duplicate_continuation" else 0)
+    assert record["leases_applied"] == (1 if case == "duplicate_lease_application" else 0)
+    if case == "duplicate_continuation":
+        assert record["rejection_reason"] == "continuation decision lineage does not match state"
+        assert len(record["live_lineage_state_id"]) == 64
+    if case == "malformed_receipt":
+        assert record["typed_scalar_rejection"]["reason"]
     if case == "forged_lease_receipt":
         assert record["structurally_equal_receipt"] is True
         assert record["rejection_reason"] == "IBAE-RT-LEASE-REJECT-UNISSUED-GRANT"
@@ -155,7 +160,7 @@ def test_partial_results_never_become_accepted_completion(observed):
     assert record["checkpoint"]["continuation_state_id"] == record["partial"]["continuation_state_id"]
 
 
-@pytest.mark.parametrize("case", ["repeated_failures", "request_exhaustion"])
+@pytest.mark.parametrize("case", ["repeated_lease_denials", "request_exhaustion"])
 def test_repeated_failures_end_at_exact_request_cap_without_impossible_recovery(case, observed):
     record = observed[case]
     assert record["leases_granted"] == 0
@@ -273,6 +278,7 @@ def test_capability_presence_and_normalized_effect_proposal_grant_no_effects(obs
     assert capability["available"] is True
     assert capability["permission_id"] is None
     assert capability["read_proposal_eligible"] is False
+    assert observed["capability_escalation"]["governance_rejection"]["reason"] == "IBAE-REJECT-UNKNOWN-TOOL-PERMISSION"
     effect = observed["unauthorized_effect"]
     assert effect["effect_adapter_result"]["status"] == "unsupported"
     assert effect["effect_adapter_result"]["control_authority"] is False
@@ -315,3 +321,51 @@ def test_assessment_boundary_rejects_noninert_and_oversized_ordinary_values():
                   {"number": 1 << 257}):
         with pytest.raises((TypeError, ValueError)):
             RecoveryAssessment(scenario, value)
+
+
+@pytest.mark.parametrize("case,count", [
+    ("period_1_loop", 2), ("period_2_loop", 4), ("period_3_loop", 6),
+    ("strategy_cycle", 4), ("interrupted_recovery", 1), ("stale_checkpoint", 1), ("stale_lease_replay", 1),
+])
+def test_fixture_reads_traverse_real_admission_governance_and_native_accounting(case, count, observed):
+    reads = observed[case]["governed_reads"]
+    assert len(reads) == count
+    for index, read in enumerate(reads):
+        assert len(read["admission_receipt_id"]) == 64
+        assert len(read["governed_tool_receipt_id"]) == 64
+        assert len(read["runtime_receipt_id"]) == 64
+        assert read["prior_orchestration_state_id"] != read["next_orchestration_state_id"]
+        if index:
+            assert read["prior_orchestration_state_id"] == reads[index - 1]["next_orchestration_state_id"]
+
+
+@pytest.mark.parametrize("resource,requests,executions,retries", [
+    ("retry", 3, 3, 2), ("execution", 3, 2, 2), ("request", 2, 2, 2),
+])
+def test_repeated_frozen_tool_failures_stop_at_real_native_resource_ceilings(
+        resource, requests, executions, retries, observed):
+    record = observed["repeated_tool_failures"]
+    assert record["failure_source"] == "closed_frozen_read_backend"
+    assert record["external_effects_executed"] == 0
+    run = next(item for item in record["runs"] if item["exhausted_resource"] == resource)
+    assert run["final_counters"] == {
+        "requests": requests, "executions": executions, "retries": retries, "cache_hits": 0}
+    assert run["terminal_receipt"]["rejection"]["reason_code"] == f"IBAE-RT-REJECT-{resource.upper()}-BUDGET"
+    assert sum(item["reason"] == "IBAE-RT-REJECT-OPERATION-FAILED" for item in run["reads"]) == executions
+    assert run["cache_entries"] == run["history_entries"] == 0
+    assert run["progress_classification"] == "no_progress"
+    assert run["continuation_denial_reason"] == "IBAE-LEASE-DENY-NO-MEASURABLE-PROGRESS"
+    assert run["leases_granted"] == 0
+    assert run["partial_status"] == "partial"
+    assert run["task_complete"] is False
+    assert "synthetic_fixture_unavailable" not in canonical_json(run)
+    for index, read in enumerate(run["reads"]):
+        assert read["status"] == "rejected"
+        assert len(read["governed_tool_receipt_id"]) == len(read["orchestration_admission_receipt_id"]) == 64
+        if index:
+            retry = run["retries"][index - 1]
+            assert retry["status"] == "accepted"
+            assert read["prior_state_id"] == retry["next_state_id"]
+            assert retry["prior_state_id"] == run["reads"][index - 1]["next_state_id"]
+            assert retry["admission_id"] == run["reads"][index - 1]["admission_id"]
+    assert len(run["continuation_denial_receipt_id"]) == len(run["partial_checkpoint_id"]) == 64

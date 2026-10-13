@@ -83,3 +83,15 @@ def test_corpus_rejects_non_inert_transport_and_aggregate_size():
         replay_synthetic_fixture({"value": object()})
     with pytest.raises(ValueError):
         replay_synthetic_fixture({"payload": ["\0" * 4096] * 128})
+
+
+def test_replay_cli_rejects_changed_expected_evidence(tmp_path):
+    import subprocess
+    import sys
+    changed = tmp_path / "changed.json"
+    changed.write_text("{}\n")
+    result = subprocess.run([sys.executable, str(ROOT / "tools/render_v0_6b_fixture.py"),
+                             "--inputs-only", "--verify", str(changed)],
+                            capture_output=True, text=True, check=False)
+    assert result.returncode != 0
+    assert "did not match bounded expected evidence" in result.stderr
