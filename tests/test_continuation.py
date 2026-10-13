@@ -4799,3 +4799,94 @@ def test_defensive_stale_request_cannot_reopen_blocked_recovery(retain_block):
     assert stale.last_denial_reason is LeaseDenialReason.STALE_CONTINUATION_STATE
     assert stale.compact_projection(policy)['legal_recovery_actions'] == []
     assert not stale.compact_projection(policy)['material_strategy_change_admissible']
+
+
+@pytest.mark.parametrize('location', ['schemas', 'capabilities', 'obligations', 'capability_name'])
+def test_review_bound_strategy_orchestration_requires_inert_nested_types(location):
+    class Items(tuple):
+        pass
+
+    class Text(str):
+        pass
+
+    _, _, task, governance, _, _, *_ = _state_and_progress()
+    state, prior, alternate = _strategy_state()
+    receipt = evaluate_strategy_change(
+        task_id=task.task_id, governance_id=governance.governance_id,
+        orchestration_state=state, prior_strategy=prior, proposed_strategy=alternate,
+    )
+    if location == 'schemas':
+        object.__setattr__(state, 'strategy_schemas', Items(state.strategy_schemas))
+    elif location == 'capabilities':
+        object.__setattr__(state, 'capabilities', Items(state.capabilities))
+    elif location == 'obligations':
+        object.__setattr__(state.obligations, 'obligations', Items(state.obligations.obligations))
+    else:
+        item = state.capabilities[0]
+        object.__setattr__(item, 'name', Text(item.name))
+    with pytest.raises(TypeError, match='exact inert types'):
+        receipt._validate_bound_material()
+
+
+def test_review_native_snapshot_rejects_nonexact_endpoint_before_commit():
+    class Text(str):
+        pass
+
+    policy, _, _, _, binding, runtime, _, _, progress, state = _state_and_progress()
+    _, decision = _request_and_decide(policy, binding, runtime, progress, state)
+    application = runtime.apply_lease(decision.receipt)
+    snapshot = runtime.snapshot
+    object.__setattr__(snapshot, 'state_id', Text(snapshot.state_id))
+    with pytest.raises(ValueError, match='endpoints must be exact strings'):
+        commit_lease_application(
+            decision.next_state, runtime_session=runtime, policy=policy,
+            grant=decision.receipt, application=application, runtime_snapshot=snapshot,
+        )
+    committed = commit_lease_application(
+        decision.next_state, runtime_session=runtime, policy=policy,
+        grant=decision.receipt, application=application, runtime_snapshot=runtime.snapshot,
+    )
+    assert type(committed.runtime_state_id) is str
+
+
+def test_review_lease_index_denial_does_not_advertise_strategy_or_progress():
+    policy, _, _, _, binding, runtime, _, _, progress, state = _state_and_progress('standard')
+    request = ContinuationRequest.from_state(
+        state, progress=progress, requested_resources=policy.lease_schedule[0],
+        requester=PrincipalAuthority.OPENAI_SUPERVISOR,
+    )
+    request = replace(request, lease_index=2)._with_request_authority(_authority(runtime))
+    denied = evaluate_continuation(
+        state, request, runtime_session=runtime, policy=policy,
+        policy_receipt=binding, progress=progress,
+    ).next_state
+    assert denied.last_denial_reason is LeaseDenialReason.LEASE_INDEX_MISMATCH
+    assert denied.compact_projection(policy)['legal_recovery_actions'] == []
+    assert not denied.compact_projection(policy)['material_strategy_change_admissible']
+
+
+def test_review_native_request_rejects_unregistered_strategy_record():
+    policy, _, _, _, binding, runtime, _, _, progress, state = _state_and_progress()
+    request = ContinuationRequest.from_state(
+        state, progress=progress, requested_resources=policy.lease_schedule[0],
+        requester=PrincipalAuthority.OPENAI_SUPERVISOR, requester_authority=_authority(runtime),
+    )
+    with pytest.raises(ValueError, match='strategy change must have the exact trusted type'):
+        evaluate_continuation(
+            state, request, runtime_session=runtime, policy=policy,
+            policy_receipt=binding, progress=progress, strategy_change={},
+        )
+    _, valid = _request_and_decide(policy, binding, runtime, progress, state)
+    assert valid.granted
+
+
+def test_review_bound_orchestration_validation_is_bounded_and_nonmutating():
+    from ibae.continuation import _validate_orchestration_authority
+
+    state, _, _ = _strategy_state()
+    before = state.canonical_record()
+    _validate_orchestration_authority(state)
+    assert state.canonical_record() == before
+    object.__setattr__(state, 'history', ((),) * 4097)
+    with pytest.raises(ValueError, match='tuple exceeds authority bounds'):
+        _validate_orchestration_authority(state)

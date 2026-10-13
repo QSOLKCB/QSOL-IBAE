@@ -9,7 +9,7 @@
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::sync::GILOnceCell;
-use pyo3::types::{PyAny, PyBool, PyDict, PyModule, PyTuple, PyType};
+use pyo3::types::{PyAny, PyBool, PyDict, PyModule, PyString, PyTuple, PyType};
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -1345,6 +1345,7 @@ struct ContinuationAuthorityBinding {
     strategy_materialization_type: Py<PyAny>,
     cycle_evidence_type: Py<PyAny>,
     lease_grant_type: Py<PyAny>,
+    strategy_change_type: Py<PyAny>,
     evaluator: Py<PyAny>,
     observer: Py<PyAny>,
     committer: Py<PyAny>,
@@ -1393,6 +1394,7 @@ struct ContinuationEngine {
     strategy_materialization_type: Py<PyAny>,
     cycle_evidence_type: Py<PyAny>,
     lease_grant_type: Py<PyAny>,
+    strategy_change_type: Py<PyAny>,
     evaluator_integrity: Arc<PythonFunctionIntegrity>,
     observer_integrity: Arc<PythonFunctionIntegrity>,
     committer_integrity: Arc<PythonFunctionIntegrity>,
@@ -2085,6 +2087,19 @@ impl NativeContinuationRequestSeal {
             ));
         }
         self.binding.evaluator_integrity.validate(py)?;
+        if let Some(value) = strategy_change {
+            if !value
+                .get_type()
+                .is(self.binding.strategy_change_type.bind(py))
+            {
+                return Err(PyValueError::new_err(
+                    "strategy change must have the exact trusted type",
+                ));
+            }
+            value.call_method0("_validate_authority_fields")?;
+            value.call_method0("_validate_bound_material")?;
+            self.binding.evaluator_integrity.validate(py)?;
+        }
         if let Some(value) = cycle_evidence {
             if !value
                 .get_type()
@@ -2432,6 +2447,15 @@ impl NativeContinuationStateSeal {
         {
             return Err(PyValueError::new_err(
                 "continuation committer returned an invalid state type",
+            ));
+        }
+        if !committed
+            .getattr("runtime_state_id")?
+            .get_type()
+            .is(&py.get_type_bound::<PyString>())
+        {
+            return Err(PyValueError::new_err(
+                "committed runtime endpoint must be an exact string",
             ));
         }
         let canonical_lineage: String = committed
@@ -5352,6 +5376,7 @@ impl NativeRuntimeSession {
                         .clone_ref(py),
                     cycle_evidence_type: engine.cycle_evidence_type.clone_ref(py),
                     lease_grant_type: engine.lease_grant_type.clone_ref(py),
+                    strategy_change_type: engine.strategy_change_type.clone_ref(py),
                     evaluator: engine.evaluator.clone_ref(py),
                     observer: engine.observer.clone_ref(py),
                     committer: engine.committer.clone_ref(py),
@@ -5753,6 +5778,17 @@ impl NativeRuntimeSession {
                 "runtime snapshot must have the exact trusted type",
             ));
         }
+        for name in ["state_id", "session_id"] {
+            if !runtime_snapshot
+                .getattr(name)?
+                .get_type()
+                .is(&py.get_type_bound::<PyString>())
+            {
+                return Err(PyValueError::new_err(
+                    "runtime snapshot endpoints must be exact strings",
+                ));
+            }
+        }
         let supplied: String = runtime_snapshot
             .call_method0("_canonical_text")?
             .extract()?;
@@ -5884,6 +5920,7 @@ fn _register_continuation_engine(
     strategy_materialization_type: Py<PyAny>,
     cycle_evidence_type: Py<PyAny>,
     lease_grant_type: Py<PyAny>,
+    strategy_change_type: Py<PyAny>,
 ) -> PyResult<()> {
     if !evaluator.bind(py).is_callable()
         || !observer.bind(py).is_callable()
@@ -5896,6 +5933,7 @@ fn _register_continuation_engine(
         || !strategy_materialization_type.bind(py).is_callable()
         || !cycle_evidence_type.bind(py).is_callable()
         || !lease_grant_type.bind(py).is_callable()
+        || !strategy_change_type.bind(py).is_callable()
     {
         return Err(PyValueError::new_err(
             "continuation engine bindings must be callable",
@@ -5919,6 +5957,7 @@ fn _register_continuation_engine(
                 strategy_materialization_type,
                 cycle_evidence_type,
                 lease_grant_type,
+                strategy_change_type,
                 evaluator_integrity,
                 observer_integrity,
                 committer_integrity,

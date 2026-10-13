@@ -596,3 +596,11 @@ an input to each governed request, not a new durable authorization channel.
 These checks add no canonical fields, identity domains, grants, or runtime
 commands. Frozen v0.2-v0.5 fixture bytes remain unchanged. The correction does
 not claim durable authentication, cross-process resume, or v0.6 acceptance.
+
+Review hardening additionally validates the bounded, closed nested
+orchestration record graph before strategy derivation and captures the exact
+strategy-change receipt type at native initialization. Native request entry
+validates that receipt before evaluator invocation. Live snapshot and committed
+runtime endpoints must be actual exact strings, not merely canonically equal
+serialized text. Lease-index mismatch is a stale-context denial for projection
+purposes. These checks retain all existing fixture identities.
