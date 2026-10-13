@@ -62,10 +62,10 @@ Initial restart native source SHA-256 (before the final nested-payload guard):
 `8cf265a44b62e3f3e1de5864f82e0c5030b515b5caf64203cf684079171876af`.
 Initial restart rebuilt extension SHA-256 (same initial source):
 `da2faadfeda053a53c40b0de5f39055e34a63a094edab98726873406b3bc9966`.
-The final guard preserves the frozen legacy CanonicalValue bounds inside the
-original task acceptance contract. Final native source SHA-256:
+The pre-review nested-payload guard preserves the frozen legacy CanonicalValue bounds inside the
+original task acceptance contract. First D candidate (`d3ecc1e9c7a8019de5d6824a0b31de4db875a1bb`) native source SHA-256:
 `6dca0499d377b37f08e8a0944f05ee49ed75a8f4fef049f778cb14c1d8bd4876`.
-Final verification uses a separate fresh wheel installation rather than changing
+Verification uses a separate fresh wheel installation rather than changing
 the shared loaded extension. The PR checkpoint records its exact source tree,
 wheel/binary identities and restart outcomes;
 a passing restart must not be inferred merely from these binary identities.
@@ -76,11 +76,14 @@ GitHub commit reconciliation by the implemented runtime, or remote authority
 reconstruction is claimed. GitHub connector publication and merge operations
 performed by this engineering workflow are separate from the runtime under test.
 
-Final isolated wheel SHA-256:
+First D candidate isolated wheel SHA-256:
 `36861b1ae8bf62dde3f62efeb0ae108c30fe8b5e131b9af8edfef489f0e95524`.
 Its native extension SHA-256:
 `ed4d304e4950c2f337519404ae1dc0e890354d0fe9cf7b770b482b73de271276`.
 The wheel was built before this handoff-only metadata update; executable source
-is unchanged. No-optional-SDK wheel smoke passed. Final isolated full Python and
-two-seed conformance results are recorded in the PR metadata when complete.
-Native final format/check/strict-Clippy and 55 tests passed.
+is unchanged. No-optional-SDK wheel smoke passed. That candidate passed 1,349 isolated Python tests, two-seed conformance and
+native format/check/strict-Clippy with 55 tests. Its exact-head Code review
+found a valid cross-language integer-range mismatch; passing tests were not
+treated as review approval. Corrections preserve the full accepted 256-bit
+version/tick domain, with new boundary regressions and fresh candidate gates.
+The active PR metadata records the latest source, tests and approval status.

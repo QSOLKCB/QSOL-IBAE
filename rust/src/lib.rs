@@ -198,6 +198,24 @@ fn sha256_hex(bytes: &[u8]) -> String {
     output
 }
 
+/// Legacy governance/orchestration identity integers are bounded at 256 bits.
+/// They are canonical identity material, not D runtime counters; never narrow
+/// them through u64 conversion. Requiring decimal digits also rejects JSON
+/// booleans and integral-looking floating-point/exponent representations.
+fn legacy_identity_integer(value: &Value, positive: bool) -> bool {
+    let Value::Number(number) = value else {
+        return false;
+    };
+    let decimal = number.to_string();
+    !decimal.is_empty()
+        && decimal.bytes().all(|byte| byte.is_ascii_digit())
+        && (decimal == "0" || !decimal.starts_with('0'))
+        && (!positive || decimal != "0")
+        && (decimal.len() < MAX_INTEGER_DECIMAL.len()
+            || (decimal.len() == MAX_INTEGER_DECIMAL.len()
+                && decimal.as_str() <= MAX_INTEGER_DECIMAL))
+}
+
 fn domain_fingerprint(domain: &str, canonical_payload: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(domain.as_bytes());
@@ -658,7 +676,7 @@ struct ContinuationPolicySpec {
     schedule: Vec<LeaseResources>,
     total_ceiling: LeaseResources,
     task_profile: String,
-    task_profile_version: u64,
+    task_profile_version: Value,
 }
 
 impl ContinuationPolicySpec {
@@ -705,8 +723,7 @@ impl ContinuationPolicySpec {
         for name in ["policy_version", "task_profile_version"] {
             if !mapping
                 .get(name)
-                .and_then(Value::as_u64)
-                .is_some_and(|item| item > 0)
+                .is_some_and(|item| legacy_identity_integer(item, true))
             {
                 return Err("continuation policy versions must be positive integers");
             }
@@ -824,9 +841,7 @@ impl ContinuationPolicySpec {
                 .as_str()
                 .expect("validated task profile")
                 .to_owned(),
-            task_profile_version: mapping["task_profile_version"]
-                .as_u64()
-                .expect("validated task profile version"),
+            task_profile_version: mapping["task_profile_version"].clone(),
         })
     }
 }
@@ -892,8 +907,7 @@ impl ContinuationContext {
                 != Some(policy.policy_id.as_str())
             || receipt.get("task_profile").and_then(Value::as_str)
                 != Some(policy.task_profile.as_str())
-            || receipt.get("task_profile_version").and_then(Value::as_u64)
-                != Some(policy.task_profile_version)
+            || receipt.get("task_profile_version") != Some(&policy.task_profile_version)
             || receipt.get("progress_contract_id").and_then(Value::as_str)
                 != Some(policy.progress_contract_id.as_str())
         {
@@ -6349,6 +6363,14 @@ mod tests {
     }
 
     fn continuation_core() -> RuntimeCore {
+        continuation_core_with_versions(json!(1), json!(1), None).unwrap()
+    }
+
+    fn continuation_core_with_versions(
+        policy_version: Value,
+        task_profile_version: Value,
+        receipt_profile_version: Option<Value>,
+    ) -> Result<RuntimeCore, &'static str> {
         let limits = Limits {
             requests: 8,
             executions: 4,
@@ -6378,11 +6400,11 @@ mod tests {
             "max_leases": 1,
             "max_strategy_recoveries": 1,
             "policy_key": "experimental.tiny",
-            "policy_version": 1,
+            "policy_version": policy_version,
             "progress_contract_id": continuation_identity('a'),
             "protocol_version": CONTINUATION_PROTOCOL_VERSION,
             "task_profile": "tiny",
-            "task_profile_version": 1,
+            "task_profile_version": task_profile_version,
             "total_ceiling": {
                 "execution_delta": 6,
                 "history_delta": 12,
@@ -6391,7 +6413,8 @@ mod tests {
                 "retry_delta": 3,
             },
         });
-        let policy_canonical = canonical_value(&policy).unwrap();
+        let policy_canonical =
+            canonical_value(&policy).map_err(|_| "invalid test policy canonical value")?;
         let policy_id = domain_fingerprint(CONTINUATION_POLICY_ID_DOMAIN, &policy_canonical);
         let receipt_body = json!({
             "authority_layer": "governance",
@@ -6403,11 +6426,11 @@ mod tests {
             "status": "admitted",
             "task_id": continuation_identity('d'),
             "task_profile": "tiny",
-            "task_profile_version": 1,
+            "task_profile_version": receipt_profile_version.unwrap_or(task_profile_version),
         });
         let receipt_id = domain_fingerprint(
             CONTINUATION_POLICY_RECEIPT_ID_DOMAIN,
-            &canonical_value(&receipt_body).unwrap(),
+            &canonical_value(&receipt_body).map_err(|_| "invalid test receipt canonical value")?,
         );
         let mut receipt = receipt_body;
         receipt
@@ -6418,9 +6441,53 @@ mod tests {
             "continuation_policy": policy,
             "continuation_policy_receipt": receipt,
         }))
-        .unwrap();
-        let context = ContinuationContext::parse(&context_json, limits).unwrap();
-        RuntimeCore::new_with_continuation("rust-continuation", limits, context).unwrap()
+        .map_err(|_| "invalid test context canonical value")?;
+        let context = ContinuationContext::parse(&context_json, limits)?;
+        RuntimeCore::new_with_continuation("rust-continuation", limits, context)
+    }
+
+    #[test]
+    fn continuation_identity_versions_retain_exact_256_bit_values() {
+        for decimal in ["18446744073709551616", MAX_INTEGER_DECIMAL] {
+            let version = serde_json::from_str::<Value>(decimal).unwrap();
+            for (policy_version, profile_version) in [
+                (version.clone(), json!(1)),
+                (json!(1), version.clone()),
+                (version.clone(), version.clone()),
+            ] {
+                let runtime =
+                    continuation_core_with_versions(policy_version, profile_version.clone(), None)
+                        .unwrap();
+                let policy = &runtime.continuation.as_ref().unwrap().context.policy;
+                assert_eq!(policy.task_profile_version, profile_version);
+                assert_eq!(runtime.limits.requests, 8);
+                assert_eq!(runtime.limits.executions, 4);
+                assert_eq!(policy.initial.mutations, 0);
+            }
+            assert!(continuation_core_with_versions(json!(1), version, Some(json!(1))).is_err());
+        }
+        for decimal in [
+            "0",
+            "-1",
+            "true",
+            "false",
+            "1.0",
+            "1.5",
+            "1e0",
+            "null",
+            "\"1\"",
+            "115792089237316195423570985008687907853269984665640564039457584007913129639936",
+        ] {
+            let invalid = serde_json::from_str::<Value>(decimal).unwrap();
+            assert!(
+                continuation_core_with_versions(invalid.clone(), json!(1), None).is_err(),
+                "policy version must reject {decimal}"
+            );
+            assert!(
+                continuation_core_with_versions(json!(1), invalid, None).is_err(),
+                "task profile version must reject {decimal}"
+            );
+        }
     }
 
     fn lease_command(

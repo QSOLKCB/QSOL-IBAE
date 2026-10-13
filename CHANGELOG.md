@@ -236,6 +236,8 @@ All notable changes to QSOL-IBAE will be documented here.
 
 - Add a separately versioned, default-disabled native effect ledger committed
   by the original task and attached once to its live supervisor authority.
+- Preserve full canonical 256-bit legacy version/tick identity fields across
+  Python/native admission; operational effect counters remain independently bounded.
 - Add exact native approval seals, ordered occurrence ownership and closed
   idempotent set/non-idempotent increment operations with exact preconditions.
 - Add finite request/execution/retry/reconciliation counters, cancellation,

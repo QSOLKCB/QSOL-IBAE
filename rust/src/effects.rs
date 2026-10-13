@@ -322,10 +322,7 @@ fn parse_entry(
     eq_text(cap, "replay_safety", "occurrence_sensitive")?;
     if cap["available"] != true
         || !cap["replay_evidence_id"].is_null()
-        || cap["contract_version"]
-            .as_u64()
-            .filter(|v| *v > 0)
-            .is_none()
+        || !legacy_identity_integer(&cap["contract_version"], true)
         || cap["description"]
             .as_str()
             .filter(|v| !v.is_empty() && v.trim() == *v && v.len() <= 4096)
@@ -450,7 +447,7 @@ fn parse_entry(
     }
     if !decision["equivalent_proposal_id"].is_null()
         || !decision["rejection_reason"].is_null()
-        || decision["logical_tick"].as_u64().is_none()
+        || !legacy_identity_integer(&decision["logical_tick"], false)
     {
         return Err("effect admission is malformed");
     }
@@ -590,7 +587,7 @@ impl EffectCore {
             symbol(text(policy, key)?)?;
         }
         for key in ["policy_version", "task_profile_version"] {
-            if policy[key].as_u64().filter(|n| *n > 0).is_none() {
+            if !legacy_identity_integer(&policy[key], true) {
                 return Err("effect policy version must be positive");
             }
         }
@@ -657,10 +654,7 @@ impl EffectCore {
         eq_text(task, "status", "admitted")?;
         eq_text(task, "protocol_version", "IBAE-TASK-RECEIPT-V1")?;
         symbol(text(task, "task_key")?)?;
-        if task["contract_version"]
-            .as_u64()
-            .filter(|n| *n > 0)
-            .is_none()
+        if !legacy_identity_integer(&task["contract_version"], true)
             || task["required_gate_keys"] != gates
             || !task["acceptance_contract"].is_object()
         {
@@ -1641,6 +1635,59 @@ mod tests {
                 Err("effect task acceptance contract exceeds legacy canonical bounds")
             ));
         }
+    }
+
+    #[test]
+    fn legacy_identity_integers_preserve_full_256_bit_python_domain() {
+        const MAX_PLUS_ONE: &str =
+            "115792089237316195423570985008687907853269984665640564039457584007913129639936";
+        for (field, positive) in [
+            ("capability.contract_version", true),
+            ("governance_policy.policy_version", true),
+            ("governance_policy.task_profile_version", true),
+            ("task.contract_version", true),
+            ("admission_decision.logical_tick", false),
+        ] {
+            for integer in [
+                "1",
+                "18446744073709551615",
+                "18446744073709551616",
+                MAX_INTEGER_DECIMAL,
+            ] {
+                let value = serde_json::from_str::<Value>(integer).unwrap();
+                assert!(
+                    legacy_identity_integer(&value, positive),
+                    "{field} must accept {integer}"
+                );
+                assert_eq!(canonical(&value).unwrap(), integer);
+            }
+            assert_eq!(
+                legacy_identity_integer(&json!(0), positive),
+                !positive,
+                "{field} zero semantics"
+            );
+            for invalid in [
+                "-1",
+                MAX_PLUS_ONE,
+                "true",
+                "false",
+                "null",
+                "1.0",
+                "1.5",
+                "1e0",
+                "\"1\"",
+            ] {
+                let value = serde_json::from_str::<Value>(invalid).unwrap();
+                assert!(
+                    !legacy_identity_integer(&value, positive),
+                    "{field} must reject {invalid}"
+                );
+            }
+        }
+        // Operational D limits remain deliberately small u64 counters. This
+        // identity-domain correction must not widen executable resource caps.
+        let above_u64 = serde_json::from_str::<Value>("18446744073709551616").unwrap();
+        assert!(EffectLimits::parse(&json!({"max_requests":above_u64,"max_executions":1,"max_retries":0,"max_reconciliations":0})).is_err());
     }
 
     #[test]

@@ -32,7 +32,10 @@ governance identities already bound to its continuation supervisor capability.
 Each entry carries the exact typed capability, proposal, admission decision,
 dependency fingerprint and occurrence identity. Governance must authorize the
 corresponding mutation class, forbid cache treatment and bind the same action,
-arguments, task and policy. A recomputed hash alone is not issuance authority.
+arguments, task and policy. Legacy capability/policy/task versions retain their positive 256-bit canonical
+integer domain; admitted logical ticks retain the corresponding nonnegative
+domain. These identity fields are not narrowed to the u64 operational counters.
+A recomputed hash alone is not issuance authority.
 Creation additionally requires established native continuation lineage.
 
 Exactly one D ledger may attach to a native task binding. Invalid or disabled

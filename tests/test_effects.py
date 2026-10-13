@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
@@ -27,6 +28,8 @@ from ibae.runtime import RustRuntimeSession
 def effect_bundle(
     *, tools=("synthetic_set",), outcomes=None, arguments=None,
     limits=None, initial_cells=None, session_key="effects.reference", commitment=True,
+    capability_contract_version=1, policy_version=1, task_profile_version=1,
+    task_contract_version=1, admission_logical_tick=1, continuation_policy_version=1,
 ):
     initial_cells = {"counter": 0} if initial_cells is None else initial_cells
     outcomes = ((Outcome.SUCCESS,),) * len(tools) if outcomes is None else outcomes
@@ -35,7 +38,7 @@ def effect_bundle(
         for index, name in enumerate(tools)
     ) if arguments is None else arguments
     policy = GovernancePolicy(
-        policy_key="synthetic.effects", policy_version=1, task_profile="tiny", task_profile_version=1,
+        policy_key="synthetic.effects", policy_version=policy_version, task_profile="tiny", task_profile_version=task_profile_version,
         provider_authority=ProviderAuthority.OPENAI,
         tool_permissions=(
             ToolPermission("synthetic_set", ToolAuthorityClass.IDEMPOTENT_MUTATION, True, False),
@@ -45,12 +48,13 @@ def effect_bundle(
     )
     capabilities = {
         name: Capability(name, ReplaySafety.OCCURRENCE_SENSITIVE, "Closed synthetic effect.",
-            semantic_argument_keys=("expected_value", "key", "value") if name == "synthetic_set" else ("delta", "expected_value", "key"))
+            contract_version=capability_contract_version, semantic_argument_keys=("expected_value", "key", "value") if name == "synthetic_set" else ("delta", "expected_value", "key"))
         for name in set(tools)
     }
     obligation = Obligation("synthetic.effects", "Verify the declared synthetic effects.")
     schema = StrategySchema("effects")
     state = OrchestrationState.create((obligation,), capabilities=tuple(capabilities.values()), strategy_schemas=(schema,))
+    state = replace(state, logical_tick=admission_logical_tick - 1)
     proposals = tuple(ActionProposal(
         f"effect.{index}", name, argument, target_obligation_ids=(obligation.obligation_id,), occurrence_key=f"occurrence.{index}",
     ) for index, (name, argument) in enumerate(zip(tools, arguments)))
@@ -62,13 +66,14 @@ def effect_bundle(
         for proposal, decision, outcome in zip(proposals, admitted.receipt.decisions, outcomes))
     profile = EffectProfile(policy.governance_id, entries, initial_cells=initial_cells, limits=limits)
     wrapper = GovernanceWrapper(policy)
-    task, governance = wrapper.admit_task("synthetic.effects", {"effect_profile_id": profile.profile_id} if commitment else {"goal": "unbound effects"}, requester=PrincipalAuthority.OPENAI_SUPERVISOR)
+    task, governance = wrapper.admit_task("synthetic.effects", {"effect_profile_id": profile.profile_id} if commitment else {"goal": "unbound effects"}, requester=PrincipalAuthority.OPENAI_SUPERVISOR, contract_version=task_contract_version)
     admissions = tuple(wrapper.admit_tool(
         task, governance, decision, proposal, capabilities[proposal.capability],
         ToolAuthorityClass.IDEMPOTENT_MUTATION if proposal.capability == "synthetic_set" else ToolAuthorityClass.NON_IDEMPOTENT_MUTATION,
         dependency_state_id=dependency, requester=PrincipalAuthority.DETERMINISTIC_ORCHESTRATOR,
     ) for proposal, decision in zip(proposals, admitted.receipt.decisions))
-    continuation = experimental_continuation_profile("tiny")
+    continuation = replace(experimental_continuation_profile("tiny"),
+        policy_version=continuation_policy_version, task_profile_version=task_profile_version)
     continuation_receipt = ContinuationPolicyReceipt(continuation, policy, governance)
     runtime, authority = RustRuntimeSession.create_continuation(session_key, continuation_policy=continuation, continuation_policy_receipt=continuation_receipt)
     continuation_state = ContinuationState.create(policy=continuation, policy_receipt=continuation_receipt, runtime_session=runtime, orchestration_state=admitted.next_state, runtime_snapshot=runtime.snapshot)
@@ -558,3 +563,86 @@ def test_structural_snapshot_rejects_impossible_cancellation_flags(command, flag
     state["state_id"] = domain_fingerprint("ibae.effect-state-id.v1", {key: value for key, value in state.items() if key != "state_id"})
     with pytest.raises(ValueError, match="cancellation"):
         EffectSnapshot(state)
+
+
+_IDENTITY_INTEGER_FIELDS = (
+    "capability_contract_version", "policy_version", "task_profile_version",
+    "task_contract_version", "admission_logical_tick",
+)
+
+
+@pytest.mark.parametrize("field", _IDENTITY_INTEGER_FIELDS)
+@pytest.mark.parametrize("value", [1 << 64, (1 << 256) - 1], ids=["above_u64", "maximum_256_bits"])
+def test_effect_attachment_preserves_full_legacy_identity_integer_domain(field, value):
+    """Legacy identity integers retain their 256-bit domain at the D boundary."""
+    bundle = effect_bundle(**{field: value})
+    spec = _factory_spec(bundle)
+    values = {
+        "capability_contract_version": spec["profile"]["entries"][0]["capability"]["contract_version"],
+        "policy_version": spec["governance_policy"]["policy_version"],
+        "task_profile_version": spec["governance_policy"]["task_profile_version"],
+        "task_contract_version": spec["task_receipt"]["contract_version"],
+        "admission_logical_tick": spec["profile"]["entries"][0]["admission_decision"]["logical_tick"],
+    }
+    assert values[field] == value
+    assert EffectProfile.from_record(spec["profile"]).profile_id == bundle.profile.profile_id
+    original_runtime = bundle.runtime.snapshot._canonical_text()
+    session = create(bundle)
+    receipt = perform(session, bundle)
+    assert receipt.status == "applied" and receipt.effect_applied is True
+    assert session.validates_receipt(receipt)
+    assert session.snapshot.manifest_complete
+    assert session.snapshot.canonical_record()["cells"] == {"counter": 1}
+    assert receipt.canonical_record()["logical_tick"] == 1
+    assert receipt.canonical_record()["counters"] == {"requests": 1, "executions": 1, "retries": 0, "reconciliations": 0}
+    assert bundle.runtime.snapshot._canonical_text() == original_runtime
+
+
+@pytest.mark.parametrize("field", _IDENTITY_INTEGER_FIELDS)
+@pytest.mark.parametrize("value", [True, False, -1, 1.0, 1 << 256], ids=["true", "false", "negative", "float", "above_256_bits"])
+def test_legacy_identity_integer_contracts_reject_out_of_domain_values(field, value):
+    bundle = effect_bundle()
+    with pytest.raises((TypeError, ValueError)):
+        if field == "capability_contract_version":
+            replace(bundle.capabilities["synthetic_set"], contract_version=value)
+        elif field == "policy_version":
+            replace(bundle.policy, policy_version=value)
+        elif field == "task_profile_version":
+            replace(bundle.policy, task_profile_version=value)
+        elif field == "task_contract_version":
+            GovernanceWrapper(bundle.policy).admit_task("invalid.version", {},
+                requester=PrincipalAuthority.OPENAI_SUPERVISOR, contract_version=value)
+        else:
+            replace(bundle.decisions[0], logical_tick=value)
+
+
+@pytest.mark.parametrize("field", _IDENTITY_INTEGER_FIELDS[:-1])
+def test_legacy_version_fields_remain_positive(field):
+    with pytest.raises((TypeError, ValueError)):
+        effect_bundle(**{field: 0})
+
+
+def test_effect_entry_preserves_legacy_nonnegative_zero_admission_tick():
+    bundle = effect_bundle()
+    entry = EffectEntry(bundle.capabilities["synthetic_set"], bundle.proposals[0],
+        replace(bundle.decisions[0], logical_tick=0), bundle.dependency)
+    record = entry.canonical_record()
+    assert record["admission_decision"]["logical_tick"] == 0
+    assert EffectEntry.from_record(record).canonical_record() == record
+
+
+@pytest.mark.parametrize("version", [1 << 64, (1 << 256) - 1], ids=["above_u64", "maximum_256_bits"])
+def test_effect_attachment_preserves_continuation_policy_identity_version(version):
+    """The predecessor context cannot narrow valid identity-only versions."""
+    bundle = effect_bundle(continuation_policy_version=version)
+    session = create(bundle)
+    receipt = perform(session, bundle)
+    assert receipt.effect_applied is True and session.validates_receipt(receipt)
+    assert receipt.canonical_record()["logical_tick"] == 1
+    assert receipt.canonical_record()["counters"]["executions"] == 1
+
+
+@pytest.mark.parametrize("version", [True, False, -1, 0, 1.0, 1 << 256])
+def test_continuation_policy_identity_version_keeps_its_positive_integer_contract(version):
+    with pytest.raises((TypeError, ValueError)):
+        replace(experimental_continuation_profile("tiny"), policy_version=version)
