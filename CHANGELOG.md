@@ -213,7 +213,7 @@ All notable changes to QSOL-IBAE will be documented here.
 - Preserve accepted v0.2–v0.6A fixtures. No live integration, native authority
   reconstruction or effect execution is claimed.
 
-### v0.6C official OpenAI/read-only transport candidate
+### v0.6C official OpenAI/read-only transport implementation (accepted PR #10)
 
 - Add default-disabled official Responses transport with bounded normalized
   proposal decoding, governance-bound opaque credentials and finite attempts.
@@ -231,3 +231,20 @@ All notable changes to QSOL-IBAE will be documented here.
   by production dispatch. SDK initialization failures retain fixed error statuses.
 - Preserve all accepted v0.2–v0.6B fixtures. Live API/recovery verification remains
   separately gated and is not inferred from SDK-mock or offline results.
+
+### v0.6D governed synthetic effect candidate
+
+- Add a separately versioned, default-disabled native effect ledger committed
+  by the original task and attached once to its live supervisor authority.
+- Preserve full canonical 256-bit legacy version/tick identity fields across
+  Python/native admission; operational effect counters remain independently bounded.
+- Add exact native approval seals, ordered occurrence ownership and closed
+  idempotent set/non-idempotent increment operations with exact preconditions.
+- Add finite request/execution/retry/reconciliation counters, cancellation,
+  shared revocation and native journal-based lost-acknowledgement recovery.
+- Retain ambiguous/partial outcomes and pre/post/recovery evidence without
+  promoting synthetic receipts into legacy finalization or external truth.
+- Add independent deterministic replay of 18 native synthetic scenarios.
+- Preserve accepted v0.2–v0.6C fixture bytes and all legacy protocol schemas.
+  Live effect activation remains unavailable/default-disabled; C live gates
+  remain BLOCKED without genuine authorized operator transport evidence.

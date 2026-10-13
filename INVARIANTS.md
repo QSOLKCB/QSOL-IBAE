@@ -1,6 +1,6 @@
 # QSOL-IBAE Invariant Registry
 
-Status: accepted v0.1-v0.6B baseline; v0.6C transport additions require their own acceptance gate.
+Status: accepted v0.1-v0.6C implementation baseline; v0.6D synthetic effects require their own acceptance gate. Live C verification remains BLOCKED.
 
 Violation of an **ENFORCED MUST** invariant is a system defect in the current implementation.
 Violation of an **ARCHITECTURE MUST** invariant is a design defect in any future implementation.
@@ -1211,7 +1211,7 @@ Current synthetic enforcement is exercised by `tests/test_synthetic_protocol.py`
 `tests/test_synthetic_conformance.py` and the separate v0.6B golden input/output
 fixtures. It is not proof of live provider, Work/Codex or effect recovery.
 
-# 20. Official OpenAI/read-only transport (v0.6C candidate)
+# 20. Official OpenAI/read-only transport (accepted v0.6C implementation)
 
 ## IBAE-SECRET-001 — Raw provider credentials stay outside model/evidence interfaces
 
@@ -1308,3 +1308,58 @@ Evidence: `tests/test_openai_transport.py`, `tests/test_transport_activation.py`
 `tests/test_readonly_adapters.py`, `tests/test_observed_snapshots.py`,
 `tests/test_transport_conformance.py` and the
 separate v0.6C fixture. No fixture claims actual live API or recovery verification.
+
+# 21. Governed synthetic effects (v0.6D candidate)
+
+## IBAE-EFFECT-001 — Effect authority is a separate original-task commitment
+
+**ENFORCED MUST**
+
+The original accepted task commits the complete bounded effect profile. Native
+attachment validates the exact task/governance/admission chain and established
+native lineage, and succeeds at most once per parent authority binding. Closed
+mutation commands cannot enter read execution or legacy finalization. A new
+wrapper, equal public identity, receipt reconstruction or continuation lease
+cannot reset or extend the independent effect ledger.
+
+## IBAE-EFFECT-002 — Every effect needs exact occurrence-bound native approval
+
+**ENFORCED MUST**
+
+Native dispatch requires a one-shot exact-instance approval over the current
+D state, shared authority epoch, action, occurrence and immutable profile. The
+ordered manifest preserves distinct occurrences even for identical payloads.
+Stale, foreign, changed and already-used approvals never execute a mutation.
+
+## IBAE-EFFECT-003 — Recovery never infers failure from lost acknowledgement
+
+**ENFORCED MUST**
+
+Only the retained native occurrence journal establishes applied/not-applied
+reconciliation. Unknown remains ambiguous even when cell content happens to
+match the intended result. Retry requires native proof of non-application and
+finite remaining capacity. Applied occurrences never execute again. Prior work
+and exact precondition-protected synthetic content survive later failures.
+
+## IBAE-EFFECT-004 — Cancellation and revocation cannot refund capacity
+
+**ENFORCED MUST**
+
+Cancellation cannot undo or erase effects or declare an ambiguous occurrence
+unapplied. Revocation closes all new effect dispatch. Requests, executions,
+retries and reconciliations have fixed independent finite ceilings. Native
+pending approvals remain bounded, and interruption cannot replenish capacity.
+
+## IBAE-EFFECT-005 — Synthetic evidence is not external approval or truth
+
+**ENFORCED MUST**
+
+The closed executor performs only native in-memory set/increment operations.
+Pre/post/recovery receipts have fixed shape; snapshots are profile-bounded.
+Native seals prove exact in-process provenance only. Serialized receipts cannot
+restore authority or establish global task acceptance. A synthetic enabled flag
+never authorizes an externally visible action. No live effect executor exists.
+
+Evidence: `tests/test_effects.py`, native `effects` tests, and
+`tests/test_effect_conformance.py`; separate v0.6D canonical input/output fixtures.
+Candidate exact-head review and aggregate acceptance remain required.

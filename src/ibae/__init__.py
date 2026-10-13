@@ -436,3 +436,13 @@ __all__ += ["ObservedReadSnapshot", "SnapshotReadAdapter", "verify_observed_snap
 __all__ += ["SelectedReadAttempt", "SelectedReadCapture", "SelectedReadCaptureError"]
 
 __all__ += ["SimulationActivationController", "SimulatedGitHubReadAdapter"]
+
+# Effect declarations are inert; native attachment and every dispatch are gated.
+from .effects import (
+    EffectCommand, EffectEntry, EffectLimits, EffectProfile, EffectReceipt,
+    EffectSession, EffectSnapshot, EffectStatus, SyntheticEffectOutcome,
+)
+__all__ += [
+    "EffectCommand", "EffectEntry", "EffectLimits", "EffectProfile", "EffectReceipt",
+    "EffectSession", "EffectSnapshot", "EffectStatus", "SyntheticEffectOutcome",
+]

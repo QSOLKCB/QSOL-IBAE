@@ -1,8 +1,14 @@
 # v0.6C official OpenAI and read-only transport
 
-Status: implementation candidate. The accepted predecessor is v0.6B PR #9,
-merge `4a6e75d703e85e21a549c39c4509d15ac564d1e3`, reviewed source
-`1962b6afe525b1d50d921158d474b95d8c791800`.
+Status: implementation accepted in PR #10, merge
+`88e3de74a7c8ee10be81c669aaaa8b6bebd933ff`, exact approved source
+`e549d363387801aff385f1c2b7b2fef488c4925f`. All 1,286 Python tests, 39 Rust
+tests, strict lint, wheel, CI and deterministic conformance gates passed.
+Live provider/GitHub/recovery verification remains BLOCKED and default-disabled.
+The trusted-host TLS provenance checks do not claim remote attestation.
+Approval evidence: https://github.com/QSOLKCB/QSOL-IBAE/pull/10#issuecomment-6144957990.
+Optional Security completed on the initial candidate only; the final exact-head
+Code endorsement and mandatory CI were verified before merge.
 
 ## Authority and deployment boundary
 

@@ -1,6 +1,6 @@
 # QSOL-IBAE Roadmap
 
-Status: v0.1-v0.6B accepted and integrated. The current implementation frontier is the v0.6C official OpenAI/read-only transport candidate; live activation remains independently gated.
+Status: v0.1-v0.6C implementation accepted and integrated. The current implementation frontier is the v0.6D synthetic/default-disabled effect candidate. C live verification remains BLOCKED; live activation remains independently gated.
 
 Current accepted main lineage:
 
@@ -20,7 +20,11 @@ Current accepted main lineage:
 - PR #9: v0.6B Offline Synthetic Supervisor and Recovery, merge `4a6e75d703e85e21a549c39c4509d15ac564d1e3`, exact approved head `1962b6afe525b1d50d921158d474b95d8c791800`
 - Approval and preserved fixture evidence: https://github.com/QSOLKCB/QSOL-IBAE/pull/9
 
-The accepted v0.6A boundary is described in `RECOVERY_PROTOCOL.md`; accepted v0.6B in `SYNTHETIC_PROTOCOL.md`. v0.6C requires its own exact-head review, CI, normalized admission-equivalence and staged transport gates. No live phase is accepted by predecessor approval.
+- PR #10: v0.6C implementation acceptance, merge `88e3de74a7c8ee10be81c669aaaa8b6bebd933ff`, exact approved head `e549d363387801aff385f1c2b7b2fef488c4925f`
+- Approval, CI and preserved fixture evidence: https://github.com/QSOLKCB/QSOL-IBAE/pull/10
+- Live OpenAI/GitHub/recovery verification: BLOCKED; implementation acceptance permits only the synthetic/default-disabled D successor.
+
+The accepted v0.6A boundary is described in `RECOVERY_PROTOCOL.md`; accepted v0.6B in `SYNTHETIC_PROTOCOL.md`. v0.6C passed exact-head review, CI and offline normalized admission-equivalence. Genuine live staged transport gates remain unverified. No live phase is accepted by predecessor approval.
 
 QSOL-IBAE is intentionally developed invariant-first. Each authority-bearing phase is blocked on the acceptance gate of the preceding phase. The project is not intended to become a generic multi-provider agent framework. It is an OpenAI-exclusive governed execution substrate whose purpose is to reduce redundant work, make continuation finite and auditable, preserve deterministic execution semantics, minimize unnecessary context and evidence transport, and move deterministic bookkeeping out of the model's cognitive workload.
 
@@ -1188,6 +1192,13 @@ Do not smuggle mutations through the read-only runtime protocol.
 - [ ] Partial/failed effects preserve evidence and ambiguity explicitly.
 - [ ] Synthetic effect fixtures first.
 - [ ] Selected real effects only after dedicated review.
+
+Implementation checkpoint (candidate): the separate native in-memory profile,
+exact approvals, finite recovery ledger and 18-scenario replay are implemented.
+The implementation gate still requires final aggregate CI and exact-head Codex
+approval. All selected real effects remain deferred: no external executor or
+live-stage acceptance is claimed. See `EFFECT_PROTOCOL.md` and
+`ENGINEERING_HANDOFF.md` for scope and source-bound checkpoint rules.
 
 ### v0.6D gate
 
