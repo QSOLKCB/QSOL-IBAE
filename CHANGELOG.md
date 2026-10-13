@@ -202,7 +202,7 @@ All notable changes to QSOL-IBAE will be documented here.
   v0.2-v0.5 fixture bytes and protocol identity domains.
 - Live transport, synthetic end-to-end phase and effects remain gated.
 
-### v0.6B offline synthetic candidate
+### v0.6B offline synthetic conformance (accepted PR #9)
 
 - Add bounded normalized supervisor proposals, frozen read adapters and an
   opaque synthetic credential-handle contract with no live resolver.
@@ -212,3 +212,22 @@ All notable changes to QSOL-IBAE will be documented here.
   corpus with explicit unavailable/unsupported/indeterminate outcomes.
 - Preserve accepted v0.2–v0.6A fixtures. No live integration, native authority
   reconstruction or effect execution is claimed.
+
+### v0.6C official OpenAI/read-only transport candidate
+
+- Add default-disabled official Responses transport with bounded normalized
+  proposal decoding, governance-bound opaque credentials and finite attempts.
+- Add separate stage activation, rollback and revocation controls; transport
+  success never substitutes for native execution or governance authority.
+- Add selected GitHub read-only observation contracts and deterministic local
+  fixture adapters with native admission-equivalence conformance.
+- Bind selected volatile captures to typed occurrence admission and finite
+  transport counters; preserve bounded partial failure history across rollback.
+- Consume exact immutable observed snapshots through existing governed native
+  reads without claiming current remote freshness or counting GET as native work.
+- Require private verified HTTPS/TLS outcomes before live stage evidence or
+  stored Responses continuation; successful mocked decoding never qualifies.
+- Isolate positive offline staging in a permanent simulation controller rejected
+  by production dispatch. SDK initialization failures retain fixed error statuses.
+- Preserve all accepted v0.2–v0.6B fixtures. Live API/recovery verification remains
+  separately gated and is not inferred from SDK-mock or offline results.

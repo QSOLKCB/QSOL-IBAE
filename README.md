@@ -8,13 +8,15 @@ An experimental, OpenAI-exclusive execution substrate for deterministic, bounded
 
 ## Current frontier
 
-The v0.6A supervisor/recovery contract is accepted at PR #8 merge
-`735be520825aed8fe383bcf4092a26dd3ee15aa1`, following the defensive v0.5
-baseline in PR #7. Bounded supervisor projections, fresh-context/recovery
-records, native revocation, and assurance/calibration contracts are implemented.
-The current candidate is v0.6B offline synthetic end-to-end conformance.
-See `SYNTHETIC_PROTOCOL.md` for normalized inputs, native receipt scope and
-independent replay. No live provider or effect is activated.
+The v0.6B offline synthetic supervisor/recovery phase is accepted at PR #9
+merge `4a6e75d703e85e21a549c39c4509d15ac564d1e3`, following v0.6A and
+the defensive v0.5 correction. Eight normalized control streams and 48 recovery
+scenarios exercise real governance, native accounting and bounded evidence.
+
+The current v0.6C candidate adds an optional official OpenAI Responses transport,
+opaque credentials, staged activation and selected read-only observation
+adapters. Live stages are disabled by default and not verified by offline tests.
+See `OPENAI_TRANSPORT_PROTOCOL.md`; no live effect is activated.
 
 ## Mission
 

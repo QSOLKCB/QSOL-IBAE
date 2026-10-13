@@ -11,7 +11,7 @@ Merged v0.1 deterministic kernel and architecture contract, the accepted
 deterministic runtime**, the accepted **v0.4 deterministic governance/compact
 evidence implementation**, and the **v0.5 objective-progress/bounded-
 continuation implementation**, followed by accepted **v0.6A supervisor/recovery contracts** and the current
-**v0.6B offline synthetic end-to-end candidate**.
+accepted **v0.6B offline synthetic conformance** and current **v0.6C official OpenAI/read-only transport candidate**.
 
 PR #8 merged exact reviewed head `6affcd765632a999d868c5efc15f91e15a0c7f52`
 at `735be520825aed8fe383bcf4092a26dd3ee15aa1`. Authenticated exact-head
@@ -329,7 +329,7 @@ Before modifying architecture or runtime behavior:
 8. do not implement v0.6 or another later roadmap phase before the exact v0.5
    gate is accepted.
 
-## v0.6B CANDIDATE BOUNDARY
+## ACCEPTED v0.6B BOUNDARY
 
 The synthetic adapter layer proposes through `IBAE-NORMALIZED-SUPERVISOR-PROPOSAL-V1`.
 Eight control streams and 48 bounded recovery scenarios exercise actual
@@ -346,3 +346,26 @@ objective verification through a replayable compact-proof/partial-receipt chain,
 not global v0.4 acceptance. Adapters receive only detached inert projection
 records; live runtime and lineage witnesses remain inside the trusted runner.
 See `SYNTHETIC_PROTOCOL.md`; all later live/effect gates remain separate.
+
+## v0.6C CANDIDATE TRANSPORT BOUNDARY
+
+Accepted B integration: PR #9 merge `4a6e75d703e85e21a549c39c4509d15ac564d1e3`,
+approved head `1962b6afe525b1d50d921158d474b95d8c791800`; 1,058 Python/39 Rust
+tests, exact-head CI/Determinism and authentic Codex endorsement passed.
+
+The optional official SDK is pinned under `.[openai]`. Import and offline
+conformance require no credential or network call. A trusted operator must
+configure exact task/governance credential binding and each stage gate before
+any live dispatch. SDK-mock tests and detached JSON receipts are not live proof. Production gates
+require private one-use verified-network outcomes. The explicit simulation
+controller cannot enter production credential/HTTPS dispatch, and all of its
+stage observations remain simulation-only.
+Public GitHub reads are restricted to fixed selected GET resources; private
+authenticated GitHub and direct ChatGPT/Work/Codex session access are unavailable.
+Selected GETs use occurrence-sensitive VOLATILE_READ admission and a separate
+finite transport ledger. Exact retained responses become immutable snapshots for
+separately governed native consumption; snapshot cache reuse does not establish
+current remote freshness. Capture candidates in model context require full typed
+host admission before any GET. Failed capture admissions retain their next-state
+binding and spent capacity across rollback. Genuine live verification is BLOCKED.
+See `OPENAI_TRANSPORT_PROTOCOL.md` for activation, rollback and limitations.

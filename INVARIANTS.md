@@ -1,6 +1,6 @@
 # QSOL-IBAE Invariant Registry
 
-Status: accepted v0.1-v0.6A baseline; v0.6B additions are candidate implementation pending their own acceptance gate.
+Status: accepted v0.1-v0.6B baseline; v0.6C transport additions require their own acceptance gate.
 
 Violation of an **ENFORCED MUST** invariant is a system defect in the current implementation.
 Violation of an **ARCHITECTURE MUST** invariant is a design defect in any future implementation.
@@ -1156,7 +1156,7 @@ rendered `fixtures/v0.6A/supervisor-recovery-reference.json`. Synthetic contract
 conformance is not live recovery validation; cross-process restoration remains
 unsupported.
 
-# 19. Synthetic integration (v0.6B candidate implementation)
+# 19. Synthetic integration (accepted v0.6B)
 
 ## IBAE-SIM-001 — One normalized supervisor boundary
 
@@ -1210,3 +1210,101 @@ Current synthetic enforcement is exercised by `tests/test_synthetic_protocol.py`
 `tests/test_synthetic_runner.py`, `tests/test_synthetic_recovery.py`,
 `tests/test_synthetic_conformance.py` and the separate v0.6B golden input/output
 fixtures. It is not proof of live provider, Work/Codex or effect recovery.
+
+# 20. Official OpenAI/read-only transport (v0.6C candidate)
+
+## IBAE-SECRET-001 — Raw provider credentials stay outside model/evidence interfaces
+
+**ENFORCED MUST**
+
+The closed broker resolves its trusted deployment binding only at SDK dispatch.
+No public secret getter, arbitrary request header, SDK error/body passthrough or
+secret-bearing canonical record is provided. This is interface isolation, not
+secure memory erasure or protection against arbitrary trusted-host code.
+
+## IBAE-SECRET-002 — Credentials use governance-bound opaque references
+
+**ENFORCED MUST**
+
+An inert credential handle names exact task/governance binding and is not itself
+resolution authority. Only the configured broker can resolve its own binding;
+model-selected references cannot redirect it to a different secret source.
+
+## IBAE-SECRET-003 — Resolve only for a bounded authorized transport attempt
+
+**ENFORCED MUST**
+
+Default-disabled activation, exact stage/policy/task binding and finite call
+reservation precede credential resolution. Failure, rollback and interruption
+never refund consumed capacity. Broker state does not retain the resolved value.
+
+## IBAE-TRANSPORT-001 — Official wire success remains a proposal
+
+**ENFORCED MUST**
+
+Only the official OpenAI Responses boundary is supported. Bounded wire decoding
+enters the accepted normalized proposal parser. Provider success, usage and
+response IDs cannot mint native evidence, final acceptance or continuation.
+Offline wire replay is explicitly distinct from live verification.
+
+## IBAE-TRANSPORT-002 — Sequential activation and rollback are independent gates
+
+**ENFORCED MUST**
+
+Each live stage requires explicit operator configuration and preceding local
+stage evidence. Process-local verifier state is not restored from serialized
+records. Revocation/rollback retire pending reservations and context without
+increasing capacity. These deployment controls never replace Rust authority.
+
+## IBAE-READONLY-001 — External observations cannot become hidden mutations
+
+**ENFORCED MUST**
+
+Selected GitHub routes use bounded fixed-host HTTPS GET only. Unsupported verbs,
+redirects, undeclared resources and arbitrary endpoint/header configuration are
+rejected. External observation receipts are data; runtime evidence still needs
+existing governed native admitted-read execution. Session reconnection and
+unavailable authenticated integration are reported explicitly.
+
+## IBAE-READONLY-002 — Capture and immutable-content consumption have distinct authority
+
+**ENFORCED MUST**
+
+A selected GET requires exact current normalized source binding, typed
+occurrence-sensitive declared-order admission, governed VOLATILE_READ permission,
+and a single-use finite transport reservation before HTTP dispatch. Capturing
+remote data never consumes or fabricates a native execution counter. Only exact
+retained content can become a separately identified snapshot; its subsequent
+governed SNAPSHOT_READ uses the existing native execution and cache contract.
+Neither snapshot identity nor cache reuse establishes remote freshness.
+
+## IBAE-TRANSPORT-003 — Failed capture evidence cannot replenish authority
+
+**ENFORCED MUST**
+
+Transport and capture-attempt limits are finite and lifetime-monotone. Typed
+admission and next-state identity survive failed or interrupted capture in bounded
+partial records, together with consumed reservation and fixed outcome. Only
+controller-owned successful captures can enter the current stage proof. Rollback
+retires active proofs without deleting historical attempts or refunding capacity.
+Pre-dispatch denial sends no GET; post-dispatch revocation discards the response
+and cannot undo or pretend to cancel a request already sent.
+
+## IBAE-TRANSPORT-004 — Simulation cannot establish a live predecessor gate
+
+**ENFORCED MUST**
+
+Production stage evidence consumes private single-use outcomes from the closed
+verified HTTP/TLS path, bound to the exact current reservation and normalized
+proposal or captured receipt. Adapter type, decoded success, an HTTP mock and
+serialized records do not prove a live call. Simulation controllers are
+permanently separate, produce only simulation observations and use inert
+adapters; production SDK/HTTPS dispatch rejects them before credentials/network.
+No simulation predecessor, caller flag or receipt hash can authorize a live stage.
+The guarantee assumes the trusted Python host and does not claim remote
+attestation or arbitrary module-tamper protection.
+
+Evidence: `tests/test_openai_transport.py`, `tests/test_transport_activation.py`,
+`tests/test_readonly_adapters.py`, `tests/test_observed_snapshots.py`,
+`tests/test_transport_conformance.py` and the
+separate v0.6C fixture. No fixture claims actual live API or recovery verification.

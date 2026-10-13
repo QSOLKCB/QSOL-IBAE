@@ -399,3 +399,40 @@ __all__ = [
     "resume_continuation_checkpoint",
     "run_budget_profile_benchmark",
 ]
+
+# Optional provider transport imports are inert; the SDK is lazy-loaded only at
+# explicitly activated dispatch, not during package import or offline replay.
+from .openai_transport import (
+    CredentialReference, OpenAICredentialBroker, OpenAIResponsesSupervisor,
+    OpenAITransportError, OpenAITransportObservation, OpenAITransportPolicy, decode_openai_response,
+    decode_proposal_envelope, encode_proposal_envelope, openai_interface_manifest,
+)
+from .readonly_adapters import (
+    ExternalObservationReceipt, FrozenReadAdapter, GitHubReadAdapter,
+    GitHubReadSelection, GitHubRequestPlan, GitHubTransportUnavailable, SimulatedGitHubReadAdapter,
+    parse_github_response, readonly_interface_manifest, unsupported_session_continuation,
+)
+from .transport_activation import (
+    ActivationController, ActivationError, ActivationStage, OperatorStageAuthorization, SimulationActivationController,
+    SelectedReadAttempt, SelectedReadCapture, SelectedReadCaptureError, StageObservation, ToolProfile,
+)
+
+__all__ += [
+    "ActivationController", "ActivationError", "ActivationStage", "CredentialReference",
+    "ExternalObservationReceipt", "FrozenReadAdapter", "GitHubReadAdapter",
+    "GitHubReadSelection", "GitHubRequestPlan", "GitHubTransportUnavailable",
+    "OpenAICredentialBroker", "OpenAIResponsesSupervisor", "OpenAITransportError",
+    "OpenAITransportObservation", "OpenAITransportPolicy", "OperatorStageAuthorization", "StageObservation", "ToolProfile",
+    "decode_openai_response", "decode_proposal_envelope", "encode_proposal_envelope",
+    "openai_interface_manifest", "parse_github_response", "readonly_interface_manifest",
+    "unsupported_session_continuation",
+]
+
+from .observed_snapshots import (
+    ObservedReadSnapshot, SnapshotReadAdapter, verify_observed_snapshot_stage,
+)
+__all__ += ["ObservedReadSnapshot", "SnapshotReadAdapter", "verify_observed_snapshot_stage"]
+
+__all__ += ["SelectedReadAttempt", "SelectedReadCapture", "SelectedReadCaptureError"]
+
+__all__ += ["SimulationActivationController", "SimulatedGitHubReadAdapter"]

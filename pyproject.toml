@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "qsol-ibae"
-version = "0.6.0b1"
+version = "0.6.0rc1"
 description = "Invariant-Bounded Agent Execution kernel"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -14,6 +14,7 @@ dependencies = []
 
 [project.optional-dependencies]
 dev = ["pytest>=8,<9"]
+openai = ["openai==3.29.0", "httpx2==2.13.1", "httpcore2==2.13.1"]
 
 [tool.maturin]
 manifest-path = "rust/Cargo.toml"

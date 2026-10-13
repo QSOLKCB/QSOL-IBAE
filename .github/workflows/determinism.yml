@@ -74,3 +74,10 @@ jobs:
           PYTHONHASHSEED=1 python tools/render_v0_6b_fixture.py --input fixtures/v0.6B/supervisor-transcripts.json --verify fixtures/v0.6B/synthetic-recovery-reference.json > /tmp/synthetic-a.json
           PYTHONHASHSEED=8675309 python tools/render_v0_6b_fixture.py --input fixtures/v0.6B/supervisor-transcripts.json --verify fixtures/v0.6B/synthetic-recovery-reference.json > /tmp/synthetic-b.json
           cmp /tmp/synthetic-a.json /tmp/synthetic-b.json
+
+      - name: Verify v0.6C wire and read-only equivalence across hash seeds
+        run: |
+          PYTHONHASHSEED=1 python tools/render_v0_6c_fixture.py > /tmp/transport-a.json
+          PYTHONHASHSEED=8675309 python tools/render_v0_6c_fixture.py > /tmp/transport-b.json
+          cmp /tmp/transport-a.json /tmp/transport-b.json
+          cmp fixtures/v0.6C/openai-readonly-reference.json /tmp/transport-a.json
