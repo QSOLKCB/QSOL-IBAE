@@ -4620,3 +4620,182 @@ def test_round6_request_cap_exhaustion_binds_a_normal_partial_outcome():
         repeated.next_state.terminal_ceiling_receipt_id
         == terminal.receipt.receipt_id
     )
+
+
+@pytest.mark.parametrize('field_name', [
+    'capability_frontier', 'target_obligation_ids', 'dependency_path',
+    'initial_transition_pattern',
+])
+def test_defensive_strategy_requires_exact_stored_tuple_shapes(field_name):
+    _, material, _ = _strategy_state()
+    object.__setattr__(material, field_name, list(getattr(material, field_name)))
+    with pytest.raises(TypeError, match='exact tuple'):
+        material._validate_authority_fields()
+
+
+def test_defensive_strategy_validates_nested_schema_and_canonical_parameters():
+    _, material, _ = _strategy_state()
+    object.__setattr__(material.strategy.schema, 'parameter_specs', [])
+    with pytest.raises(TypeError, match='exact tuple'):
+        material._validate_authority_fields()
+    _, material, _ = _strategy_state()
+    object.__setattr__(material.strategy._parameters, 'text', 1)
+    with pytest.raises(TypeError, match='exact canonical text'):
+        material._validate_authority_fields()
+
+
+@pytest.mark.parametrize('field_name,value', [
+    ('runtime_session_id', 1), ('runtime_state_id', 1),
+    ('period', True), ('transition_pattern', []),
+    ('transition_pattern', (1,)),
+])
+def test_defensive_cycle_requires_exact_field_shapes(field_name, value):
+    cycle = CycleEvidence(_id('session'), _id('state'), 1, (_id('transition'),))
+    object.__setattr__(cycle, field_name, value)
+    with pytest.raises((TypeError, ValueError)):
+        cycle._validate_authority_fields()
+
+
+@pytest.mark.parametrize('field_name,value', [
+    ('task_id', 1), ('strategy_change_id', 1), ('lease_index', True),
+    ('decision_logical_tick', True), ('granted_resources', {}),
+])
+def test_defensive_grant_requires_exact_field_shapes(field_name, value):
+    policy, _, _, _, binding, runtime, _, _, progress, state = _state_and_progress()
+    _, decision = _request_and_decide(policy, binding, runtime, progress, state)
+    grant = decision.receipt
+    object.__setattr__(grant, field_name, value)
+    with pytest.raises((TypeError, ValueError)):
+        grant._validate_authority_fields()
+
+
+def test_defensive_native_observer_rejects_malformed_strategy_without_state_change():
+    policy, _, _, _, _, runtime, _, current, _, state = _state_and_progress()
+    _, material, _ = _strategy_state()
+    object.__setattr__(material, 'capability_frontier', [])
+    before = state.canonical_record()
+    snapshot = runtime.snapshot.canonical_record()
+    with pytest.raises(TypeError, match='exact tuple'):
+        observe_continuation_context(
+            state, runtime_session=runtime, policy=policy,
+            orchestration_state=current, runtime_snapshot=runtime.snapshot,
+            strategy=material,
+        )
+    assert state.canonical_record() == before
+    assert runtime.snapshot.canonical_record() == snapshot
+    # Rejection does not retire the valid live lineage.
+    observed = observe_continuation_context(
+        state, runtime_session=runtime, policy=policy,
+        orchestration_state=current, runtime_snapshot=runtime.snapshot,
+    )
+    assert observed.progress_event_count == state.progress_event_count
+
+
+def test_defensive_governance_block_suppresses_recovery_until_exact_request_clears():
+    policy, _, _, _, binding, runtime, _, current, progress, state = _state_and_progress('standard')
+    request = ContinuationRequest.from_state(
+        state, progress=progress, requested_resources=policy.lease_schedule[0],
+        requester=PrincipalAuthority.OPENAI_SUPERVISOR, requester_authority=_authority(runtime),
+    )
+    blocked = evaluate_continuation(
+        state, request, runtime_session=runtime, policy=policy,
+        policy_receipt=binding, progress=progress,
+        blocking_governance_violation_id=_id('active-block'),
+    ).next_state
+    projection = blocked.compact_projection(policy)
+    assert projection['legal_recovery_actions'] == []
+    assert projection['material_strategy_change_admissible'] is False
+    observed = observe_continuation_context(
+        blocked, runtime_session=runtime, policy=policy,
+        orchestration_state=current, runtime_snapshot=runtime.snapshot,
+    )
+    assert observed.compact_projection(policy)['legal_recovery_actions'] == []
+    _, cleared = _request_and_decide(policy, binding, runtime, progress, observed)
+    assert cleared.granted
+    assert cleared.next_state.compact_projection(policy)['legal_recovery_actions'] == ['apply_pending_lease']
+
+
+def test_defensive_passive_scalar_and_tuple_subclasses_are_not_authority_data():
+    class Text(str):
+        pass
+
+    class Items(tuple):
+        pass
+
+    _, strategy, _ = _strategy_state()
+    object.__setattr__(strategy, 'capability_frontier', Items(strategy.capability_frontier))
+    with pytest.raises(TypeError, match='exact tuple'):
+        strategy._validate_authority_fields()
+    cycle = CycleEvidence(_id('session'), _id('state'), 1, (_id('transition'),))
+    object.__setattr__(cycle, 'transition_pattern', Items(cycle.transition_pattern))
+    with pytest.raises(TypeError, match='exact tuple'):
+        cycle._validate_authority_fields()
+    policy, _, _, _, binding, runtime, _, _, progress, state = _state_and_progress()
+    _, decision = _request_and_decide(policy, binding, runtime, progress, state)
+    object.__setattr__(decision.receipt, 'task_id', Text(decision.receipt.task_id))
+    with pytest.raises(TypeError, match='exact strings'):
+        decision.receipt._validate_authority_fields()
+
+
+def test_defensive_native_cycle_shape_rejection_preserves_lineage():
+    policy, _, _, _, binding, runtime, _, _, progress, state = _state_and_progress()
+    cycle = CycleEvidence(runtime.snapshot.session_id, runtime.snapshot.state_id, 1, (_id('transition'),))
+    object.__setattr__(cycle, 'transition_pattern', [])
+    with pytest.raises(TypeError, match='exact tuple'):
+        _request_and_decide(policy, binding, runtime, progress, state, cycle_evidence=cycle)
+    _, valid = _request_and_decide(policy, binding, runtime, progress, state)
+    assert valid.granted
+
+
+def test_defensive_native_committer_shape_rejection_preserves_pending_lineage():
+    policy, _, _, _, binding, runtime, _, _, progress, state = _state_and_progress()
+    _, decision = _request_and_decide(policy, binding, runtime, progress, state)
+    grant = decision.receipt
+    application = runtime.apply_lease(grant)
+    task_id = grant.task_id
+    object.__setattr__(grant, 'task_id', 1)
+    with pytest.raises(TypeError, match='exact strings'):
+        commit_lease_application(
+            decision.next_state, runtime_session=runtime, policy=policy,
+            grant=grant, application=application, runtime_snapshot=runtime.snapshot,
+        )
+    object.__setattr__(grant, 'task_id', task_id)
+    committed = commit_lease_application(
+        decision.next_state, runtime_session=runtime, policy=policy,
+        grant=grant, application=application, runtime_snapshot=runtime.snapshot,
+    )
+    assert committed.last_consumed_progress_id == progress.progress_id
+    assert committed.progress_event_count == decision.next_state.progress_event_count
+    assert committed.strategy_recoveries == decision.next_state.strategy_recoveries
+    assert committed.pending_grant_id is None
+
+
+@pytest.mark.parametrize('field_name', ['capability_frontier', 'target_obligation_ids', 'dependency_path'])
+def test_defensive_strategy_rejects_duplicate_stored_members(field_name):
+    _, material, _ = _strategy_state()
+    original = getattr(material, field_name)
+    object.__setattr__(material, field_name, original + original)
+    with pytest.raises(ValueError, match='unique'):
+        material._validate_authority_fields()
+
+
+@pytest.mark.parametrize('retain_block', [False, True])
+def test_defensive_stale_request_cannot_reopen_blocked_recovery(retain_block):
+    policy, _, _, _, binding, runtime, _, _, progress, state = _state_and_progress('standard')
+    request = ContinuationRequest.from_state(
+        state, progress=progress, requested_resources=policy.lease_schedule[0],
+        requester=PrincipalAuthority.OPENAI_SUPERVISOR, requester_authority=_authority(runtime),
+    )
+    blocked = evaluate_continuation(
+        state, request, runtime_session=runtime, policy=policy,
+        policy_receipt=binding, progress=progress,
+        blocking_governance_violation_id=_id('active-block'),
+    ).next_state
+    stale = evaluate_continuation(
+        blocked, request, runtime_session=runtime, policy=policy,
+        policy_receipt=binding, progress=progress,
+        blocking_governance_violation_id=_id('active-block') if retain_block else None,
+    ).next_state
+    assert stale.last_denial_reason is LeaseDenialReason.STALE_CONTINUATION_STATE
+    assert stale.compact_projection(policy)['legal_recovery_actions'] == []
+    assert not stale.compact_projection(policy)['material_strategy_change_admissible']

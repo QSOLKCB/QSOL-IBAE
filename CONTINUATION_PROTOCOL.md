@@ -569,3 +569,30 @@ The checked-in v0.5 fixtures are:
 CI renders both across distinct `PYTHONHASHSEED` values and byte-compares them.
 The legacy v0.2, v0.3, and v0.4 fixtures are rendered and compared separately
 to prove compatibility.
+
+## Defensive v0.5 acceptance correction
+
+The observer validates exact stored strategy scalars, tuples, nested schema,
+and canonical parameter text before invoking the pinned observer. The native
+request entry likewise requires the registered exact cycle-evidence type and
+validates its complete stored record before governance evaluation. Evaluation
+rechecks the unchanged prior native lineage before sealing output.
+
+The application committer requires the registered exact grant type and exact
+validated grant fields before comparisons. Rust independently permits only the
+live runtime-state endpoint update and clearing both pending-grant fields.
+All progress, consumed-progress, strategy, recovery, decision, terminal, budget,
+and policy lineage remains unchanged by application commit.
+
+A compact projection whose latest governed denial is a blocking governance
+violation or an unauthorized/stale-context rejection suppresses progress/strategy
+recovery suggestions. This conservative rule prevents a stale request from
+reopening recovery after a block. Ordinary context observation preserves that
+denial. A subsequent exact authorized request,
+evaluated against the current blocking-governance input, may clear the denial;
+projection alone never clears it or grants authority. Blocking evidence remains
+an input to each governed request, not a new durable authorization channel.
+
+These checks add no canonical fields, identity domains, grants, or runtime
+commands. Frozen v0.2-v0.5 fixture bytes remain unchanged. The correction does
+not claim durable authentication, cross-process resume, or v0.6 acceptance.

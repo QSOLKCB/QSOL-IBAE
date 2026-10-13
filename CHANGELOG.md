@@ -4,6 +4,18 @@ All notable changes to QSOL-IBAE will be documented here.
 
 ## Unreleased
 
+### Defensive v0.5 acceptance correction
+
+- Validate exact nested strategy, cycle-evidence and lease-grant fields at
+  native authority entry; preserve canonical set order and reject malformed
+  stored shapes without normalizing live records.
+- Recheck evaluated prior continuation lineage and independently restrict
+  application commit to the live runtime endpoint and pending-grant clearing.
+- Suppress impossible progress/strategy recovery suggestions after a blocking
+  governance denial, including ordinary context observations.
+- Add non-exploit field-shape and native-transition contract tests. Existing
+  v0.2-v0.5 fixture schemas and identity domains remain unchanged.
+
 ### Added
 
 - `IBAE-OBJECTIVE-PROGRESS-V1`, with exact versioned progress dimensions over
