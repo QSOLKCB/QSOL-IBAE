@@ -1,8 +1,8 @@
 # Offline synthetic supervisor and recovery conformance
 
-Status: v0.6B candidate. Predecessor v0.6A is accepted at PR #8 merge
-`735be520825aed8fe383bcf4092a26dd3ee15aa1`. This candidate requires its own
-exact-head review and all conformance gates before live integration begins.
+Status: accepted v0.6B, PR #9 merge `4a6e75d703e85e21a549c39c4509d15ac564d1e3`,
+exact approved head `1962b6afe525b1d50d921158d474b95d8c791800`. Its offline
+conformance gate passed; subsequent live stages require separate evidence.
 
 ## Scope and authority
 
@@ -118,7 +118,7 @@ extra resources outside the original governed task, and no benchmark result
 in this phase promotes it to authority.
 
 Accepted historical v0.2–v0.6A fixture bytes remain immutable. The new v0.6B
-fixtures and protocol names are separate candidate identities. Live OpenAI,
+fixtures and protocol names are separate accepted identities. Live OpenAI,
 live read adapters, durable cross-process native reconstruction, authenticated
 remote producers and actual effect execution remain unverified or unsupported.
 

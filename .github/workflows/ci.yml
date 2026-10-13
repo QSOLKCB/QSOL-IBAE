@@ -21,7 +21,7 @@ jobs:
           rustup toolchain install 1.74.1 --profile minimal --component clippy,rustfmt
           rustup default 1.74.1
       - run: python -m pip install --upgrade pip
-      - run: python -m pip install -e '.[dev]'
+      - run: python -m pip install -e '.[dev,openai]'
       - name: Rust format
         run: cargo fmt --manifest-path rust/Cargo.toml --check
       - name: Rust check
@@ -66,6 +66,10 @@ jobs:
           python tools/render_v0_6b_fixture.py --inputs-only > /tmp/v0.6b-inputs.json
           cmp fixtures/v0.6B/supervisor-transcripts.json /tmp/v0.6b-inputs.json
           python tools/render_v0_6b_fixture.py --input fixtures/v0.6B/supervisor-transcripts.json --verify fixtures/v0.6B/synthetic-recovery-reference.json > /tmp/v0.6b-synthetic-recovery.json
+      - name: Verify v0.6C offline wire and native read-only equivalence
+        run: |
+          python tools/render_v0_6c_fixture.py > /tmp/v0.6c-openai-readonly.json
+          cmp fixtures/v0.6C/openai-readonly-reference.json /tmp/v0.6c-openai-readonly.json
       - name: Build wheel from fresh source
         run: python -m pip wheel . --no-deps --wheel-dir /tmp/qsol-wheel
       - name: Verify fresh wheel install
@@ -83,7 +87,7 @@ jobs:
               v0_5_reference_fixture,
           )
 
-          assert importlib.metadata.version("qsol-ibae") == "0.6.0b1"
+          assert importlib.metadata.version("qsol-ibae") == "0.6.0rc1"
           assert ibae.RUNTIME_PROTOCOL_VERSION == "IBAE-RUNTIME-PROTOCOL-V1"
           assert ibae.GOVERNANCE_PROTOCOL_VERSION == "IBAE-GOVERNANCE-PROTOCOL-V1"
           assert ibae.EVIDENCE_PROTOCOL_VERSION == "IBAE-COMPACT-EVIDENCE-V1"
@@ -99,6 +103,11 @@ jobs:
           assert synthetic_fixture["offline_only"] is True
           assert synthetic_fixture["live_recovery_verified"] is False
           assert synthetic_fixture["external_effects_executed"] == 0
+          from ibae.transport_conformance import v0_6c_reference_fixture
+          transport_fixture = v0_6c_reference_fixture()
+          assert transport_fixture["offline_only"] is True
+          assert transport_fixture["live_verification"] is False
+          assert transport_fixture["fixture_equivalence"]["equivalent"] is True
           legacy_fixture = v0_4_reference_fixture()
           assert legacy_fixture["finalization"]["acceptance"]["status"] == "accepted"
           assert legacy_fixture["compact_evidence"]["source_bound"] is True
@@ -113,7 +122,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: v0.6b-build-evidence
+          name: v0.6c-build-evidence
           if-no-files-found: warn
           path: |
             rust/Cargo.lock
@@ -126,4 +135,5 @@ jobs:
             /tmp/v0.6a-supervisor-recovery.json
             /tmp/v0.6b-inputs.json
             /tmp/v0.6b-synthetic-recovery.json
+            /tmp/v0.6c-openai-readonly.json
             /tmp/qsol-wheel/*.whl

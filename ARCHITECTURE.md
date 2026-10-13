@@ -3,7 +3,7 @@
 Status: frozen architecture contract with accepted v0.2 Python orchestration,
 accepted v0.3 Rust runtime, accepted v0.4 governance/compact evidence, and a
 accepted v0.5 objective-progress/bounded-continuation implementation, accepted
-v0.6A supervisor/recovery contracts, and a v0.6B synthetic conformance candidate.
+v0.6A supervisor/recovery contracts, and a accepted v0.6B synthetic conformance.
 
 QSOL-IBAE is a small OpenAI-exclusive governed execution substrate, not a general-purpose proprietary multi-provider agent framework.
 
@@ -747,7 +747,7 @@ claims and benchmark data cannot silently recalibrate operational policy.
 Accepted v0.6A integration: PR #8 merge `735be520825aed8fe383bcf4092a26dd3ee15aa1`,
 exact approved source `6affcd765632a999d868c5efc15f91e15a0c7f52`.
 
-## 16. v0.6B offline synthetic candidate
+## 16. v0.6B offline synthetic conformance (accepted PR #9)
 
 `SYNTHETIC_PROTOCOL.md` defines the normalized proposal and closed frozen
 adapter boundary. External data is synthetic; governance, orchestration,
@@ -758,3 +758,12 @@ through fresh native sessions for deterministic evidence comparison.
 Any multi-segment summary identifies the exact scope of its real manifest-bound
 final/partial receipts. It is not a replacement global finalizer or a native
 authority reconstruction. Live operations remain deferred.
+
+## 17. v0.6C official transport candidate
+
+`OPENAI_TRANSPORT_PROTOCOL.md` adds a default-disabled official Responses
+transport and fixed-route selected read-only observations above the unchanged
+normalized proposal boundary. Credentials resolve only inside the configured
+broker after bounded stage authorization. Transport receipts are inert data,
+not native seals or execution authority. Process-local activation records do
+not reconstruct native state, and offline equivalence cannot verify live stages.

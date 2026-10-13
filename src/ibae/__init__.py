@@ -399,3 +399,31 @@ __all__ = [
     "resume_continuation_checkpoint",
     "run_budget_profile_benchmark",
 ]
+
+# Optional provider transport imports are inert; the SDK is lazy-loaded only at
+# explicitly activated dispatch, not during package import or offline replay.
+from .openai_transport import (
+    CredentialReference, OpenAICredentialBroker, OpenAIResponsesSupervisor,
+    OpenAITransportError, OpenAITransportPolicy, decode_openai_response,
+    decode_proposal_envelope, encode_proposal_envelope, openai_interface_manifest,
+)
+from .readonly_adapters import (
+    ExternalObservationReceipt, FrozenReadAdapter, GitHubReadAdapter,
+    GitHubReadSelection, GitHubRequestPlan, GitHubTransportUnavailable,
+    parse_github_response, readonly_interface_manifest, unsupported_session_continuation,
+)
+from .transport_activation import (
+    ActivationController, ActivationError, ActivationStage, OperatorStageAuthorization,
+    StageObservation, ToolProfile,
+)
+
+__all__ += [
+    "ActivationController", "ActivationError", "ActivationStage", "CredentialReference",
+    "ExternalObservationReceipt", "FrozenReadAdapter", "GitHubReadAdapter",
+    "GitHubReadSelection", "GitHubRequestPlan", "GitHubTransportUnavailable",
+    "OpenAICredentialBroker", "OpenAIResponsesSupervisor", "OpenAITransportError",
+    "OpenAITransportPolicy", "OperatorStageAuthorization", "StageObservation", "ToolProfile",
+    "decode_openai_response", "decode_proposal_envelope", "encode_proposal_envelope",
+    "openai_interface_manifest", "parse_github_response", "readonly_interface_manifest",
+    "unsupported_session_continuation",
+]
