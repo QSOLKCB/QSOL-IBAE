@@ -1,6 +1,6 @@
 # QSOL-IBAE Roadmap
 
-Status: v0.1-v0.5 accepted and integrated. The current implementation frontier is the v0.6A supervisor/recovery contract candidate.
+Status: v0.1-v0.6A accepted and integrated. The current implementation frontier is the v0.6B offline synthetic supervisor/recovery candidate.
 
 Current accepted main lineage:
 
@@ -14,7 +14,10 @@ Current accepted main lineage:
 - Exact approved corrective head: `9c0d8893d3e3ae52fcd79c10fd80df9aeeb85774`
 - Approval and preserved fixture evidence: https://github.com/QSOLKCB/QSOL-IBAE/pull/7
 
-The v0.6A candidate implements the versioned supervisor/recovery boundary described in `RECOVERY_PROTOCOL.md`. Its own CI/review acceptance is separate; no subsequent phase is accepted by this baseline correction.
+- PR #8: v0.6A Supervisor Boundary and Recovery Contracts, merge `735be520825aed8fe383bcf4092a26dd3ee15aa1`, exact approved head `6affcd765632a999d868c5efc15f91e15a0c7f52`
+- Approval and preserved fixture evidence: https://github.com/QSOLKCB/QSOL-IBAE/pull/8
+
+The accepted v0.6A boundary is described in `RECOVERY_PROTOCOL.md`. The v0.6B candidate requires its own exact-head review, CI, offline conformance and independent replay gates; no live phase is accepted by predecessor approval.
 
 QSOL-IBAE is intentionally developed invariant-first. Each authority-bearing phase is blocked on the acceptance gate of the preceding phase. The project is not intended to become a generic multi-provider agent framework. It is an OpenAI-exclusive governed execution substrate whose purpose is to reduce redundant work, make continuation finite and auditable, preserve deterministic execution semantics, minimize unnecessary context and evidence transport, and move deterministic bookkeeping out of the model's cognitive workload.
 

@@ -1,6 +1,6 @@
 # QSOL-IBAE Invariant Registry
 
-Status: accepted v0.1-v0.5 baseline with v0.6A candidate enforcement annotations.
+Status: accepted v0.1-v0.6A baseline; v0.6B additions are candidate implementation pending their own acceptance gate.
 
 Violation of an **ENFORCED MUST** invariant is a system defect in the current implementation.
 Violation of an **ARCHITECTURE MUST** invariant is a design defect in any future implementation.
@@ -1155,3 +1155,55 @@ Enforcement evidence: `tests/test_authority_epoch.py`,
 rendered `fixtures/v0.6A/supervisor-recovery-reference.json`. Synthetic contract
 conformance is not live recovery validation; cross-process restoration remains
 unsupported.
+
+# 19. Synthetic integration (v0.6B candidate implementation)
+
+## IBAE-SIM-001 — One normalized supervisor boundary
+
+**ARCHITECTURE MUST**
+
+Synthetic and future live supervisor adapters must enter the same bounded
+normalized proposal contract. The synthetic boundary is implemented now; actual
+live transport admission-equivalence remains a v0.6C activation gate.
+
+## IBAE-SIM-002 — Synthetic adapters receive no extra authority
+
+**ENFORCED MUST**
+
+Frozen adapters receive no supervisor capability, governance issuer, lease
+setter or effect executor. Every executed synthetic read uses real
+orchestration admission, governed tool authorization and Rust accounting.
+Synthetic output is observation data, not a replacement control plane.
+
+## IBAE-SIM-003 — Transport success is not authority
+
+**ENFORCED MUST**
+
+Normalized record acceptance does not admit the proposed action or validate
+completion. Exact source observations must satisfy the declared deterministic
+acceptance rules; final/partial receipts retain their real manifest scope.
+Missing measurements remain unavailable/indeterminate. A diagnostic segmented
+run summary cannot replace a source-bound final receipt.
+
+## IBAE-SIM-004 — Offline conformance has no live dependency
+
+**ENFORCED MUST**
+
+The synthetic profile has no endpoint, secret resolver, live provider SDK,
+network or actual effect operation. Only bounded closed fixture data and opaque
+synthetic credential handles are accepted. Replay runs under a denied network
+surface and preserves explicit unsupported/unavailable capabilities.
+
+## IBAE-SIM-005 — Adapter substitution preserves admitted meaning
+
+**ARCHITECTURE MUST**
+
+Equivalent normalized proposal streams must preserve deterministic decisions
+across synthetic/live adapter substitution. Current enforcement verifies the
+synthetic transport encode/decode boundary and independent native replay;
+actual live substitution remains unverified until the separate v0.6C gate.
+
+Current synthetic enforcement is exercised by `tests/test_synthetic_protocol.py`,
+`tests/test_synthetic_runner.py`, `tests/test_synthetic_recovery.py`,
+`tests/test_synthetic_conformance.py` and the separate v0.6B golden input/output
+fixtures. It is not proof of live provider, Work/Codex or effect recovery.

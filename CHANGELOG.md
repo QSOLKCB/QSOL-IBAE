@@ -190,7 +190,7 @@ All notable changes to QSOL-IBAE will be documented here.
 - source-available research license with reserved productization rights for QSOL-IMC and OpenAI Parties.
 - unit tests, CI, and deterministic micro-benchmark.
 
-### v0.6A supervisor/recovery candidate
+### v0.6A supervisor/recovery contracts (accepted PR #8)
 
 - Add bounded versioned supervisor projections and fresh-context/recovery
   records, without serialized native-authority reconstruction.
@@ -201,3 +201,14 @@ All notable changes to QSOL-IBAE will be documented here.
 - Record accepted v0.5 corrective baseline PR #7 and preserve historical
   v0.2-v0.5 fixture bytes and protocol identity domains.
 - Live transport, synthetic end-to-end phase and effects remain gated.
+
+### v0.6B offline synthetic candidate
+
+- Add bounded normalized supervisor proposals, frozen read adapters and an
+  opaque synthetic credential-handle contract with no live resolver.
+- Exercise actual governance, deterministic admission, native accounting,
+  progress/continuation and source-bound final/partial evidence gates.
+- Add golden normalized inputs, independent replay and an interruption/recovery
+  corpus with explicit unavailable/unsupported/indeterminate outcomes.
+- Preserve accepted v0.2–v0.6A fixtures. No live integration, native authority
+  reconstruction or effect execution is claimed.

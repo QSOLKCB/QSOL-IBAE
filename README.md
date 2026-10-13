@@ -8,11 +8,12 @@ An experimental, OpenAI-exclusive execution substrate for deterministic, bounded
 
 ## Current frontier
 
-The v0.5 defensive baseline is accepted at PR #7 merge
-`54c5abf01d909555dda999c77bd8ae8c899dd087`. The current candidate is v0.6A:
-bounded supervisor projections, fresh-context/recovery records, native authority
-revocation, and machine-readable assurance/calibration contracts.
-See `RECOVERY_PROTOCOL.md`; no live provider or effect is activated.
+The v0.6A supervisor/recovery contract is accepted at PR #8 merge
+`735be520825aed8fe383bcf4092a26dd3ee15aa1`, following the defensive v0.5
+baseline in PR #7. Bounded supervisor projections, fresh-context/recovery
+records, native revocation, and assurance/calibration contracts are implemented.
+The current candidate is v0.6B offline synthetic end-to-end conformance.
+No live provider or effect is activated.
 
 ## Mission
 

@@ -69,3 +69,8 @@ jobs:
           PYTHONHASHSEED=8675309 python tools/render_v0_6a_fixture.py > /tmp/supervisor-b.json
           cmp /tmp/supervisor-a.json /tmp/supervisor-b.json
           cmp fixtures/v0.6A/supervisor-recovery-reference.json /tmp/supervisor-a.json
+      - name: Independently replay v0.6B golden inputs across hash seeds
+        run: |
+          PYTHONHASHSEED=1 python tools/render_v0_6b_fixture.py --input fixtures/v0.6B/supervisor-transcripts.json --verify fixtures/v0.6B/synthetic-recovery-reference.json > /tmp/synthetic-a.json
+          PYTHONHASHSEED=8675309 python tools/render_v0_6b_fixture.py --input fixtures/v0.6B/supervisor-transcripts.json --verify fixtures/v0.6B/synthetic-recovery-reference.json > /tmp/synthetic-b.json
+          cmp /tmp/synthetic-a.json /tmp/synthetic-b.json

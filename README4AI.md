@@ -10,7 +10,14 @@ Merged v0.1 deterministic kernel and architecture contract, the accepted
 **v0.2 deterministic Python orchestration reference**, the accepted **v0.3 Rust
 deterministic runtime**, the accepted **v0.4 deterministic governance/compact
 evidence implementation**, and the **v0.5 objective-progress/bounded-
-continuation implementation**, followed by the current **v0.6A supervisor/recovery candidate**.
+continuation implementation**, followed by accepted **v0.6A supervisor/recovery contracts** and the current
+**v0.6B offline synthetic end-to-end candidate**.
+
+PR #8 merged exact reviewed head `6affcd765632a999d868c5efc15f91e15a0c7f52`
+at `735be520825aed8fe383bcf4092a26dd3ee15aa1`. Authenticated exact-head
+Codex Code approval, CI/determinism, 803 Python and 39 Rust tests passed.
+Optional Security review was on the initial candidate only, not the final
+head; it was not a mandatory merge gate. Evidence: https://github.com/QSOLKCB/QSOL-IBAE/pull/8.
 
 v0.2 implements canonical obligations/DAG readiness, proposal/admission separation, replay-safe-only batch deduplication, persistent bounded effect occurrence ownership, explicit independent-versus-declared batch ordering, explicit epistemic state classes with reuse-path- and unadmitted-proposal-neutral correctness identity, admitted typed strategy-specific parameter allowlists, capability-owned semantic argument allowlists with non-correctness observational metadata, bounded model-facing collections/text/integers and canonical payload traversal, canonical state/receipt identities, structured rejection/recovery records, and `IBAE-LOGICAL-CLOCK-V1` reference semantics.
 
