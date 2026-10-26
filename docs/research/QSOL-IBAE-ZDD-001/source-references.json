@@ -1,0 +1,15 @@
+{
+  "case_id": "QSOL-IBAE-ZDD-001",
+  "inspected_ibae_base": "d4a5ee812b929073c6fa494b3367e85a1fcda0a1",
+  "status": "PROPOSED_DOCUMENTATION_ONLY",
+  "native_ibae_execution": false,
+  "period_a_baseline": "df8a547d249fad6235544234e0dd525f18fdae2e",
+  "registration": "497f2564c68b5b2556c5f1c3bf90a2309a613264",
+  "final_pr_head": "d8728a0150e8986479a7268aba396d8fd29af5e2",
+  "merge": "a704bd329e82ede16ade06ffc1e7a29e87facd4c",
+  "pr": "https://github.com/QSOLKCB/ZERO-DAY-DREAD/pull/2",
+  "main_ci": "https://github.com/QSOLKCB/ZERO-DAY-DREAD/actions/runs/40295247316",
+  "final_code_review": "https://github.com/QSOLKCB/ZERO-DAY-DREAD/pull/2#issuecomment-6411938106",
+  "deployment_marker": "https://qsolkcb.github.io/ZERO-DAY-DREAD/source-commit.txt",
+  "publication_authorized": false
+}
