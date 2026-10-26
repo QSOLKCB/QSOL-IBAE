@@ -1,5 +1,7 @@
 # QSOL-IBAE
 
+[![Zenodo DOI: 10.5281/zenodo.23662395](https://zenodo.org/badge/DOI/10.5281/zenodo.23662395.svg)](https://doi.org/10.5281/zenodo.23662395)
+
 **Invariant-Bounded Agent Execution**
 
 An experimental, OpenAI-exclusive execution substrate for deterministic, bounded, auditable agent tool use.
